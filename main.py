@@ -1,5 +1,13 @@
 import requests
+import pandas as pd
+from datetime import datetime
+
 #获取概念股数据
+from sqlalchemy import text
+
+import SqlUtil
+
+
 def getGnbk():
     headers = {
         'accept': '*/*',
@@ -29,4 +37,51 @@ def getGnbk():
     }
 
     response = requests.get('https://push2.eastmoney.com/api/qt/clist/get', params=params,  headers=headers )
-    print(response.text)
+    return  response.json()['data']['diff']
+def del_gnbk(ywrq):
+    connection = SqlUtil.getConnect()
+    try:
+        # 获取cursor对象
+        with connection.cursor() as cursor:
+            del_sql = "delete from stock_gnbk where ywrq= {today}".format(today=ywrq)
+            cursor.execute(del_sql)
+            # 提交事务
+            connection.commit()
+    except  Exception as err:
+        print(err)
+    finally:
+        # 关闭数据库连接
+        connection.close()
+def genGnbk():
+    gnbk_list = getGnbk()
+    gnbk_df = pd.DataFrame(gnbk_list)
+    print(gnbk_df)
+    re_col_name={
+        "f3": 'gn_zdf',
+        "f12": "gn_code",
+        "f14": "gn_name",
+        "f62": 'gn_zlje',
+        "f66": 'gn_cddje',
+        "f69": 'gn_cddzb',
+        "f72": 'gn_ddje',
+        "f75": 'gn_ddzb',
+        "f78": 'gn_zdje',
+        "f81": 'gn_zdzb',
+        "f84": 'gn_xdje',
+        "f87": 'gn_xdzb',
+        "f184": 'gn_zlzb',
+        "f204": "gn_gpname",
+        "f205": "gn_gpcode",
+    }
+    gnbk_df = gnbk_df.rename(columns=re_col_name)
+    gnbk_df = gnbk_df.drop(['f1', 'f2','f13','f124','f206'], axis=1)
+
+    today = datetime.now().strftime('%Y%m%d')
+    gnbk_df['ywrq'] = today
+
+    print(gnbk_df)
+    engine = SqlUtil.get_engine()
+    del_gnbk(today)
+    gnbk_df.to_sql('stock_gnbk', con=engine, if_exists='append', index=False)
+if __name__ == '__main__':
+     genGnbk()
