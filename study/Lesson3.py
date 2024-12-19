@@ -123,7 +123,7 @@ def main():
     cerebro = bt.Cerebro()
     # 使用修改后的 OKXDataFeed 类，并确保数据完整性，添加日期范围
     data = OKXDataFeed(dataname=df, fromdate=pd.to_datetime(fromdate), todate=pd.to_datetime(todate))
-    data = bt.feeds.PandasData(dataname=data, fromdate=pd.to_datetime("2022-01-01"), todate=pd.to_datetime("2024-12-11"))
+    data = bt.feeds.PandasData(dataname=data, fromdate=pd.to_datetime("2024-01-01"), todate=pd.to_datetime("2024-12-11"))
     print(data)
     cerebro.adddata(data)
     cerebro.addstrategy(CombinedStrategy)
