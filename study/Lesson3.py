@@ -5,17 +5,8 @@ import numpy as np
 
 
 class OKXDataFeed(bt.feeds.PandasData):
-    # 明确所需的线数据
-    lines = ('vpt', 'high', 'low', 'open', 'close', 'volume')
-    # 参数映射，确保每个线数据的位置正确
-    params = (
-        ('vpt', -1),
-        ('high', 1),
-        ('low', 2),
-        ('open', 0),
-        ('close', 3),
-        ('volume', 4)
-    )
+    lines = ('vpt',)
+    params = (('vpt', -1),)
 
 
 class CombinedStrategy(bt.Strategy):
@@ -33,30 +24,35 @@ class CombinedStrategy(bt.Strategy):
     )
 
     def __init__(self):
-        # 先检查数据是否包含所需属性
-        if not hasattr(self.data, 'high'):
-            raise ValueError("Data does not contain 'high' attribute.")
-        # 初始化指标
         self.sma_fast = bt.indicators.SimpleMovingAverage(self.data.close, period=self.params.sma_fast_period)
         self.sma_slow = bt.indicators.SimpleMovingAverage(self.data.close, period=self.params.sma_slow_period)
-        self.rsi = bt.indicators.RelativeStrengthIndex(period=self.params.rsi_period)
+        self.rsi = bt.indicators.RSI(self.data.close, period=self.params.rsi_period)
         self.stoch = bt.indicators.Stochastic(self.data.high, self.data.low, self.data.close, period=self.params.k_period)
         self.k = self.stoch.lines.percK
         self.d = self.stoch.lines.percD
         self.vpt = self.calculate_vpt()
         self.vpt_ma = bt.indicators.SimpleMovingAverage(self.vpt, period=self.params.vpt_period)
         self.boll = bt.indicators.BollingerBands(self.data.close, period=self.params.boll_period, devfactor=self.params.boll_std)
-        # 买入和卖出信号
-        self.buy_signal_1 = bt.And(self.sma_fast > self.sma_slow, self.sma_fast(-1) <= self.sma_slow(-1))
-        self.sell_signal_1 = bt.And(self.sma_fast < self.sma_slow, self.sma_fast(-1) >= self.sma_slow(-1))
-        self.buy_signal_2 = bt.And(self.k > self.d, self.k(-1) <= self.d(-1), self.k > 20)
-        self.sell_signal_2 = bt.And(self.k < self.d, self.k(-1) >= self.d(-1), self.k < 80)
-        self.buy_signal_3 = bt.And(self.rsi < self.params.rsi_buy_threshold, self.data.close > self.sma_fast)
-        self.sell_signal_3 = bt.And(self.rsi > self.params.rsi_sell_threshold, self.data.close < self.sma_fast)
-        self.buy_signal_4 = bt.And(self.vpt > self.vpt_ma, self.data.close > self.sma_fast)
-        self.sell_signal_4 = bt.And(self.vpt < self.vpt_ma, self.data.close < self.sma_fast)
-        self.buy_signal_5 = self.data.close > self.boll.lines.top
-        self.sell_signal_5 = self.data.close < self.boll.lines.bot
+
+        # 买入信号
+        self.buy_signal = (
+            (bt.indicators.CrossUp(self.sma_fast, self.sma_slow)) &
+            (bt.indicators.CrossUp(self.k, self.d) & (self.k > 20)) &
+            (self.rsi < self.params.rsi_buy_threshold) &
+            (self.data.close > self.sma_fast) &
+            (bt.indicators.CrossUp(self.vpt, self.vpt_ma) & (self.data.close > self.sma_fast)) &
+            (self.data.close > self.boll.lines.top)
+        )
+
+        # 卖出信号
+        self.sell_signal = (
+            (bt.indicators.CrossDown(self.sma_fast, self.sma_slow)) &
+            (bt.indicators.CrossDown(self.k, self.d) & (self.k < 80)) &
+            (self.rsi > self.params.rsi_sell_threshold) &
+            (self.data.close < self.sma_fast) &
+            (bt.indicators.CrossDown(self.vpt, self.vpt_ma) & (self.data.close < self.sma_fast)) &
+            (self.data.close < self.boll.lines.bot)
+        )
 
     def calculate_vpt(self):
         vpt = np.zeros(len(self.data))
@@ -65,32 +61,19 @@ class CombinedStrategy(bt.Strategy):
         return vpt
 
     def next(self):
-        # 同时满足多个买入信号时买入
-        if all([self.buy_signal_1, self.buy_signal_2, self.buy_signal_3, self.buy_signal_4, self.buy_signal_5]):
+        # 买入信号
+        if self.buy_signal[0]:
             self.buy()
-        # 同时满足多个卖出信号时卖出
-        elif all([self.sell_signal_1, self.sell_signal_2, self.sell_signal_3, self.sell_signal_4, self.sell_signal_5]):
+        # 卖出信号
+        elif self.sell_signal[0]:
             self.sell()
 
 
-def fetch_ohlcv(exchange, symbol, timeframe, fromdate=None, todate=None, limit=None):
-    ohlcv = []
-    if fromdate and todate:
-        from_ms = int(pd.Timestamp(fromdate).timestamp() * 1000)
-        to_ms = int(pd.Timestamp(todate).timestamp() * 1000)
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=from_ms, limit=limit)
-        last_timestamp = ohlcv[-1][0] if ohlcv else from_ms
-        while last_timestamp < to_ms:
-            new_ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=last_timestamp, limit=limit)
-            if not new_ohlcv:
-                break
-            ohlcv.extend(new_ohlcv[1:])  # 避免重复添加第一个元素
-            last_timestamp = new_ohlcv[-1][0]
-    else:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+def fetch_ohlcv(exchange, symbol, timeframe, limit=1000):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
+    df.set_index('datetime', inplace=True)
     return df
 
 
@@ -112,18 +95,15 @@ def main():
         }
     })
     exchange.setSandboxMode(True)
+
     # 获取数据
     symbol = 'BTC/USDT'
-    timeframe = '1d'
-    fromdate = "2024-12-11"
-    todate = "2024-12-19"
-    df = fetch_ohlcv(exchange, symbol, timeframe, fromdate=fromdate, todate=todate,limit=200)
-
+    timeframe = '1h'
+    df = fetch_ohlcv(exchange, symbol, timeframe)
+    print(df)
     # 初始化 BackTrader
     cerebro = bt.Cerebro()
-    # 使用修改后的 OKXDataFeed 类，并确保数据完整性，添加日期范围
-    data = OKXDataFeed(dataname=df, fromdate=pd.to_datetime(fromdate), todate=pd.to_datetime(todate))
-    data = bt.feeds.PandasData(dataname=data, fromdate=pd.to_datetime("2024-01-01"), todate=pd.to_datetime("2024-12-11"))
+    data = OKXDataFeed(dataname=df)
     print(data)
     cerebro.adddata(data)
     cerebro.addstrategy(CombinedStrategy)
