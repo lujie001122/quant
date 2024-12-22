@@ -7,8 +7,11 @@ import pandas as pd
 
 import talib
 class SignalData(bt.feeds.PandasData):
-    lines = ('signal',)
-    params = (('signal', -1),)
+    lines = ('signal','rsi_value')
+    params = (
+        ('signal', -1),
+              ('rsi_value', -2),
+              )
 
 class SimpleCrossStrategy(bt.Strategy):
     params = (
@@ -22,15 +25,17 @@ class SimpleCrossStrategy(bt.Strategy):
     def __init__(self):
         # 计算五日和十日均线
         self.signal = self.datas[0].signal
+        self.rsi_value = self.datas[0].rsi_value
 
     def next(self):
+        print(self.rsi_value[0])
         # 检查是否有持仓
         # K 在 20 向上交叉 D 时买入信号
-        if not self.position and  self.signal[0] > 0:
+        if not self.position and  self.signal[0] > 0 and (self.rsi_value[0] > 30 and self.rsi_value[0] < 70 ):
                 self.order = self.buy(size=self.params.trade_size)
 
         # K 在 80 向下交叉 D 时卖出信号
-        if  self.position and self.signal[0]  < 0:
+        if  (self.position and self.signal[0]  < 0 )or self.rsi_value[0] > 70:
                 self.order = self.sell(size=self.position.size)
 
     def log(self, txt, dt=None):
@@ -97,7 +102,10 @@ def fetch_ohlcv(exchange, symbol, timeframe, limit=2000):
             df.loc[df.index[i], 'signal'] = 1
         elif k[i] < d[i] and k[i - 1] >= d[i - 1] and k[i] < 80:
             df.loc[df.index[i], 'signal'] = -1
-
+    # 计算 RSI 指标
+    close_prices = np.array(df['close'])
+    rsi_values = talib.RSI(close_prices, timeperiod=14)
+    df['rsi_value'] = rsi_values
     return df
 
 
@@ -118,7 +126,7 @@ def main():
         }
     })
     exchange.setSandboxMode(True)
-    symbol = 'BTC/USDT'
+    symbol = 'BNB/USDT'
     timeframe = '1d'
     df = fetch_ohlcv(exchange, symbol, timeframe)
 

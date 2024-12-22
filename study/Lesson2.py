@@ -2,32 +2,35 @@ from datetime import datetime
 
 import ccxt
 import backtrader as bt
+import numpy as np
 import pandas as pd
+import talib
 
-
+class SignalData(bt.feeds.PandasData):
+    lines = ('signal','rsi_value')
+    params = (
+        ('signal', -1),
+         ('rsi_value', -2),
+              )
 class SimpleCrossStrategy(bt.Strategy):
     params = (
         ('sma_fast_period', 5),  # 缩短快速移动平均线周期
         ('sma_slow_period', 10),  # 缩短慢速移动平均线周期
-        ('price_scale_factor', 100000),  # 价格缩放因子
         ('boll_period', 20),
         ('boll_std', 2),
-        ('trade_size', 0.3)
+        ('trade_size', 20000)
     )
 
     def __init__(self):
-        # 对价格数据应用缩放因子
-        self.scaled_close = self.data.close * self.params.price_scale_factor
-        self.sma_fast = bt.indicators.SimpleMovingAverage(self.scaled_close, period=self.params.sma_fast_period)
-        self.sma_slow = bt.indicators.SimpleMovingAverage(self.scaled_close, period=self.params.sma_slow_period)
-        self.boll = bt.indicators.BollingerBands(self.scaled_close, period=self.params.boll_period, devfactor=self.params.boll_std)
-        self.crossover = bt.indicators.CrossOver(self.sma_fast, self.sma_slow)
-        self.crossdown = bt.indicators.CrossDown(self.sma_fast, self.sma_slow)
+        # 计算五日和十日均线
+        self.sma5 = bt.indicators.SimpleMovingAverage(self.data, period=self.params.sma_fast_period)
+        self.sma10 = bt.indicators.SimpleMovingAverage(self.data, period=self.params.sma_slow_period)
+        self.rsi_value = self.datas[0].rsi_value
 
     def next(self):
-        if self.crossover > 0 and not self.position:
+        if not self.position and self.sma5[0] > self.sma10[0] and self.sma5[-1] <= self.sma10[-1] and (self.rsi_value[0] > 30 and self.rsi_value[0] < 70 ):#(self.rsi_value[0] > 30 and self.rsi_value[0] < 70 ):
             self.order = self.buy(size=self.params.trade_size)
-        elif self.crossdown > 0 and self.position:
+        if (self.position and self.sma5[0] < self.sma10[0] and self.sma5[-1] >= self.sma10[-1]) or self.rsi_value[0] > 70:
             # 卖出当前所有持仓
             self.order = self.sell(size=self.position.size)
 
@@ -79,7 +82,10 @@ def fetch_ohlcv(exchange, symbol, timeframe, limit=2000):
     df = pd.DataFrame(ohlcv, columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
     df['datetime'] = pd.to_datetime(df['datetime'], unit='ms')
     df.set_index('datetime', inplace=True)
-    print(df)
+    # 计算 RSI 指标
+    close_prices = np.array(df['close'])
+    rsi_values = talib.RSI(close_prices, timeperiod=14)
+    df['rsi_value'] = rsi_values
     return df
 
 
@@ -100,19 +106,18 @@ def main():
         }
     })
     exchange.setSandboxMode(True)
-    symbol = 'BTC/USDT'
-    timeframe = '1d'
+    symbol = 'DOGE/USDT'
+    timeframe = '15m'
     df = fetch_ohlcv(exchange, symbol, timeframe)
 
-    start_cash = 300.0
+    start_cash = 1500000.0
     cerebro = bt.Cerebro()
-    data = bt.feeds.PandasData(dataname=df)
+    data = SignalData(dataname=df)
     cerebro.adddata(data)
 
 
     cerebro.addstrategy(SimpleCrossStrategy)
     cerebro.broker.setcash(start_cash)
-    cerebro.addsizer(bt.sizers.FixedSize, stake=10)
     cerebro.broker.setcommission(commission=0.0001)
     # 运行回测
     cerebro.run()
@@ -121,7 +126,7 @@ def main():
     print('回测结束后的总资金: %.2f' % cerebro.broker.getvalue())
     print('净收益: %.2f' % (cerebro.broker.getvalue() - start_cash))
     # 画图
-    cerebro.plot()
+    # cerebro.plot()
 
 if __name__ == "__main__":
     main()
