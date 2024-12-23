@@ -1,20 +1,39 @@
+import json
+import time
+import pandas as pd
 import pymysql
-from sqlalchemy import create_engine
+import datetime
 
-def getConnect():
-    config = {
-        'host': '47.100.235.90',
-        'port':6666,
-        'user': 'root',
-        'password': 'lujie001122',
-        'database': 'quant',
-        'charset': 'utf8mb4',
-        'cursorclass': pymysql.cursors.DictCursor
-    }
-    connection = pymysql.connect(**config)
-    return connection
-def get_engine():
-    connection_string = 'mysql+pymysql://root:lujie001122@47.100.235.90:6666/quant'
-    engine = create_engine(connection_string)
-    return engine
-
+def getDB():
+    db = pymysql.connect(host='localhost',user='root',password='root',database='pdd')
+    return db
+def execute(sql):
+    db = getDB()
+    cursor = db.cursor()
+    try:
+        # 执行SQL语句
+        cursor.execute(sql)
+        # 获取所有记录列表
+        results = cursor.fetchall()
+        return results
+    except Exception as e:
+        print(sql)
+        print(e)
+    finally:
+        # 关闭数据库连接
+        db.close()
+def insert(sql):
+    db = getDB()
+    cursor = db.cursor()
+    try:
+        # 执行SQL语句
+        cursor.execute(sql)
+        # 获取所有记录列表
+        db.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        print(sql)
+        print(e)
+    finally:
+        # 关闭数据库连接
+        db.close()

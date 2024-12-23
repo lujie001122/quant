@@ -6,15 +6,10 @@ import numpy as np
 import pandas as pd
 import talib
 
-from CommInfoFractional import CommInfoFractional
-
 
 class SignalData(bt.feeds.PandasData):
     lines = ('signal','rsi_value')
-    params = (
-        ('signal', -1),
-         ('rsi_value', -2),
-              )
+    params = ( ('signal', -1),('rsi_value', -2), )
 class SimpleCrossStrategy(bt.Strategy):
     params = (
         ('sma_fast_period', 7),  # 缩短快速移动平均线周期
@@ -117,7 +112,7 @@ def main():
         }
     })
     exchange.setSandboxMode(True)
-    symbol = 'DOGE/USDT'
+    symbol = 'SOL/USDT'
     timeframe = '15m'
     df = fetch_ohlcv(exchange, symbol, timeframe)
 
