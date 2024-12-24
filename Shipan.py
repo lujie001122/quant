@@ -104,7 +104,7 @@ def main():
                 # 买入逻辑
                 order_amount = start_cash/ df.iloc[-1]['close'] # 用初始资金全部买入
                 place_order(exchange, symbol, 'buy', order_amount)
-            elif  position > 0 and (df.iloc[-1]['dead_cross'] >1  or   df.iloc[-1]['kdj_signal']< 0 or df.iloc[-1]['rsi_signal'] < 0 ) :
+            elif  position > 0.0001 and (df.iloc[-1]['dead_cross'] >1  or   df.iloc[-1]['kdj_signal']< 0 or df.iloc[-1]['rsi_signal'] < 0 ) :
                 # 卖出逻辑
                 place_order(exchange, symbol, 'sell',position)
 
