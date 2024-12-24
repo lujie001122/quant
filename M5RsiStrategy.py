@@ -35,13 +35,14 @@ class M5RsiStrategy(bt.Strategy):
             self.order = self.sell(size=size)
 
     # def log(self, txt, dt=None):
+
     #     # 确保 dt 具有足够的精度
     #     if dt is None:
     #         dt = self.datas[0].datetime.datetime(0)
     #     # 转换为东八区时间
     #     dt = dt + timedelta(hours=8)
     #     print(f'{dt.strftime("%Y-%m-%d %H:%M:%S")}, {txt}')
-    #     # 订单状态通知，买入卖出都是下单
+
     #
     # def notify_order(self, order):
     #     if order.status in [order.Submitted, order.Accepted]:
