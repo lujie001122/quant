@@ -2,7 +2,7 @@ import ccxt
 import pandas as pd
 
 
-def fetch_ohlcv(exchange_id, symbol, timeframe, limit=2000):
+def fetch_ohlcv(exchange_id, symbol, timeframe, limit=300):
     api_key = "d3b3d339-cb05-44d9-a179-a443e2e832d8"
     secret = "2EB8F8730B211394F3464752A5D4D791"
     password = "Qazwsx12@"

@@ -10,7 +10,7 @@ import StrategyUtil
 from M5RsiStrategy import M5RsiStrategy,SignalData
 
 from ccxt_utils import fetch_ohlcv, place_order
-def fetch_ohlcv(exchange_id, symbol, timeframe, limit=2000):
+def fetch_ohlcv(exchange_id, symbol, timeframe, limit=300):
     m5 = 3
     m10 = 6
     kdj_min = 10
@@ -28,10 +28,10 @@ def fetch_ohlcv(exchange_id, symbol, timeframe, limit=2000):
         'options': {
             'defaultType': 'spot'
         },
-        'proxies': {
-            'http': 'socks5://127.0.0.1:10808',
-            'https': 'socks5h://127.0.0.1:10808',
-        }
+        # 'proxies': {
+        #     'http': 'socks5://127.0.0.1:10808',
+        #     'https': 'socks5h://127.0.0.1:10808',
+        # }
     })
     exchange.setSandboxMode(True)
 
@@ -57,7 +57,7 @@ def main():
     data = SignalData(dataname=df)
     cerebro.adddata(data)
     cerebro.addstrategy(M5RsiStrategy)
-    start_cash = 10000.0
+    start_cash = 100000.0
     cerebro.broker.setcash(start_cash)
     cerebro.broker.setcommission(commission=0.001)
 
@@ -71,10 +71,10 @@ def main():
         'options': {
             'defaultType': 'spot'
         },
-        'proxies': {
-            'http': 'socks5://127.0.0.1:10808',
-            'https': 'socks5h://127.0.0.1:10808',
-        }
+        # 'proxies': {
+        #     'http': 'socks5://127.0.0.1:10808',
+        #     'https': 'socks5h://127.0.0.1:10808',
+        # }
     })
     exchange.setSandboxMode(True)
     # 获取初始账户余额
@@ -84,9 +84,10 @@ def main():
         try:
             # 获取最新的 OHLCV 数据
             df = fetch_ohlcv(exchange, symbol,timeframe)
+            print(df)
             if len(df) == 0:
                 print("No OHLCV data available.")
-                time.sleep(60*15)
+                time.sleep(60*8)
                 continue
 
             # 获取当前持仓
@@ -112,10 +113,10 @@ def main():
             print(f"当前账户余额: {balance}")
 
             # 等待一段时间再进行下一次检查
-            time.sleep(60*15)  # 每 60 秒检查一次
+            time.sleep(60*8)  # 每 60 秒检查一次
         except Exception as e:
             print(f"Error occurred: {e}")
-            time.sleep(60*15)
+            time.sleep(60*8)
 
 
 
