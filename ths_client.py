@@ -90,15 +90,9 @@ class THSClient:
 
     def buy(self, stock_code, amount, price):
         """限价买入，返回 (status, contractNo)
-        仓位上限: 单只ETF不超过4.4万(含手续费)
         先撤销同标的买入未成交挂单
         """
         self._revoke_pending(stock_code, "买入")
-        if price and amount * price > 44000:
-            amount = int(44000 / price / 100) * 100
-            if amount < 100:
-                logger.warning(f"买入{stock_code}超过4.4万仓位上限，无法下单")
-                return False, "超过4.4万仓位上限"
         try:
             status, contract = self._e.buy(stock_code, amount, price)
             logger.info(f"买入{stock_code} {amount}股@{price}: status={status}, contract={contract}")
