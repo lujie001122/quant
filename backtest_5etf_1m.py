@@ -378,13 +378,13 @@ for di, date in enumerate(dates):
                 do_liquidate(pos, price, date, "硬止盈30%", f"base={pos.base:.3f}", pnl)
                 continue
 
-            # 移动止盈
+            # 移动止盈(优化: 8%后不改止盈线，15%后再设)
             pp = (price - pos.avg) / pos.avg if pos.avg > 0 else 0
             if pp >= 0.08 - 0.0001 and not pos.reached_8:
                 pos.reached_8 = True
-                pos.trail = pos.avg * 1.05
             if pp >= 0.15 - 0.0001 and not pos.reached_15:
                 pos.reached_15 = True
+                pos.trail = pos.avg * 1.05
             if pos.reached_15 and pos.peak_price > 0:
                 pos.trail = pos.peak_price * 0.95
 
@@ -501,8 +501,8 @@ for di, date in enumerate(dates):
                         log_trade(date, code, "Test抄底30%", price, actual, f"RSI={r}<35 绿柱缩短")
                         entered = True
 
-            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>30+站MA5)
-            if not entered and ms in ("绿柱缩短", "震荡") and r > 30 and price > ma5_v:
+            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5)
+            if not entered and ms in ("绿柱缩短", "震荡") and r > 40 and price > ma5_v:
                 ss = math.ceil(MAX_PER_ETF * 0.15 / price / 100) * 100
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)
@@ -515,8 +515,8 @@ for di, date in enumerate(dates):
         if pos.build_phase == 1 and pos.first_price > 0 and not pos.bought_today:
             dip = (price - pos.first_price) / pos.first_price
 
-            # 逆势补仓: 跌>3%+MACD非死叉/绿柱放大+add_count<5
-            if dip < -0.03 and ms not in ("死叉", "绿柱放大") and pos.add_count < 5:
+            # 逆势补仓: 跌>3%+MACD非死叉/绿柱放大+add_count<5+RSI<40
+            if dip < -0.03 and ms not in ("死叉", "绿柱放大") and pos.add_count < 5 and r < 40:
                 ss = math.ceil(MAX_PER_ETF * 0.15 / price / 100) * 100
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)

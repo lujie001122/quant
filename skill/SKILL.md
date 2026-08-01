@@ -33,6 +33,7 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 | sentiment_check.py | ~/hermes/scripts/ | Sina news sentiment v3.1 (logging, KeyError protection, bare except fix, threshold constants) |
 | ths_client.py | ~/hermes/scripts/ | THSClient v3.1.5 (logging, _query_with_retry, exception handling in buy/sell) |
 | portfolio.json | ~/hermes/scripts/ | Persistent position state |
+| strategy_analysis.py | ~/hermes/scripts/ | Strategy deep analysis — channel distribution, stop-loss/take-profit breakdown, yearly stats, key findings (runs full backtest internally) |
 
 Cron scripts (must live in ~/.hermes/scripts/):
 - etf_premarket.sh - pre-market signal, runs at 9:00 weekdays
@@ -178,6 +179,25 @@ All 20 bugs from the audit have been fixed in signal_generator.py v3.1 rewrite. 
 **Backtest baseline after v3.1.5 (shared pool + 44k cap, subagent audit fixes)**: 3yr +89.32%, drawdown 15.92%, Calmar 5.61, Sharpe 1.54, win rate 34.8%, profit factor 7.11
 
 **Backtest baseline after code quality refactoring (2026-08-01, cooldown+peak_price bug fixes)**: 5yr +75.34%, drawdown 20.00%, Calmar 3.77, Sharpe 1.02, win rate 33.5%, profit factor 2.80. The lower results are CORRECT — old baseline contained bugs (COOLDOWN_DAYS=1 in backtest vs 2 in signal_generator; peak_price=0 on reduce disabled hard stop 20%). Also uses sample std dev for Sharpe and total profit factor (both are more correct statistics).
+
+**Strategy deep analysis (2026-08-01, 894 trades over 5yr)**:
+| Metric | Value | Implication |
+|--------|-------|-------------|
+| 试探建仓占比 | 74% (143/192) | 5 channels, but only 1 used — conditions too loose |
+| 止损3清仓 | 116次 (62% of liquidations) | Tiered stop reduces 30%+30% but still deteriorates to full clear |
+| 止盈:止损 | 57:131 (70% stop out) | Most trades lose, but profit factor 2.80 means wins are much larger |
+| 硬止损20% | 0次触发 | Never fires — tiered stop already reduced shares below threshold |
+| 移动止盈8% vs 15% | 21:15 | Most positions peak at 8% then retrace — 8% trail line too tight |
+| 均价止损10% | 15次 | Deep bag-holds that hit -10% from average cost |
+
+**5 optimization directions identified (NOT yet implemented — need backtest validation)**:
+1. **Probe entry conditions too loose** — RSI>30+站MA5+绿柱缩短/震荡 is almost always true. Suggest RSI>40 or DIF>0 filter.
+2. **Tiered stop not aggressive enough** — 30%+30% still leaves 40% that deteriorates. Suggest 50% first reduction.
+3. **Hard stop 20% never triggers** — after tiered stop, remaining shares are too few for market-value-based 20% drawdown. Suggest price-based stop (e.g. avg_cost -15%).
+4. **8% trailing stop too early** — 8%→trail=cost+5% means only 3% profit window. Suggest: no trail change at 8%, only enable peak-5% at 15%.
+5. **Dip-add (补仓) too aggressive** — 15% per add in falling market. Suggest RSI<40 requirement for dip-add.
+
+**Analysis script**: `~/hermes/scripts/strategy_analysis.py` — runs the full backtest and produces channel distribution, stop-loss/take-profit breakdown, yearly stats, and key findings.
 
 **v3.2 drawdown optimization attempts (2026-08-01, ALL THREE REVERTED)**: 
 - **Attempt #1**: Tried early stop (7%/9%) and reduced build (20%/50%). 3yr return dropped from 80.17% to 56.87%, drawdown only improved 4%. Build change was entirely responsible for the return drop. REVERTED.
@@ -478,6 +498,8 @@ cua-driver was installed then uninstalled per user request. User chose Evolving 
 - **Bug fixes can change backtest results and that's OK**: when fixing bugs that affect trading decisions (cooldown period, peak_price on reduce, stop-level recovery), the backtest WILL produce different results. This is correct behavior — the old results contained bug-induced "false profits". Always document before/after. The user's principle "回测与实盘必须一致" means bugs that make backtest inconsistent with live are WORSE than bugs that inflate returns. Fix the bug first, accept the result change, then investigate if the new result requires strategy adjustment.
 - **Backtest statistics correctness**: use (1) sample standard deviation (n-1 denominator) for Sharpe ratio, not population std dev; (2) total profit factor (total wins / total losses), not average win / average loss. These are the standard financial metrics — the old backtest used incorrect formulas.
 - **Duplicate function definitions are the most dangerous silent drift risk**: when two files define the same function (e.g. t0_buy_score in both signal_generator.py and intraday_t_once.py), modifying one without the other causes algorithm divergence. The fix is always to import from the canonical source — never copy-paste algorithm code between files.
+- **Trade-level PnL is only available on liquidation trades**: buy/sell/reduce trades in the backtest don't carry PnL (they're partial position changes). Only full liquidation (清仓) trades have meaningful PnL. When analyzing trade performance, group entries+exits into complete trade cycles (entry→exit), or analyze by liquidation type only. The strategy_analysis.py script handles this by categorizing liquidation types.
+- **Strategy analysis methodology**: to find optimization opportunities, analyze: (1) entry channel distribution (which channels are used most — if one dominates, conditions may be too loose), (2) stop-loss/take-profit distribution (what % of trades end in profit vs loss), (3) stop-loss effectiveness (do tiered stops actually prevent full liquidation, or do positions still deteriorate to tier 3?), (4) trailing stop timing (8% vs 15% trigger frequency — if 8% dominates, the trail line may be too tight), (5) never-triggered protections (hard stop 20% never firing suggests the logic is wrong).
 
 ## Code Quality Refactoring (2026-08-01) — All Files
 

@@ -438,9 +438,10 @@ class PositionInfo:
         profit_pct = self.profit_pct(price)
         if profit_pct >= 8 - 0.01 and not self.reached_8pct:
             self.reached_8pct = True
-            self.trailing_stop_price = self.avg_cost * 1.05
+            # 优化: 8%后不改止盈线，等15%后再设
         if profit_pct >= 15 - 0.01 and not self.reached_15pct:
             self.reached_15pct = True
+            self.trailing_stop_price = self.avg_cost * 1.05
         if self.reached_15pct and self.peak_price > 0:
             self.trailing_stop_price = self.peak_price * 0.95
 
@@ -1028,7 +1029,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
                     else:
                         rsi_ok = t["rsi"] is not None and t["rsi"] > 40
-                        rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
+                        rsi_minimal = t["rsi"] is not None and t["rsi"] > 40
 
                         if pos.build_phase == 0:
                             # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%
@@ -1056,7 +1057,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                             if action == "持有" and t["rsi"] is not None and t["rsi"] < 35 and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(Test抄底)")
                                 reason = f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5"
-                            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>30+站MA5) → 15%
+                            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5) → 15%
                             if action == "持有" and t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_minimal and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "15%(试探)")
                                 reason = f"试探建仓:15%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站上MA5)"
@@ -1069,7 +1070,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                             # ── 逆势补仓: 跌超3%允许第二次买入 ──
                             if pos.build_first_price > 0 and pos.add_count < 5:
                                 dip_pct = (price - pos.build_first_price) / pos.build_first_price
-                                if dip_pct < -0.03 and pos.can_buy_today(today_str, atr_pct) and t["macd_status"] not in ["死叉", "绿柱放大"]:
+                                if dip_pct < -0.03 and pos.can_buy_today(today_str, atr_pct) and t["macd_status"] not in ["死叉", "绿柱放大"] and (t["rsi"] is None or t["rsi"] < 40):
                                     pos.record_buy(today_str)
                                     pos.add_count += 1
                                     action = "买入"
