@@ -9,7 +9,7 @@
 - **入场**: 6通道（RSI抄底/趋势跟踪/突破入场/分批建仓/Test抄底/试探建仓）
 - **止损**: 均价止损10% + 硬止损20% + 分级减仓（破MA20→30% / DIF<0→30% / 趋势恶化→清仓）
 - **止盈**: 移动止盈(8%后成本+5%，15%后峰值回撤5%) + 硬止盈30% + 趋势止盈(红柱缩短+破MA5) + 破MA5卖活动仓
-- **优化**: 试探建仓RSI>40 / 8%后不改止盈线 / 补仓需RSI<40
+- **优化**: 试探建仓RSI>30 / 8%后不改止盈线 / 补仓需RSI<40
 
 ## 回测结果 (backtrader, 2021-08-01 → 2026-07-27)
 
@@ -32,6 +32,7 @@
 | `ths_client.py` | 同花顺客户端 |
 | `sentiment_check.py` | 市场情绪检查 |
 | `git_backup.sh` | 每日GitHub备份脚本 |
+| `requirements.txt` | Python依赖声明 |
 
 ## v3.3 更新 (2026-08-01)
 
@@ -41,9 +42,35 @@
 - 补充趋势止盈和破MA5卖活动仓到回测
 - 入场比例用总资金比例下单
 
+## v3.3.1 修复 (2026-08-01)
+
+### P0 严重Bug
+- **硬止损20%计算修复**: 减仓后用 `shares*peak_price` 算峰值市值导致止损失效，改为直接比较 `price < peak_price*0.80`
+- **撤单范围修复**: 5只ETF共享账户，撤销买单/卖单时误撤其他ETF的委托，改为按标的精确撤单
+
+### P1 重要Bug
+- **prev_macd_status更新时机修复**: 同一天多次运行时覆盖前一日状态，改为仅首次运行和收盘持久化时更新
+- **empty_days持久化修复**: 重启后趋势跟踪通道失效，`empty_days`/`empty_days_date` 加入序列化
+
+### P2 回测-实盘一致性
+- **RSI通道1条件统一**: 回测端 `rsi is None` 时允许入场，与实盘一致
+- **20日新高偏移修复**: 从 `[-22:-1]`(21根) 改为 `[-21:-1]`(20根)
+- **试探建仓RSI门槛独立**: `rsi_minimal` 从 `>40` 改为 `>30`，与通道4区分
+- **删除冗余already_traded_today检查**: `can_buy_today()` 已足够
+
+### P3 代码质量
+- **reduce_shares取整修复**: 不足100股时统一取整到100股
+- **回测指标O(n)优化**: WilderRSI和MACDStatus改为递推计算，每bar只算1次
+- **删除stop_cooldown死代码**: 设置但从未检查
+- **新增requirements.txt**: akshare, backtrader, pandas依赖声明
+- **舆情关键词精确化**: "ETF"→"中证2000ETF"等，避免误匹配
+
 ## 运行
 
 ```bash
+# 安装依赖
+pip install -r requirements.txt
+
 # 回测
 source ~/hermes-trading/.venv/bin/activate
 python3 backtest_bt.py

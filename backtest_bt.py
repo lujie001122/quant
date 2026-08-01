@@ -91,19 +91,25 @@ class WilderRSI(bt.Indicator):
 
     def __init__(self):
         self.addminperiod(self.p.period + 1)
+        self._avg_gain = None
+        self._avg_loss = None
 
     def next(self):
         n = self.p.period
-        closes = [self.data[-i] for i in range(n, -1, -1)]
-        gains, losses = [], []
-        for i in range(1, len(closes)):
-            d = closes[i] - closes[i-1]
-            gains.append(max(d, 0)); losses.append(max(-d, 0))
-        avg_g = sum(gains[:n]) / n; avg_l = sum(losses[:n]) / n
-        for i in range(n, len(gains)):
-            avg_g = (avg_g * (n - 1) + gains[i]) / n
-            avg_l = (avg_l * (n - 1) + losses[i]) / n
-        self.lines.rsi[0] = 100.0 if avg_l == 0 else round(100 - 100 / (1 + avg_g / avg_l), 2)
+        if self._avg_gain is None:
+            # 首次: 用SMA初始化
+            gains, losses = [], []
+            for i in range(1, n + 1):
+                d = self.data[-(n - i)] - self.data[-(n - i + 1)]
+                gains.append(max(d, 0)); losses.append(max(-d, 0))
+            self._avg_gain = sum(gains) / n
+            self._avg_loss = sum(losses) / n
+        else:
+            # 递推: 只用最新一个bar
+            d = self.data[0] - self.data[-1]
+            self._avg_gain = (self._avg_gain * (n - 1) + max(d, 0)) / n
+            self._avg_loss = (self._avg_loss * (n - 1) + max(-d, 0)) / n
+        self.lines.rsi[0] = 100.0 if self._avg_loss == 0 else round(100 - 100 / (1 + self._avg_gain / self._avg_loss), 2)
 
 
 class MACDStatus(bt.Indicator):
@@ -113,34 +119,61 @@ class MACDStatus(bt.Indicator):
 
     def __init__(self):
         self.addminperiod(self.p.slow + self.p.signal)
+        self._e12 = None; self._e26 = None; self._e9 = None
+        self._prev_dif = None; self._prev_dea = None; self._prev_hist = None
 
     def next(self):
         size = len(self.data)
-        min_needed = self.p.slow + self.p.signal
+        fast, slow, sig = self.p.fast, self.p.slow, self.p.signal
+        min_needed = slow + sig
+
         if size < min_needed:
             self.lines.status[0] = 0; return
-        # 只取最近min_needed条数据
-        closes = [self.data[-i] for i in range(min(size, min_needed + self.p.fast) - 1, -1, -1)]
-        fast, slow, sig = self.p.fast, self.p.slow, self.p.signal
-        e12 = sum(closes[:fast]) / fast; e26 = sum(closes[:slow]) / slow
-        difs = []
-        for i in range(len(closes)):
-            if i < fast: difs.append(e12 - e26); continue
-            e12 = closes[i] * (2/(fast+1)) + e12 * (1 - 2/(fast+1))
-            if i < slow: difs.append(e12 - e26); continue
-            e26 = closes[i] * (2/(slow+1)) + e26 * (1 - 2/(slow+1))
-            difs.append(e12 - e26)
-        e9 = difs[slow]; deas = []
-        for d in difs[slow+1:]:
-            e9 = d * (2/(sig+1)) + e9 * (1 - 2/(sig+1))
-            deas.append(e9)
-        if len(deas) < 2:
-            self.lines.status[0] = 0; return
-        d, e = difs[-1], deas[-1]; dp, ep = difs[-2], deas[-2]
-        h, hp = 2*(d-e), 2*(dp-ep)
-        self.lines.dif[0] = round(d, 4); self.lines.hist[0] = round(h, 4)
-        if d > e and dp <= ep: s = 1
-        elif d < e and dp >= ep: s = 2
+
+        if self._e12 is None:
+            # 初始化: 用SMA预热
+            closes = [self.data[-i] for i in range(min(size, min_needed + fast) - 1, -1, -1)]
+            self._e12 = sum(closes[:fast]) / fast
+            self._e26 = sum(closes[:slow]) / slow
+            difs = []
+            for i in range(len(closes)):
+                if i < fast:
+                    difs.append(self._e12 - self._e26); continue
+                self._e12 = closes[i] * (2/(fast+1)) + self._e12 * (1 - 2/(fast+1))
+                if i < slow:
+                    difs.append(self._e12 - self._e26); continue
+                self._e26 = closes[i] * (2/(slow+1)) + self._e26 * (1 - 2/(slow+1))
+                difs.append(self._e12 - self._e26)
+            self._e9 = difs[slow]
+            deas = []
+            for d in difs[slow+1:]:
+                self._e9 = d * (2/(sig+1)) + self._e9 * (1 - 2/(sig+1))
+                deas.append(self._e9)
+            if len(deas) < 2:
+                self.lines.status[0] = 0; return
+            # 保存前一个bar的值用于状态判断
+            self._prev_dif = difs[-2]; self._prev_dea = deas[-2]
+            self._prev_hist = 2 * (self._prev_dif - self._prev_dea)
+        else:
+            # 递推: 只用最新一个bar
+            c = self.data[0]
+            self._e12 = c * (2/(fast+1)) + self._e12 * (1 - 2/(fast+1))
+            self._e26 = c * (2/(slow+1)) + self._e26 * (1 - 2/(slow+1))
+            self._prev_dif = self.lines.dif[-1] if len(self.lines.dif) > 1 else self._e12 - self._e26
+            self._prev_dea = self.lines.dea[-1] if len(self.lines.dea) > 1 else self._e9
+            self._prev_hist = self.lines.hist[-1] if len(self.lines.hist) > 1 else 2 * (self._prev_dif - self._prev_dea)
+            self._e9 = (self._e12 - self._e26) * (2/(sig+1)) + self._e9 * (1 - 2/(sig+1))
+
+        d = self._e12 - self._e26
+        e = self._e9
+        h = 2 * (d - e)
+        dp, hp = self._prev_dif, self._prev_hist
+
+        self.lines.dif[0] = round(d, 4)
+        self.lines.hist[0] = round(h, 4)
+
+        if d > e and dp <= self._prev_dea: s = 1
+        elif d < e and dp >= self._prev_dea: s = 2
         elif d > e and h > hp: s = 3
         elif d > e and h < hp: s = 4
         elif d < e and h < hp: s = 5
@@ -197,10 +230,10 @@ class ETFStrategy(bt.Strategy):
                 "bought_today": False, "stop_level": 0,
                 "below_ma20": 0, "below_ma20_date": "",
                 "reached_8": False, "reached_15": False, "trail": 0.0,
-                "add_count": 0, "empty_days": 0, "stop_cooldown": False,
+                "add_count": 0, "empty_days": 0,
                 "cooldown_until": "", "peak_price": 0.0,
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
-                "pending_order": None,  # 跟踪挂单
+                "pending_order": None,
             }
 
         # 统计
@@ -291,13 +324,12 @@ class ETFStrategy(bt.Strategy):
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
         except: ps["cooldown_until"] = ""
-        ps["stop_cooldown"] = True
 
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
 
         for ps in self.ps.values():
-            ps["bought_today"] = False; ps["stop_cooldown"] = False
+            ps["bought_today"] = False
 
         for d in self.datas:
             name = d._name
@@ -362,10 +394,9 @@ class ETFStrategy(bt.Strategy):
                     self._full_liquidate_state(ps, date_str)
                     continue
 
-                # 硬止损20%
-                mkt_val = shares * price; peak_val = ps["peak_price"] * shares
-                if peak_val > 0 and mkt_val < peak_val * 0.80:
-                    self._close(d, f"硬止损20% mkt={mkt_val:.0f}")
+                # 硬止损20%: 价格从峰值回撤20%
+                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.80:
+                    self._close(d, f"硬止损20% peak={ps['peak_price']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 
@@ -378,11 +409,11 @@ class ETFStrategy(bt.Strategy):
 
                 if ps["below_ma20"] >= 2 and ps["stop_level"] == 0:
                     if self._sell(d, 30, f"止损1-30% MA20连续{ps['below_ma20']}日"):
-                        ps["stop_level"] = 1; ps["stop_cooldown"] = True; ps["peak_price"] = price
+                        ps["stop_level"] = 1; ps["peak_price"] = price
 
                 if ps["stop_level"] == 1 and dif_val < 0:
                     if self._sell(d, 30, "止损2-30% DIF<0"):
-                        ps["stop_level"] = 2; ps["stop_cooldown"] = True; ps["peak_price"] = price
+                        ps["stop_level"] = 2; ps["peak_price"] = price
 
                 if ps["stop_level"] == 2 and ms in ("死叉", "绿柱放大"):
                     self._close(d, f"止损3清仓 MACD{ms}")
@@ -409,8 +440,8 @@ class ETFStrategy(bt.Strategy):
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str):
                 entered = False
 
-                # 通道1: RSI抄底
-                if not entered and rsi_val is not None and rsi_val <= 80 and ms == "金叉":
+                # 通道1: RSI抄底 (RSI为None时允许,与实盘一致)
+                if not entered and (rsi_val is None or rsi_val <= 80) and ms == "金叉":
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 

@@ -73,16 +73,20 @@ class THSClient:
     def _revoke_pending(self, stock_code, direction):
         """撤销同标的同方向的未成交挂单
         direction: '买入' 或 '卖出'
-        用revokeAllBuyEntrust/revokeAllSellEntrust批量撤更可靠。
+        只撤指定标的的挂单，避免影响其他ETF。
         """
         try:
-            if "买" in direction:
-                self._e.revokeAllBuyEntrust()
-            else:
-                self._e.revokeAllSellEntrust()
-            time.sleep(0.5)
+            entrust = self._e.getEntrust()
+            if not entrust.get("status"):
+                return
+            for item in entrust.get("info", []):
+                if (item.get("stock_code") == stock_code
+                        and item.get("direction") == direction
+                        and item.get("status") == "未成交"):
+                    self._e.revokeEntrust(item["entrust_no"])
+                    time.sleep(0.3)
         except Exception as e:
-            logger.warning(f"撤单失败({direction}): {e}")
+            logger.warning(f"撤单失败({stock_code} {direction}): {e}")
 
     def buy(self, stock_code, amount, price):
         """限价买入，返回 (status, contractNo)

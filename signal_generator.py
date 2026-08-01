@@ -484,10 +484,14 @@ class PositionInfo:
             self.cooldown_until = None
 
     def reduce_shares(self, pct, price=0.0):
-        """减仓指定比例(0-100, 百分比)"""
+        """减仓指定比例(0-100, 百分比), 取整到100股"""
         reduce_count = int(self.shares * pct / 10000) * 100
         if reduce_count < 100:
-            reduce_count = int(self.shares * pct / 100)  # 小数量时不用100取整
+            # 小数量时向下取整到100的整数倍,不足100则取全部
+            reduce_count = int(self.shares * pct / 100)
+            reduce_count = reduce_count // 100 * 100
+            if reduce_count < 100 and self.shares >= 100:
+                reduce_count = 100
         if reduce_count > self.shares:
             reduce_count = self.shares
         self.shares -= reduce_count
@@ -525,6 +529,8 @@ class PositionInfo:
             "prev_rsi": self.prev_rsi,
             "prev_macd_status": self.prev_macd_status,
             "liquidate_dates": self.liquidate_dates,
+            "empty_days": self.empty_days,
+            "empty_days_date": self.empty_days_date,
             "daily_trade_log": {today_str: self.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
         }
 
@@ -547,6 +553,8 @@ class PositionInfo:
         self.prev_macd_status = data.get("prev_macd_status")
         self.liquidate_dates = data.get("liquidate_dates", [])
         self.last_grid_trigger = data.get("last_grid_trigger")
+        self.empty_days = data.get("empty_days", 0)
+        self.empty_days_date = data.get("empty_days_date")
 
 
 def t0_buy_score(rsi, macd_status, vol_ratio_5min, vol_ratio_120):
@@ -819,12 +827,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 label = "移动止盈8%(成本+5%)" if not pos.reached_15pct else "移动止盈15%(峰值回撤5%)"
                 stop_actions.append((f"{label}:触线{pos.trailing_stop_price:.3f}", "liquidate_trailing"))
 
-            # ── 硬止损20%: 从市值峰值回撤20%清仓 ──
-            if pos.peak_price > 0 and pos.shares > 0:
-                mkt_val = pos.shares * price
-                peak_val = pos.peak_price * pos.shares  # 近似:用peak_price*shares
-                if peak_val > 0 and mkt_val < peak_val * 0.80:
-                    stop_actions.append((f"硬止损20%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_20pct"))
+            # ── 硬止损20%: 从价格峰值回撤20%清仓 ──
+            if pos.peak_price > 0 and price < pos.peak_price * 0.80:
+                stop_actions.append((f"硬止损20%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_20pct"))
 
             # Level 1a: 连续2天破MA20 → 减30%总仓(按天累加，同一天多次运行只算1次)
             if t["ma20"] and pos.stop_level == 0:
@@ -921,8 +926,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             t0_signal = "有做T信号但无底仓"
 
         pos.prev_rsi = t["rsi"]
-        # end-of-day: 更新prev_macd_status(和backtest的prev_ms一致)
-        pos.prev_macd_status = t["macd_status"]
+        # prev_macd_status只在日期变化时更新(同一天多次运行不覆盖)
+        if pos.prev_macd_status is None:
+            pos.prev_macd_status = t["macd_status"]
 
         # Level 3: 网格触达(仅用于已持仓标的的网格加仓，不触发建仓)
         grid_signal, grid_weight = evaluate_grid_signals(price, base, spacing, pos.grid_frozen)
@@ -1029,7 +1035,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
                     else:
                         rsi_ok = t["rsi"] is not None and t["rsi"] > 40
-                        rsi_minimal = t["rsi"] is not None and t["rsi"] > 40
+                        rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
 
                         if pos.build_phase == 0:
                             # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%
@@ -1045,7 +1051,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 # 检查20日新高(不含当日)
                                 if len(all_klines.get(code, [])) >= 21:
                                     # 不含当日: 用倒数第2到第22根(排除最后一根=当日)
-                                    closes_20 = [k["close"] for k in all_klines[code][-22:-1]]
+                                    closes_20 = [k["close"] for k in all_klines[code][-21:-1]]
                                     if closes_20 and price > max(closes_20):
                                         action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(突破入场)")
                                         reason = f"突破入场:20日新高+金叉"
@@ -1138,12 +1144,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 pos.empty_days += 1
                 pos.empty_days_date = today_str
 
-        # 今日已交易过 → 买入信号降级（止损止盈不降级）
-        if action == "买入" and code in already_traded_today:
-            action = "持有(今日已操作)"
-            position_ratio = "0%"
-            reason = f"今日已交易({pos.base_price}建仓)，跳过买入"
-
         signals_output[code] = {
             "price": f"{price:.3f}",
             "rsi": t["rsi"],
@@ -1212,6 +1212,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         try:
             state_to_save = {}
             for code, pos in positions.items():
+                # 收盘后更新prev_macd_status供次日使用
+                if code in all_tech:
+                    pos.prev_macd_status = all_tech[code]["macd_status"]
                 state_to_save[code] = pos.to_dict(today_str)
             pf_data["_signal_state"] = state_to_save
             with open(pf_path, "w") as _f:
