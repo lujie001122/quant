@@ -93,10 +93,10 @@ See references/wechat-publishing.md for WeChat公众号 publishing setup (md2wec
 3. Breakout: 20-day high (excl. today) + MACD golden cross, 30%
 4. Batch build: golden cross / red bar expanding + RSI>40 + above MA5, 30%
 5. Test bottom: RSI<35 + green bar shrinking + above MA5, 30%
-6. Probe: green bar shrinking / oscillation + RSI>30 + above MA5, 15%
+6. Probe: green bar shrinking / oscillation + RSI>40 + above MA5, 15%
 
 Confirm add (build_phase==1→2): 70% (AO momentum filter required — now properly enforced with if/elif)
-Dip add (build_phase==1, inside correct branch): 15% per add, max 5 adds
+Dip add (build_phase==1, inside correct branch): 15% per add, max 5 adds, RSI<40 required
 
 ### Stop-loss (priority order) — v3.1 (all 20 audit bugs fixed)
 1. Average price stop 10%: unconditional clear
@@ -109,7 +109,7 @@ Dip add (build_phase==1, inside correct branch): 15% per add, max 5 adds
 
 ### Take-profit
 - Hard 30%: base +30% clear
-- Trailing: 8% -> trail=cost+5%, 15% -> trail=peak-5%
+- Trailing: 8% → mark reached_8pct (no trail change), 15% → trail=cost+5%, then peak-5%
 - Trend: red bar shrinking + break MA5, sell 20%
 
 ## User Preferences (MUST follow)
@@ -180,6 +180,8 @@ All 20 bugs from the audit have been fixed in signal_generator.py v3.1 rewrite. 
 
 **Backtest baseline after code quality refactoring (2026-08-01, cooldown+peak_price bug fixes)**: 5yr +75.34%, drawdown 20.00%, Calmar 3.77, Sharpe 1.02, win rate 33.5%, profit factor 2.80. The lower results are CORRECT — old baseline contained bugs (COOLDOWN_DAYS=1 in backtest vs 2 in signal_generator; peak_price=0 on reduce disabled hard stop 20%). Also uses sample std dev for Sharpe and total profit factor (both are more correct statistics).
 
+**Backtest baseline after v3.2 optimization (2026-08-01, 3 strategy changes APPLIED)**: 5yr +92.91%, drawdown 14.66%, Calmar 6.34, Sharpe 1.21, win rate 31.7%, profit factor 3.60. Three changes applied after systematic optimization testing: (1) probe entry RSI>30→40, (2) trailing stop 8% no longer sets trail line (only at 15%), (3) dip-add requires RSI<40. Two other optimizations tested and REJECTED: (a) stop-level 1 reduce 50% instead of 30% — too aggressive, -2.57% return; (b) avg-cost stop 15% instead of 10% — too loose, -32.21% return.
+
 **Strategy deep analysis (2026-08-01, 894 trades over 5yr)**:
 | Metric | Value | Implication |
 |--------|-------|-------------|
@@ -190,12 +192,14 @@ All 20 bugs from the audit have been fixed in signal_generator.py v3.1 rewrite. 
 | 移动止盈8% vs 15% | 21:15 | Most positions peak at 8% then retrace — 8% trail line too tight |
 | 均价止损10% | 15次 | Deep bag-holds that hit -10% from average cost |
 
-**5 optimization directions identified (NOT yet implemented — need backtest validation)**:
-1. **Probe entry conditions too loose** — RSI>30+站MA5+绿柱缩短/震荡 is almost always true. Suggest RSI>40 or DIF>0 filter.
-2. **Tiered stop not aggressive enough** — 30%+30% still leaves 40% that deteriorates. Suggest 50% first reduction.
-3. **Hard stop 20% never triggers** — after tiered stop, remaining shares are too few for market-value-based 20% drawdown. Suggest price-based stop (e.g. avg_cost -15%).
-4. **8% trailing stop too early** — 8%→trail=cost+5% means only 3% profit window. Suggest: no trail change at 8%, only enable peak-5% at 15%.
-5. **Dip-add (补仓) too aggressive** — 15% per add in falling market. Suggest RSI<40 requirement for dip-add.
+**5 optimization directions identified (3 APPLIED, 2 REJECTED — 2026-08-01)**:
+1. **Probe entry RSI>30→40** — ✅ APPLIED. +2.85% return, fewer low-quality entries. 试探建仓 was 74% of entries; conditions too loose.
+2. **Tiered stop 1 reduce 50% instead of 30%** — ❌ REJECTED. -2.57% return. Too aggressive, reduces position before rebounds.
+3. **Avg-cost stop 15% instead of 10%** — ❌ REJECTED. -32.21% return. Stop too loose, deep bag-holds.
+4. **8% trailing stop: no trail change at 8%, only at 15%** — ✅ APPLIED. +17.96% return (biggest single improvement). 8%→trail=cost+5% was only 3% profit window; removing it lets profits run.
+5. **Dip-add (补仓) requires RSI<40** — ✅ APPLIED. +18.08% return. Prevents counter-trend adds in non-oversold conditions.
+
+**Combined effect of ①④⑤**: 5yr +92.91%/14.66%dd/Calmar 6.34/Sharpe 1.21. Return improved from +75.34% to +92.91%, drawdown from 20.00% to 14.66%.
 
 **Analysis script**: `~/hermes/scripts/strategy_analysis.py` — runs the full backtest and produces channel distribution, stop-loss/take-profit breakdown, yearly stats, and key findings.
 
@@ -500,6 +504,8 @@ cua-driver was installed then uninstalled per user request. User chose Evolving 
 - **Duplicate function definitions are the most dangerous silent drift risk**: when two files define the same function (e.g. t0_buy_score in both signal_generator.py and intraday_t_once.py), modifying one without the other causes algorithm divergence. The fix is always to import from the canonical source — never copy-paste algorithm code between files.
 - **Trade-level PnL is only available on liquidation trades**: buy/sell/reduce trades in the backtest don't carry PnL (they're partial position changes). Only full liquidation (清仓) trades have meaningful PnL. When analyzing trade performance, group entries+exits into complete trade cycles (entry→exit), or analyze by liquidation type only. The strategy_analysis.py script handles this by categorizing liquidation types.
 - **Strategy analysis methodology**: to find optimization opportunities, analyze: (1) entry channel distribution (which channels are used most — if one dominates, conditions may be too loose), (2) stop-loss/take-profit distribution (what % of trades end in profit vs loss), (3) stop-loss effectiveness (do tiered stops actually prevent full liquidation, or do positions still deteriorate to tier 3?), (4) trailing stop timing (8% vs 15% trigger frequency — if 8% dominates, the trail line may be too tight), (5) never-triggered protections (hard stop 20% never firing suggests the logic is wrong).
+- **Optimization testing methodology (v3.2 lesson)**: test each optimization independently first, then combine only the positive ones. Use a dedicated test script (optimize_test.py) that runs the same backtest logic with feature flags. Test per-change: (1) probe RSI>40, (2) stop-level 1 reduce 50%, (3) avg-cost stop 15%, (4) 8% no trail change, (5) dip-add RSI<40. Some changes that look good in theory (e.g. wider stop-loss, more aggressive reduction) actually hurt returns — always let the data decide. The biggest wins came from fixing the most obvious problems (loose entry conditions, premature trailing stop, aggressive counter-trend adds) rather than adding new complexity.
+- **v3.2 optimization results (2026-08-01, APPLIED)**: 3 changes applied: (1) probe RSI>30→40 (+2.85% return), (2) trailing stop 8% no longer sets trail line (+17.96% return), (3) dip-add requires RSI<40 (+18.08% return). Combined: return +75.34%→+92.91%, drawdown 20.00%→14.66%, Calmar 3.77→6.34. Two changes REJECTED: stop-level 1 reduce 50% (-2.57% return) and avg-cost stop 15% (-32.21% return).
 
 ## Code Quality Refactoring (2026-08-01) — All Files
 
