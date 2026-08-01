@@ -1,7 +1,7 @@
 ---
 name: etf-trading
 description: "5-ETF quant trading - signals, backtesting, cron monitoring."
-version: 1.0
+version: 1.1
 tags: [etf, trading, quantitative, cron, macd, rsi]
 ---
 
@@ -16,48 +16,54 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 - Data source: Sina API (primary) + akshare (fallback)
 - Python 3.11, venv at ~/hermes-trading/.venv/
 - Fund model: shared 220k pool. Position ratios are fractions of TOTAL fund (e.g. 30%=22万×30%=6.6万). User explicitly corrected: "这不是共享资金池，这是仓位管理" and "仓位上限也不用管" — position management, not capital allocation. **CRITICAL**: `_buy(data, pct)` uses `target_value = self.broker.getvalue() * pct` (total fund × ratio). User explicitly corrected "应该是按比例，不要写死" — do NOT hardcode per-ETF allocation (4.4万) or per-ETF 20% base. The ratio approach is: total fund × pct, with broker handling fund constraints naturally.
-- **Git repo**: `git@github.com:lujie001122/quant.git` (main branch). Contains all strategy code + skill/SKILL.md + references/. Source files live at ~/hermes/scripts/ — push to repo after significant changes.
-- **GitHub backup rule**: push to GitHub after every confirmed strategy file change. Daily cron backup at 21:00 runs git_backup.sh (syncs ~/hermes/scripts/ + skill files to ~/quant/ then pushes). Local repo at ~/quant/.
+- **Git repo**: `git@github.com:lujie001122/quant.git` (main branch). Located at `~/Documents/code/quant/` (migrated 2026-08-01 from `~/quant/`). Source files live here — use `~/Documents/code/quant/` as the working directory for all strategy code.
+- **Code path**: `~/Documents/code/quant/` (all strategy files, git repo)
+- **AI workspace**: `~/Documents/AI/` (analysis files, reports, experiments)
+- **GitHub backup rule**: push to GitHub after every confirmed strategy file change. Daily cron backup at 21:00 runs `git_backup.sh` from the repo root (syncs `~/Documents/code/quant/` then pushes).
 - **Security**: credentials (AppID, AppSecret, passwords, tokens, keys) must NEVER be uploaded to GitHub or any external platform. Store locally only.
+- **Claude Code**: v2.1.220 installed for coding delegation. Use `claude -p` print mode for complex coding tasks. Settings at `~/.claude/settings.json`.
 
 ## File Layout
 
-| File | Location | Purpose |
-|------|----------|---------|
-| backtest_bt.py | ~/hermes/scripts/ | Backtrader backtest engine (v3.3, 5-ETF shared pool, 6 channels + trend profit sell + MA5 active sell, Analyzers, warmup data, position ratio=total fund×pct) |
-| backtest_5etf_1m.py | DELETED | Legacy hand-written backtest — removed 2026-08-01, replaced by backtest_bt.py (backtrader) |
-| signal_generator.py | ~/hermes/scripts/ | Live signal generator v3.1 (~1200 lines, refactored 2026-08-01: CODE_MAP/INVERTED_WEIGHTS module constants, _enter_position/_get_daily_log/to_dict/from_dict methods, _safe_float helper, fetch_klines_120min removed, t0 scoring functions now shared with intraday_t_once) |
-| ~~engine.py~~ | ~~deleted~~ | Removed 2026-08-01 — signal_generator.py fully replaces it |
-| ~~indicators.py~~ | ~~deleted~~ | Removed 2026-08-01 — MACD was inconsistent with signal_generator; intraday_t_once.py now imports from signal_generator |
-| ~~fetch_klines_120min~~ | ~~deleted~~ | Removed 2026-08-01 — was a 1-line wrapper around fetch_klines_daily; callers now use fetch_klines_daily directly |
-| intraday_t_once.py | ~/hermes/scripts/ | Intraday T+0 module v2.1 (t0 scoring functions + CODE_MAP imported from signal_generator — no more duplicate definitions) |
-| sentiment_check.py | ~/hermes/scripts/ | Sina news sentiment v3.1 (logging, KeyError protection, bare except fix, threshold constants) |
-| ths_client.py | ~/hermes/scripts/ | THSClient v3.1.5 (logging, _query_with_retry, exception handling in buy/sell) |
-| portfolio.json | ~/hermes/scripts/ | Persistent position state |
-| strategy_analysis.py | ~/hermes/scripts/ | Strategy deep analysis — channel distribution, stop-loss/take-profit breakdown, yearly stats, key findings (runs full backtest internally) |
+**Single unified path: `~/Documents/code/quant/`** (Git repo + cron workdir + all strategy files). Migrated 2026-08-01 from `~/hermes/scripts/` and `~/quant/`.
 
-Cron scripts (must live in ~/.hermes/scripts/):
-- etf_premarket.sh - pre-market signal, runs at 9:00 weekdays
-- etf_intraday.sh - intraday monitoring, runs every 30min during trading hours
-- git_backup.sh - daily GitHub backup, syncs ~/hermes/scripts/ + skill files to ~/quant/ and pushes
+| File | Purpose |
+|------|---------|
+| backtest_bt.py | Backtrader backtest engine v3.3 (5-ETF shared pool, position ratio=total fund×pct) |
+| signal_generator.py | Live signal generator v3.1 (~1200 lines, refactored) |
+| intraday_t_once.py | Intraday T+0 module v2.1 |
+| sentiment_check.py | Sina news sentiment v3.1 |
+| ths_client.py | THSClient v3.1.5 (Evolving wrapper) |
+| portfolio.json | Persistent position state |
+| sentiment_block.json | Sentiment-based trading blocklist |
+| git_backup.sh | Daily GitHub sync script |
+| etf_premarket.sh | Premarket data fetch |
+| etf_intraday.sh | Intraday signal trigger |
+
+**AI workspace: `~/Documents/AI/`**:
+| File | Purpose |
+|------|---------|
+| etf-analysis/optimize_test.py | Per-optimization verification script |
+| etf-analysis/strategy_analysis.py | Strategy deep analysis |
+| etf-analysis/audit_report.md | Code audit report |
 
 ## Cron Jobs
 
 | Name | Schedule | Mode | Behavior |
 |------|----------|------|----------|
-| ETF舆情早报 | 30 8 * * 1-5 | Agent | Runs sentiment_check.py, analyzes 5 sectors for negative news, writes `sentiment_block.json` if any blocklisted |
-| ETF交易监控 | 0,30 10-14 * * 1-5 | Agent | Runs signal_generator.py, checks sentiment_block.json for blocked ETFs, executes trades via THSClient (which wraps Evolving with activate + revoke-before-order + limit orders), silent when no signal |
-| ETF复盘 | 0 20 * * 1-5 | Agent | Fetches holdings/account/entrust from 同花顺, gets ETF prices via akshare, analyzes trade quality + sector moves |
-| ETF策略GitHub备份 | 0 21 * * * | Agent | Runs git_backup.sh, syncs all strategy files + skill to ~/quant/ and pushes to GitHub, silent when no changes |
+| ETF舆情早报 | 30 8 * * 1-5 | Agent | Sentiment check, writes block.json |
+| ETF交易监控 | 0,30 10-14 * * 1-5 | Agent | Signal generation + trade execution via THSClient |
+| ETF复盘 | 0 20 * * 1-5 | Agent | Daily review: holdings/account/entrust |
+| ETF策略GitHub备份 | 0 21 * * * | Agent | Runs git_backup.sh → pushes to GitHub |
 
 All use agent mode (no_agent=false, LLM processes and decides). Deliver to origin.
 
 **Sentiment-trade integration**: The 舆情早报 job writes `sentiment_block.json` at 8:30. The 交易监控 job reads this file before placing orders — blocked ETFs can only sell/reduce/stop-loss, not buy/add. The file is cleared when no blocklist applies.
 
 **Cron setup notes**:
-- For script-only jobs: scripts must live in `~/.hermes/scripts/` (cron only accepts relative filenames from this directory)
-- Working copies also at `~/hermes/scripts/` — keep both in sync
+- All 4 cron jobs have `workdir=/Users/lujie/Documents/code/quant/` — unified with Git repo
 - Agent-mode jobs use `enabled_toolsets` to limit token overhead (e.g. ["terminal", "file"] for trading)
+- `git_backup.sh` in the repo syncs strategy files to GitHub; cron runs it directly from the workdir
 
 ## Strategy Logic (Quick Reference)
 
@@ -68,6 +74,7 @@ See references/daily-review-format.md for the daily review (复盘) report forma
 See references/t0-scoring-audit.md for the T+0 scoring rewrite details (6 bugs found, same-day conflict fix, verification methodology).
 See references/wechat-publishing.md for WeChat公众号 publishing setup (md2wechat tool, credentials, IP whitelist, integration).
 See references/backtrader-migration.md for backtrader migration notes (custom indicators, COC mode, Analyzer usage, execution price differences).
+See references/path-migration.md for the 2026-08-01 path migration and Claude Code setup.
 
 ### T+0 (做T) — v3.1.1 (2026-08-01)
 
@@ -283,10 +290,10 @@ When user asks to evaluate a new ETF code (e.g. "512690怎么样", "516780回测
 
 ## Running Single-ETF Backtest
 
-The backtest script (`backtest_5etf_1m.py`) hardcodes all 5 ETFs. To backtest a single ETF:
-1. **Preferred**: use an inline Python script (see "Evaluating New ETFs" above) — embeds the full strategy logic, avoids file copy issues.
-2. **Alternative**: Copy the script: `cp backtest_5etf_1m.py backtest_<code>_1y.py`, modify `TRADE_START`/`CODES`/`INIT_CASH`, run with venv.
-3. Do NOT modify the original script — always work on a copy or inline script
+To backtest a single ETF with the backtrader engine:
+1. **Preferred**: use an inline Python script that runs the strategy against a single ETF's data via backtrader.
+2. **Alternative**: modify `CODES` dict in backtest_bt.py to include only the target ETF.
+3. Do NOT modify the original script — always work on a copy.
 
 ## WeChat Official Account Publishing
 
