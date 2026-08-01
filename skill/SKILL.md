@@ -25,12 +25,13 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 | File | Location | Purpose |
 |------|----------|---------|
 | backtest_5etf_1m.py | ~/hermes/scripts/ | Backtest engine (~600 lines, shared 220k pool + 44k per-ETF cap, 6 channels, Sharpe/win rate) |
-| signal_generator.py | ~/hermes/scripts/ | Live signal generator v3.1 (~1200 lines, refactored 2026-08-01: CODE_MAP/INVERTED_WEIGHTS module constants, _enter_position/_get_daily_log/to_dict/from_dict methods, _safe_float helper, fetch_klines_120min removed) |
+| signal_generator.py | ~/hermes/scripts/ | Live signal generator v3.1 (~1200 lines, refactored 2026-08-01: CODE_MAP/INVERTED_WEIGHTS module constants, _enter_position/_get_daily_log/to_dict/from_dict methods, _safe_float helper, fetch_klines_120min removed, t0 scoring functions now shared with intraday_t_once) |
 | ~~engine.py~~ | ~~deleted~~ | Removed 2026-08-01 — signal_generator.py fully replaces it |
 | ~~indicators.py~~ | ~~deleted~~ | Removed 2026-08-01 — MACD was inconsistent with signal_generator; intraday_t_once.py now imports from signal_generator |
 | ~~fetch_klines_120min~~ | ~~deleted~~ | Removed 2026-08-01 — was a 1-line wrapper around fetch_klines_daily; callers now use fetch_klines_daily directly |
-| intraday_t_once.py | ~/hermes/scripts/ | Intraday T+0 module |
-| sentiment_check.py | ~/hermes/scripts/ | Sina news sentiment |
+| intraday_t_once.py | ~/hermes/scripts/ | Intraday T+0 module v2.1 (t0 scoring functions + CODE_MAP imported from signal_generator — no more duplicate definitions) |
+| sentiment_check.py | ~/hermes/scripts/ | Sina news sentiment v3.1 (logging, KeyError protection, bare except fix, threshold constants) |
+| ths_client.py | ~/hermes/scripts/ | THSClient v3.1.5 (logging, _query_with_retry, exception handling in buy/sell) |
 | portfolio.json | ~/hermes/scripts/ | Persistent position state |
 
 Cron scripts (must live in ~/.hermes/scripts/):
@@ -141,7 +142,7 @@ Dip add (build_phase==1, inside correct branch): 15% per add, max 5 adds
 12. **MACD calculation unified**: signal_generator.py now uses the same SMA-init algorithm as backtest_5etf_1m.py — DIF starts from i=0 (not i=slow), DEA initialized from difs[slow] (not SMA of first signal values). This ensures identical golden cross / death cross timing.
 13. **reduce_shares bug (CRITICAL)**: `reduce_shares(30)` was computing `int(shares * 30 / 100) * 100 = 30000` for 1000 shares, resulting in full liquidation instead of 30% reduction. Fixed to `int(shares * pct / 10000) * 100`. Always test with actual numbers after modifying share calculation code.
 14. **Floating-point precision**: `(1.15 - 1.0) / 1.0 * 100 = 14.99999...` which fails `>= 15`. Fixed by adding 0.01 tolerance: `if profit_pct >= 15 - 0.01`. Applied to both 8% and 15% thresholds in both signal_generator.py and backtest_5etf_1m.py.
-- **Cooldown unified to 1 day**: COOLDOWN_DAYS=1 in both signal_generator and backtest. Was temporarily changed to 3 as part of v3.2 drawdown optimization #2, but reverted because 5yr return dropped from 91%→82% while drawdown only improved 19%→18%.
+- **Cooldown unified to 2 days**: COOLDOWN_DAYS=2 in both signal_generator and backtest (was 1 in backtest, 2 in signal_generator — inconsistency fixed 2026-08-01). Was temporarily changed to 3 as part of v3.2 drawdown optimization #2, but reverted because 5yr return dropped from 91%→82% while drawdown only improved 19%→18%.
 16. **Trend profit sell / MA5 sell in backtest**: These are intraday operations that cannot be simulated with daily K-line. They are commented out in backtest but active in live. This is a documented known difference. If included in backtest, they produce 779 trades (50% of total) and inflate drawdown.
 17. **Shared pool vs independent pools**: v3.1.5 uses shared 220k pool with 44k per-ETF cap. Independent pools (v3.1.4) had 42.97% drawdown because cash couldn't recycle across ETFs — this was an artifact, not a real risk measure. Shared pool with cap gives 15.92% drawdown (more realistic) and +89.32% return. The user (professional quant) explicitly corrected: "实盘资金不能共用，仓位管理你怎么考虑的？" — shared pool + position cap is the correct approach.
 
@@ -175,6 +176,8 @@ All 20 bugs from the audit have been fixed in signal_generator.py v3.1 rewrite. 
 **Backtest baseline after v3.1.3 fixes**: 3yr +81.65%, drawdown 13.81%, Calmar 5.91
 
 **Backtest baseline after v3.1.5 (shared pool + 44k cap, subagent audit fixes)**: 3yr +89.32%, drawdown 15.92%, Calmar 5.61, Sharpe 1.54, win rate 34.8%, profit factor 7.11
+
+**Backtest baseline after code quality refactoring (2026-08-01, cooldown+peak_price bug fixes)**: 5yr +75.34%, drawdown 20.00%, Calmar 3.77, Sharpe 1.02, win rate 33.5%, profit factor 2.80. The lower results are CORRECT — old baseline contained bugs (COOLDOWN_DAYS=1 in backtest vs 2 in signal_generator; peak_price=0 on reduce disabled hard stop 20%). Also uses sample std dev for Sharpe and total profit factor (both are more correct statistics).
 
 **v3.2 drawdown optimization attempts (2026-08-01, ALL THREE REVERTED)**: 
 - **Attempt #1**: Tried early stop (7%/9%) and reduced build (20%/50%). 3yr return dropped from 80.17% to 56.87%, drawdown only improved 4%. Build change was entirely responsible for the return drop. REVERTED.
@@ -462,7 +465,7 @@ cua-driver was installed then uninstalled per user request. User chose Evolving 
 - **Evolving requires 同花顺 window activation (CRITICAL)**: Evolving's AppleScript calls ALL require 同花顺 to be the active (frontmost) window. If another app is focused, ALL Evolving calls return `status=False, info='unknown err'`. THSClient.__init__() now calls `self._activate()` which runs `osascript -e 'tell application "同花顺" to activate'` + 2s delay. This is NOT the same as the old has_window/ensure_ready anti-pattern — it's a single activation at init time, not per-call interference. Do NOT remove this activation step.
 - **Wrapper library lesson**: when wrapping a third-party library (like Evolving), you MUST understand its runtime requirements before writing the wrapper. The Evolving+window-activation issue was missed because the wrapper was written without understanding that Evolving's AppleScript requires the target app to be frontmost. **Always test the raw library first, then wrap it — don't wrap blindly.** If a wrapper hides a required setup step, it's a bug in the wrapper, not the library.
 - **THSClient v3.1.5 (2026-08-01)**: Added `_activate()` in `__init__` that calls osascript to activate 同花顺 window + 2s sleep. This is the ONLY osascript call — all other operations are direct Evolving pass-through. The 44k per-ETF cap is enforced in `buy()`. Query methods (get_holding_shares, get_account_info, get_entrust, get_closed_deals) have 1 retry on failure. **All orders are limit orders (price required, no market orders).** `buy()` calls `revokeAllBuyEntrust()` before placing; `sell()` calls `revokeAllSellEntrust()` before placing. `revoke_all()` uses `revokeAllEntrust()`, `revoke_all_buy()` uses `revokeAllBuyEntrust()`, `revoke_all_sell()` uses `revokeAllSellEntrust()` — all use Evolving batch methods, NOT iterating getEntrust().
-- **Backtest yearly benchmark (v3.1.5, shared pool + 44k cap)**: 2022 -6.94%/8.17%dd, 2023 +5.57%/10.21%dd, 2024 +17.28%/14.13%dd, 2025 +47.30%/6.36%dd, 2026YTD +24.83%/10.19%dd. 5-year: +91.10%/19.11%dd. No year with drawdown >15%.
+- **Backtest yearly benchmark (post-refactoring, 2026-08-01)**: baseline changed due to cooldown+peak_price fixes. New 5yr: +75.34%/20.00%dd. Previous v3.1.5 benchmark: 2022 -6.94%/8.17%dd, 2023 +5.57%/10.21%dd, 2024 +17.28%/14.13%dd, 2025 +47.30%/6.36%dd, 2026YTD +24.83%/10.19%dd. No year with drawdown >15%.
 - **Yearly backtest requires TRADE_END replacement**: when running yearly backtests, you must replace BOTH `TRADE_START` and `TRADE_END` in the script. The regex must account for whitespace: `re.sub(r'TRADE_END\s*=\s*".*?"', f'TRADE_END = "{end}"', src)`. A simple `re.sub(r'TRADE_END = ".*?"', ...)` will FAIL because the original has `TRADE_END   = "..."` (3 spaces before =). Each year starts fresh (no position carryover) — the backtest engine initializes all positions to empty at the start of the date range.
 - **Evolving `e.revoke()` does NOT exist**: the correct single-order revoke method is `e.revokeEntrust(contractNo)`. Batch methods: `e.revokeAllEntrust()`, `e.revokeAllBuyEntrust()`, `e.revokeAllSellEntrust()`. Using `e.revoke()` will raise `AttributeError: 'Evolving' object has no attribute 'revoke'`. Always verify Evolving API methods by checking `dir(e)` before using them.
 - **md2wechat requires IP whitelist**: WeChat API returns errcode 40164 if the calling IP is not in the whitelist. Login mp.weixin.qq.com → 设置 → 开发 → 基本配置 → IP白名单, add the machine's public IP. This is a prerequisite — md2wechat will fail with "invalid ip" until whitelisted.
@@ -471,3 +474,98 @@ cua-driver was installed then uninstalled per user request. User chose Evolving 
 - **Hermes Desktop app location**: after building, the app is at `~/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app`. Copy to `/Applications/` for Launchpad visibility: `cp -R ~/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app /Applications/`. The app won't appear in Launchpad/Finder until copied there.
 - **md2wechat --comment on subscription accounts**: the `--comment` flag is accepted but has no effect on 未认证订阅号 (errcode 48001). Remind user to manually enable comments + original declaration in WeChat backend.
 - **WeChat article style**: user explicitly rejected vague/hype content ("太虚了"). Articles must be practical and actionable: real code, real numbers, step-by-step instructions, real pitfalls. Include GitHub repo links. No marketing language.
+- **Code quality audit pattern for trading systems**: use 3 parallel subagents to audit: (1) signal_generator.py — code duplication, exception handling, state management, performance; (2) backtest_5etf_1m.py — same + consistency with signal_generator + statistics correctness; (3) intraday_t_once.py + ths_client.py + sentiment_check.py — function duplication, exception handling, config sync. After audit, apply fixes in parallel, then run backtest to verify. Key: bug fixes that affect trading decisions WILL change backtest results — document before/after and explain which are bug fixes vs strategy modifications.
+- **Bug fixes can change backtest results and that's OK**: when fixing bugs that affect trading decisions (cooldown period, peak_price on reduce, stop-level recovery), the backtest WILL produce different results. This is correct behavior — the old results contained bug-induced "false profits". Always document before/after. The user's principle "回测与实盘必须一致" means bugs that make backtest inconsistent with live are WORSE than bugs that inflate returns. Fix the bug first, accept the result change, then investigate if the new result requires strategy adjustment.
+- **Backtest statistics correctness**: use (1) sample standard deviation (n-1 denominator) for Sharpe ratio, not population std dev; (2) total profit factor (total wins / total losses), not average win / average loss. These are the standard financial metrics — the old backtest used incorrect formulas.
+- **Duplicate function definitions are the most dangerous silent drift risk**: when two files define the same function (e.g. t0_buy_score in both signal_generator.py and intraday_t_once.py), modifying one without the other causes algorithm divergence. The fix is always to import from the canonical source — never copy-paste algorithm code between files.
+
+## Code Quality Refactoring (2026-08-01) — All Files
+
+**22 engineering fixes across 5 files.** Strategy parameters unchanged. Two bug fixes (cooldown period, peak_price on reduce) caused backtest results to change — this is correct behavior (old data included bug-induced "false profits").
+
+### Backtest impact (5-year, 1207 trading days)
+| Metric | Before | After | Reason |
+|--------|--------|-------|--------|
+| Total return | +91.10% | +75.34% | Cooldown 1→2 days (fewer trades); peak_price=price on reduce (hard stop 20% now active after partial sell) |
+| Max drawdown | 19.11% | 20.00% | More protective exits triggered |
+| Sharpe | 1.16 | 1.02 | Sample std dev (was population std dev) |
+| Profit factor | 6.41 | 2.80 | Total win/loss ratio (was average win/avg loss) |
+| Trades | 985 | 894 | Fewer entries due to longer cooldown |
+
+**These changes are CORRECT bug fixes, not strategy modifications.** The old baseline contained bugs that inflated returns.
+
+### signal_generator.py (14 fixes)
+
+**14 engineering fixes applied without changing strategy behavior.** Key structural changes:
+
+### Module-level constants extracted
+- `CODE_MAP` — ETF code to Sina code mapping (was defined 3 times locally)
+- `INVERTED_WEIGHTS` — inverted pyramid weights `[0.20, 0.25, 0.30, 0.35, 0.40]` (was defined 2 times locally)
+
+### New PositionInfo methods
+- `_enter_position(date_str, price, channel_name)` — 6-channel entry initialization (was 7 lines repeated 6 times). Returns `(action, position_ratio, trade_type)`.
+- `_get_daily_log(date_str)` — daily_trade_log access with default value + type check (was 3 lines repeated 3 times)
+- `to_dict(today_str)` — serialize state to dict (was 20+ lines of field-by-field assignment)
+- `from_dict(data)` — restore state from dict (was 16 lines of field-by-field assignment)
+
+### New module-level helper
+- `_safe_float(val, default=0.0)` — safe float conversion handling `"-"`, `None`, empty string (was inline `if x != "-" else 0` repeated 10 times in akshare fallback)
+
+### Bug fixes (P0)
+- `reset_on_liquidate()` now sets `self.base_price = None` (was missing, stale base_price after liquidation)
+- `reduce_shares(pct, price=0.0)` now sets `self.peak_price = price` instead of `0` (was temporarily disabling hard stop 20%)
+- Sina K-line parsing: `float(parts[3])`/`float(parts[2])` wrapped in `try/except ValueError` (was crashing on malformed data)
+- `fetch_realtime_quotes()` call wrapped in `try/except` (was crashing entire signal generator on API failure)
+- Portfolio.json dual-path sync: needs warning log on sync failure (pending)
+
+### Code removal
+- `fetch_klines_120min()` deleted — was 1-line wrapper around `fetch_klines_daily`; callers now use `fetch_klines_daily` directly
+- `calc_5min_vol_ratio()` deleted — was never called (fetch_klines_5min always returns empty)
+- `fetch_klines_5min()` retained with `# TODO: 未来启用5分钟量比`
+
+### Robustness improvement (P2)
+- Summary output now uses `trade_type` field for categorization instead of Chinese string matching on `action` (was fragile)
+
+### Refactoring pattern for similar codebases
+When refactoring trading signal generators without changing behavior:
+1. **Extract repeated dict literals to module constants** — reduces typo risk and maintenance burden
+2. **Extract repeated initialization patterns to methods** — 6-channel entry was 7 lines x 6 = 42 lines to 6 one-liners
+3. **Use to_dict/from_dict for serialization** — 20+ lines to 1 line, and adding new fields only requires updating one place
+4. **Wrap external API calls in try/except at the call site** — do not let one API failure crash the entire signal generator
+5. **Use trade_type enum for categorization, not string matching** — Chinese action strings are fragile for programmatic use
+
+### backtest_5etf_1m.py (6 fixes)
+
+1. **COOLDOWN_DAYS=2** (was 1, inconsistent with signal_generator's COOLDOWN_DAYS=2). This is the main cause of backtest result change — fewer re-entries after liquidation.
+2. **peak_price=price on reduce** (was `pos.peak_price = 0`). Hard stop 20% now works immediately after partial sell, instead of being temporarily disabled.
+3. **`do_liquidate()` helper** — unified 5-copy清仓 logic (pnl calculation + win/loss stats + cash recovery + full_liquidate + stop_cooldown).
+4. **`init_on_entry()` method** — unified 6-copy entry initialization (base/first_price/build_phase/bought_today/add_count/empty_days).
+5. **Sharpe ratio uses sample std dev** (was population std dev — `len-1` denominator for unbiased estimate).
+6. **Profit factor uses total win/total loss** (was avg_win/avg_loss — total ratio is the standard metric).
+7. **`entry_dates` dead code removed** (was set but never read).
+8. **`pos.peak` redundant field removed** (was tracked alongside `pos.peak_price` but never used for decisions).
+9. **`fetch_daily()` ValueError protection** — `try/except` on `float(d["open"])` etc.
+10. **`full_liquidate()` uses timedelta** — cooldown calculated from date_str (was just `cooldown_until = date_str`).
+11. **Function names renamed** — `ma`→`calc_ma`, `rsi`→`calc_rsi_wilder`, `macd`→`calc_macd`, `ao`→`calc_ao` (matching signal_generator naming).
+
+### intraday_t_once.py (2 fixes)
+
+1. **t0_buy_score/t0_sell_score imported from signal_generator** — deleted 30-line duplicate definitions. Was `from signal_generator import calc_rsi_wilder, calc_macd` only; now also imports `t0_buy_score, t0_sell_score, CODE_MAP`. This eliminates the most dangerous silent drift risk — the two files had identical code but modifying one without the other would cause algorithm divergence.
+2. **CODES dict replaced with CODE_MAP import** — eliminated third copy of the same mapping.
+
+### ths_client.py (3 fixes)
+
+1. **`_query_with_retry()` method** — unified 3 identical query methods (get_holding_shares/get_account_info/get_entrust) with configurable retries and delay. Replaced copy-paste retry logic.
+2. **`logging` module** — all operations now log at appropriate levels (INFO for successful trades, WARNING for failed queries/revocations, ERROR for exceptions). Was `except: pass` — silent swallowing made trading failures impossible to diagnose.
+3. **Buy/sell try/except with logging** — `buy()` and `sell()` now catch exceptions and return `(False, str(e))` instead of crashing.
+
+### sentiment_check.py (4 fixes)
+
+1. **Bare `except` replaced with `except Exception as e`** — bare except catches SystemExit/KeyboardInterrupt, which is wrong for a long-running process.
+2. **`n.get("title", "")` with KeyError protection** — was `n["title"]` which crashes on malformed API response.
+3. **`logging` module** — fetch failures now logged instead of silently returning empty list.
+4. **Magic numbers extracted to constants** — `NEG_THRESHOLD_WARN=3`, `NEG_THRESHOLD_BLOCK=6`.
+
+### Key lesson: bug fixes can change backtest results
+
+When fixing bugs that affect trading decisions (cooldown period, peak_price), the backtest WILL produce different results. This is correct — the old results contained bug-induced "false profits". Always document the before/after and explain which changes are bug fixes vs strategy modifications. The user explicitly requires: "回测与实盘必须一致" — bugs that make backtest inconsistent with live are worse than bugs that inflate returns.

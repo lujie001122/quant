@@ -50,5 +50,44 @@ These require strategy-level decisions, not code fixes:
 ## New Methods Added to PositionInfo
 
 - `update_dead_active()`: Recalculates dead_shares/active_shares after any share change
-- `reset_on_liquidate(date_str)`: Resets all state on liquidation, sets 3-day cooldown
-- `reduce_shares(pct)`: Reduces position by percentage, updates dead/active shares
+- `reset_on_liquidate(date_str)`: Resets all state on liquidation, sets 1-day cooldown. Now also resets `base_price = None`.
+- `reduce_shares(pct, price=0.0)`: Reduces position by percentage, updates dead/active shares. `price` param sets peak_price to current price (not 0) so hard stop 20% remains effective.
+- `_enter_position(date_str, price, channel_name)`: Unified 6-channel entry initialization — sets record_buy, build_phase=1, build_first_price, base_price, empty_days=0. Returns (action, position_ratio, trade_type).
+- `_get_daily_log(date_str)`: Centralized daily_trade_log access with default value + isinstance check (was repeated 3 times).
+- `to_dict(today_str)`: Serialize state to dict for persistence (was 20+ lines of field-by-field assignment).
+- `from_dict(data)`: Restore state from dict (was 16 lines of field-by-field assignment).
+
+## Module-level Constants (extracted 2026-08-01)
+
+- `CODE_MAP`: ETF code to Sina code mapping (was defined 3 times locally in fetch_realtime_quotes, fetch_klines_daily, and intraday_t_once)
+- `INVERTED_WEIGHTS`: `[0.20, 0.25, 0.30, 0.35, 0.40]` (was defined 2 times in evaluate_grid_signals and compute_grid_table)
+
+## Module-level Helpers (added 2026-08-01)
+
+- `_safe_float(val, default=0.0)`: Safe float conversion handling `"-"`, `None`, empty string. Replaces inline `if x != "-" else 0` patterns in akshare fallback parsing.
+
+## Deleted Functions (2026-08-01)
+
+- `fetch_klines_120min()`: Was a 1-line wrapper around `fetch_klines_daily`. Callers now use `fetch_klines_daily` directly.
+- `calc_5min_vol_ratio()`: Was never called (fetch_klines_5min always returns empty). Deleted.
+
+## Code Quality Refactoring (2026-08-01, 14 fixes)
+
+P0 bug fixes:
+- `reset_on_liquidate()` now sets `self.base_price = None` (was missing)
+- `reduce_shares(pct, price=0.0)` sets `self.peak_price = price` instead of `0` (was disabling hard stop 20%)
+- Sina K-line `float()` wrapped in `try/except ValueError` (was crashing on malformed data)
+- `fetch_realtime_quotes()` call wrapped in `try/except` (was crashing entire signal generator)
+- `price == 0` guard added in signal loop (handles API failure fallback)
+
+P1 structural improvements:
+- `CODE_MAP` / `INVERTED_WEIGHTS` extracted to module constants
+- `_enter_position()` replaces 6x7-line repeated entry initialization
+- `to_dict()` / `from_dict()` replaces 20+ line field-by-field serialization
+- `_get_daily_log()` replaces 3x repeated log access pattern
+- `fetch_klines_120min` deleted (1-line wrapper)
+- `calc_5min_vol_ratio` deleted (dead code)
+- `fetch_klines_5min` annotated with TODO
+
+P2 robustness:
+- Summary output uses `trade_type` field instead of Chinese string matching

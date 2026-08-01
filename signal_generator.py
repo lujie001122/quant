@@ -1173,11 +1173,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     # 可读汇总(用trade_type精确匹配, 不依赖中文字符串)
     liquid_s = [c for c, s in signals_output.items() if s.get("trade_type") == "liquidate"]
     reduce_s = [c for c, s in signals_output.items() if s.get("trade_type") == "reduce"]
-    sell_s = [c for c, s in signals_output.items() if s.get("trade_type") in ("sell", "t0")]
-    buy_s = [c for c, s in signals_output.items() if s.get("trade_type") in ("buy", "t0") and s.get("trade_type") != "t0" or s.get("trade_type") == "t0" and "买入" in s.get("action", "")]
-    # 修正: buy_s包含buy和t0买入, sell_s包含sell和t0卖出
-    buy_s = [c for c, s in signals_output.items() if s.get("trade_type") == "buy" or (s.get("trade_type") == "t0" and "买入" in s.get("action", ""))]
     sell_s = [c for c, s in signals_output.items() if s.get("trade_type") == "sell" or (s.get("trade_type") == "t0" and "卖出" in s.get("action", ""))]
+    buy_s = [c for c, s in signals_output.items() if s.get("trade_type") == "buy" or (s.get("trade_type") == "t0" and "买入" in s.get("action", ""))]
     hold_s = [c for c, s in signals_output.items() if s.get("trade_type") is None]
 
     parts = []
@@ -1214,26 +1211,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         try:
             state_to_save = {}
             for code, pos in positions.items():
-                state_to_save[code] = {
-                    "build_phase": pos.build_phase,
-                    "build_first_price": pos.build_first_price,
-                    "stop_level": pos.stop_level,
-                    "reached_8pct": pos.reached_8pct,
-                    "reached_15pct": pos.reached_15pct,
-                    "trailing_stop_price": pos.trailing_stop_price,
-                    "cooldown_until": pos.cooldown_until,
-                    "grid_frozen": pos.grid_frozen,
-                    "last_grid_trigger": pos.last_grid_trigger,
-                    "peak_price": pos.peak_price,
-                    "below_ma20_count": pos.below_ma20_count,
-                    "below_ma20_date": pos.below_ma20_date,
-                    "add_count": pos.add_count,
-                    "ma5_touch_count": pos.ma5_touch_count,
-                    "prev_rsi": pos.prev_rsi,
-                    "prev_macd_status": pos.prev_macd_status,
-                    "liquidate_dates": pos.liquidate_dates,
-                    "daily_trade_log": {today_str: pos.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
-                }
+                state_to_save[code] = pos.to_dict(today_str)
             pf_data["_signal_state"] = state_to_save
             with open(pf_path, "w") as _f:
                 json.dump(pf_data, _f, ensure_ascii=False, indent=2)
@@ -1241,8 +1219,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             try:
                 import shutil
                 shutil.copy(pf_path, _os.path.expanduser("~/.hermes/scripts/portfolio.json"))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARN] portfolio.json同步到~/.hermes/scripts/失败: {e}")
         except Exception:
             pass
 
