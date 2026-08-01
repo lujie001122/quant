@@ -33,6 +33,7 @@ CODES = {
     "588170": {"name": "科创半导体ETF", "sid": "sh588170"},
     "159532": {"name": "ETF", "sid": "sz159532"},
     "515050": {"name": "中证全指ETF", "sid": "sh515050"},
+    "000725": {"name": "京东方A", "sid": "sz000725"},
 }
 
 # ═══════════════════════════════════════════════
@@ -513,9 +514,19 @@ class ETFStrategy(bt.Strategy):
 #  Main
 # ═══════════════════════════════════════════════
 def main():
+    # ── 命令行参数 ──
+    run_000725 = "--000725" in sys.argv
+
+    if run_000725:
+        active_codes = {"000725": CODES["000725"]}
+        trade_start, trade_end = "2025-08-01", "2026-07-27"
+    else:
+        active_codes = {k: v for k, v in CODES.items() if k != "000725"}
+        trade_start, trade_end = TRADE_START, TRADE_END
+
     print("▸ 拉取历史K线 (Sina API, datalen=1250)...")
     dataframes = {}
-    for code, cfg in CODES.items():
+    for code, cfg in active_codes.items():
         try:
             df = fetch_daily(code, cfg["sid"])
             dataframes[code] = df
@@ -523,7 +534,7 @@ def main():
         except Exception as e:
             print(f"  ✗ {code} {cfg['name']:10s}  拉取失败: {e}"); sys.exit(1)
 
-    start = pd.Timestamp(TRADE_START); end = pd.Timestamp(TRADE_END)
+    start = pd.Timestamp(trade_start); end = pd.Timestamp(trade_end)
     for code in dataframes:
         dataframes[code] = dataframes[code][start:end]
 
@@ -549,9 +560,11 @@ def main():
     # 不用COC, 用次日开盘价成交(更真实)
     cerebro.broker.set_coc(False)
 
-    print(f"\n▸ 回测区间: {TRADE_START} → {TRADE_END}")
+    print(f"\n▸ 回测区间: {trade_start} → {trade_end}")
     print(f"▸ 引擎: backtrader v{bt.__version__}")
     print(f"▸ 共享资金池: ¥{TOTAL_FUND:,}")
+    if run_000725:
+        print(f"▸ 单标的模式: 000725 京东方A")
 
     results = cerebro.run()
     strat = results[0]
@@ -575,7 +588,7 @@ def main():
 
     # 年化 (用实际日期差)
     from datetime import date
-    d1 = date.fromisoformat(TRADE_START); d2 = date.fromisoformat(TRADE_END)
+    d1 = date.fromisoformat(trade_start); d2 = date.fromisoformat(trade_end)
     years = (d2 - d1).days / 365.0
     annual_ret = ((final / TOTAL_FUND) ** (1 / years) - 1) * 100 if years > 0 else 0
     calmar = annual_ret / max_dd if max_dd > 0 else 0
@@ -600,7 +613,7 @@ def main():
     for d in strat.datas:
         name = d._name
         pos = strat.getposition(d)
-        cfg = CODES.get(name, {"name": name})
+        cfg = active_codes.get(name, {"name": name})
         mkt = pos.size * d.close[0]
         status = "空仓" if pos.size == 0 else ("建仓中" if strat.ps[name]["build_phase"] == 1 else "持仓中")
         print(f"  {name:<8} {cfg['name']:<12} {pos.size:>10,d} ¥{mkt:>11,.0f} {status:>8}")

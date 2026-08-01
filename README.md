@@ -34,7 +34,7 @@
 | `git_backup.sh` | 每日GitHub备份脚本 |
 | `requirements.txt` | Python依赖声明 |
 
-## v3.3 更新 (2026-08-01)
+## v3.3 更新 (2026-08-02)
 
 - 回测引擎从手写Python迁移到backtrader框架
 - AO计算统一用(H+L)/2，与实盘一致
