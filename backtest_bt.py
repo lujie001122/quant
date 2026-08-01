@@ -233,7 +233,7 @@ class ETFStrategy(bt.Strategy):
                 "add_count": 0, "empty_days": 0,
                 "cooldown_until": "", "peak_price": 0.0,
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
-                "pending_order": None,
+                "pending_order": None, "stop_cooldown": False,
             }
 
         # 统计
@@ -312,14 +312,14 @@ class ETFStrategy(bt.Strategy):
     def _init_on_entry(self, ps, price):
         ps["base"] = price; ps["first_price"] = price
         ps["build_phase"] = 1; ps["bought_today"] = True
-        ps["add_count"] = 0; ps["empty_days"] = 0
+        ps["add_count"] = 0; ps["empty_days"] = 0; ps["stop_cooldown"] = False
 
     def _full_liquidate_state(self, ps, date_str):
         """清仓后重置状态"""
         ps["base"] = 0; ps["first_price"] = 0; ps["build_phase"] = 0
         ps["stop_level"] = 0; ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
         ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
-        ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0
+        ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
