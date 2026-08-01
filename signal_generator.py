@@ -65,7 +65,7 @@ GRID_SELL_LEVELS = 3
 MAX_DAILY_BUYS = 1   # 每天最多1次买入(正常)
 MAX_DAILY_T0 = 1     # 每天最多1次做T(正常)
 DEFENSE_CODE = None   # 无防御盾
-COOLDOWN_DAYS = 1     # 清仓后冷静期天数(与回测一致)
+COOLDOWN_DAYS = 2
 
 API_DELAY = 1  # akshare调用间隔(秒)
 

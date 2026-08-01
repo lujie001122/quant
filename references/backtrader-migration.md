@@ -23,7 +23,7 @@
 
 1. `self.data.close.get(size=N)` raises `AttributeError: 'Lines_LineSeries_LineSeriesStub' object has no attribute 'close'` — use `[self.data[-i] for i in range(N-1, -1, -1)]` instead.
 
-2. `self.data.high`/`self.data.low` are NOT accessible in custom indicators initialized with `d.close` as input. Only `self.data[0]` (the close line) works. For AO which needs (high+low)/2, approximate with close.
+2. `self.data.high`/`self.data.low` are NOT accessible in custom indicators initialized with `d.close` as input. Only `self.data[0]` (the close line) works. For AO which needs (high+low)/2, approximate with close. **NOTE**: This approximation creates a backtest-vs-live inconsistency — signal_generator.py uses `(H+L)/2` for AO, while backtest uses close. Fix pending.
 
 3. `len(self.data)` gives available bars in custom indicators, NOT `len(self.data.close)`.
 
@@ -71,6 +71,57 @@ Three optimization directions tested on backtrader engine. Baseline: +115.66% re
 | +All three combined | +78.10% | 20.43% | 0.80 | ❌ REJECTED — worst of all |
 
 **Key insight**: the strategy's strength is concentrated positions in trending ETFs; adding diversification or market-regime filters destroys this edge. 515880 (通信ETF) was the main profit driver — limiting it is counterproductive.
+
+## ⚠️ Backtest vs Live Consistency Audit (2026-08-01)
+
+**6 critical inconsistencies found between backtest_bt.py and signal_generator.py.** The backtest results are NOT reliable for predicting live performance until these are fixed.
+
+### P0 — Must Fix (backtest results are misleading)
+
+| # | Issue | Backtest | Live | Impact |
+|---|-------|----------|------|--------|
+| 1 | **Entry position ratio base** | Total fund 22万×30%=6.6万/笔 | Per-ETF 4.4万×30%=1.32万/笔 | Backtest buys 5x more per trade |
+| 2 | **Confirm add 70%** | Total fund 22万×70%=15.4万 | Per-ETF 4.4万×70%=3.08万 | Backtest adds 5x more |
+| 3 | **AO calculation** | close近似median | (H+L)/2 median | AO values differ, affects confirm-add |
+| 4 | **COOLDOWN_DAYS** | 2 | 1 | Backtest more conservative |
+| 5 | **Trend profit sell + MA5 active share sell** | Not in backtest | In live (2 sell signals) | Backtest overestimates returns |
+
+### P1 — Overfitting Risk
+
+| # | Issue | Evidence |
+|---|-------|----------|
+| 6 | **515880 concentration** | 15/27 buys are 515880 — strategy depends on one ETF |
+| 7 | **First 3yr zero trades** | 6-channel entry conditions too strict, only works in specific market regimes |
+| 8 | **Magic numbers** | 8%/15%/5%/10%/20%/30%/3%/35%/40% all hardcoded, no sensitivity analysis |
+
+### Fix Priority
+
+1. **Unify entry ratio base** — either backtest uses per-ETF amounts or live uses total-fund ratios
+2. **Fix AO to use (H+L)/2** in backtest (requires passing OHLC data to AOIndicator)
+3. **Unify COOLDOWN_DAYS** to 2 (change signal_generator.py from 1 to 2)
+4. **Add trend profit sell and MA5 active share sell** to backtest
+5. **Run parameter sensitivity analysis** on key thresholds (±2% on each)
+
+### How to Fix Entry Ratio Base
+
+The core issue: `_buy(data, 0.30, reason)` in backtest means 30% of total fund (22万), while signal_generator's "30%" means 30% of per-ETF allocation (4.4万). Two options:
+
+**Option A: Backtest matches live** — change `_buy` to use per-ETF allocation:
+```python
+def _buy(self, data, pct, reason):
+    name = data._name
+    etf_fund = TOTAL_FUND / len(self.datas)  # 4.4万 per ETF
+    target_value = etf_fund * pct  # 4.4万 × 30% = 1.32万
+    ...
+```
+
+**Option B: Live matches backtest** — change signal_generator to use total-fund ratios:
+```python
+# In signal_generator.py, change fund from 44000 to 220000
+# But this would require rethinking the entire position management
+```
+
+Option A is simpler and more realistic — each ETF gets an equal allocation of the total fund.
 
 ### File Status
 
