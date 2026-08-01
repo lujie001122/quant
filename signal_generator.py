@@ -69,6 +69,12 @@ COOLDOWN_DAYS = 1     # 清仓后冷静期天数(与回测一致)
 
 API_DELAY = 1  # akshare调用间隔(秒)
 
+# 模块级常量: ETF代码→Sina代码映射
+CODE_MAP = {"159516": "sz159516", "515880": "sh515880", "588170": "sh588170", "159532": "sz159532", "515050": "sh515050"}
+
+# 模块级常量: 倒金字塔权重
+INVERTED_WEIGHTS = [0.20, 0.25, 0.30, 0.35, 0.40]
+
 
 # ============================================================
 # 二、数据获取层（akshare + 重试+降级）
@@ -87,10 +93,19 @@ def _akshare_retry(func, *args, retries=3, initial_delay=API_DELAY, **kwargs):
                 raise
 
 
+def _safe_float(val, default=0.0):
+    """安全转换akshare返回值为float, 处理"-"、None、空字符串等异常值"""
+    try:
+        if val is None or val == "" or val == "-":
+            return default
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def fetch_realtime_quotes():
     """获取ETF实时行情（Sina主源0.2s→akshare备用16s）"""
-    code_map = {"159516": "sz159516", "515880": "sh515880", "588170": "sh588170", "159532": "sz159532", "515050": "sh515050"}
-    sina_url = "https://hq.sinajs.cn/list=" + ",".join(code_map.values())
+    sina_url = "https://hq.sinajs.cn/list=" + ",".join(CODE_MAP.values())
 
     # 主数据源: Sina (单请求0.2秒)
     try:
@@ -107,10 +122,13 @@ def fetch_realtime_quotes():
             if idx == -1: continue
             parts = line[idx+1:line.rfind('"')].split(",")
             if len(parts) < 6: continue
-            for code, sid in code_map.items():
+            for code, sid in CODE_MAP.items():
                 if sid not in line: continue
-                price = float(parts[3])
-                prev = float(parts[2])
+                try:
+                    price = float(parts[3])
+                    prev = float(parts[2])
+                except ValueError:
+                    continue  # 跳过异常数据行
                 pct = round((price - prev) / prev * 100, 2) if prev else 0
                 result[code] = {
                     "name": ETFS[code]["name"],
@@ -138,23 +156,17 @@ def fetch_realtime_quotes():
         r = row.iloc[0]
         result[code] = {
             "name": r["名称"],
-            "price": float(r["最新价"]),
-            "pct_change": float(r["涨跌幅"]),
-            "change": float(r["涨跌额"]),
-            "volume": float(r["成交量"]) if r["成交量"] != "-" else 0,
-            "amount": float(r["成交额"]) if r["成交额"] != "-" else 0,
-            "high": float(r["最高价"]),
-            "low": float(r["最低价"]),
-            "open": float(r["开盘价"]) if r["开盘价"] != "-" else 0,
-            "prev_close": float(r["昨收"]) if r["昨收"] != "-" else 0,
+            "price": _safe_float(r["最新价"]),
+            "pct_change": _safe_float(r["涨跌幅"]),
+            "change": _safe_float(r["涨跌额"]),
+            "volume": _safe_float(r["成交量"]),
+            "amount": _safe_float(r["成交额"]),
+            "high": _safe_float(r["最高价"]),
+            "low": _safe_float(r["最低价"]),
+            "open": _safe_float(r["开盘价"]),
+            "prev_close": _safe_float(r["昨收"]),
         }
     return result
-
-
-def fetch_klines_120min(code, limit=100):
-    """获取K线(直走日K Sina快速通道, 跳过120min akshare)"""
-    # Sina日K ~1s, akshare 120min ~20s+重试, 直接降级
-    return fetch_klines_daily(code)
 
 
 def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
@@ -180,8 +192,7 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
         print(f"[WARN] {code} akshare日K线失败: {e}, 降级为Sina")
 
     # 降级为Sina日K线
-    code_map = {"159516": "sz159516", "515880": "sh515880", "588170": "sh588170", "159532": "sz159532", "515050": "sh515050"}
-    sid = code_map.get(code, "")
+    sid = CODE_MAP.get(code, "")
     sina_url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sid}&scale=240&ma=no&datalen=100"
     try:
         req = urllib.request.Request(sina_url, headers={
@@ -220,16 +231,8 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
 
 def fetch_klines_5min(code, today=None):
     """获取5分钟K线(直返空, 量比降级到日K)"""
+    # TODO: 未来启用5分钟量比
     return []
-
-
-def calc_5min_vol_ratio(klines_5min, period=48):
-    """5分钟量比"""
-    if len(klines_5min) < period + 1:
-        return None
-    volumes = [k["volume"] for k in klines_5min]
-    avg_vol = sum(volumes[-(period + 1):-1]) / period
-    return round(volumes[-1] / avg_vol, 2)
 
 
 # ============================================================
@@ -403,19 +406,20 @@ class PositionInfo:
         if atr_pct > 0.05: return 2
         return MAX_DAILY_T0
 
-    def can_buy_today(self, date_str, atr_pct=None):
-        max_b = self.max_daily_buys(atr_pct) if atr_pct else MAX_DAILY_BUYS
+    def _get_daily_log(self, date_str):
+        """获取当日交易日志, 带默认值和类型检查"""
         log = self.daily_trade_log.get(date_str, {"buy_count": 0, "t0_count": 0})
         if not isinstance(log, dict):
             log = {"buy_count": 0, "t0_count": 0}
-        return log.get("buy_count", 0) < max_b
+        return log
+
+    def can_buy_today(self, date_str, atr_pct=None):
+        max_b = self.max_daily_buys(atr_pct) if atr_pct else MAX_DAILY_BUYS
+        return self._get_daily_log(date_str).get("buy_count", 0) < max_b
 
     def can_t0_today(self, date_str, atr_pct=None):
         max_t = self.max_daily_t0(atr_pct) if atr_pct else MAX_DAILY_T0
-        log = self.daily_trade_log.get(date_str, {"buy_count": 0, "t0_count": 0})
-        if not isinstance(log, dict):
-            log = {"buy_count": 0, "t0_count": 0}
-        return log.get("t0_count", 0) < max_t
+        return self._get_daily_log(date_str).get("t0_count", 0) < max_t
 
     def record_buy(self, date_str):
         log = self.daily_trade_log.setdefault(date_str, {"buy_count": 0, "t0_count": 0})
@@ -452,6 +456,7 @@ class PositionInfo:
         self.shares = 0
         self.cost = 0
         self.avg_cost = 0
+        self.base_price = None
         self.dead_shares = 0
         self.active_shares = 0
         self.build_phase = 0
@@ -477,7 +482,7 @@ class PositionInfo:
         except Exception:
             self.cooldown_until = None
 
-    def reduce_shares(self, pct):
+    def reduce_shares(self, pct, price=0.0):
         """减仓指定比例(0-100, 百分比)"""
         reduce_count = int(self.shares * pct / 10000) * 100
         if reduce_count < 100:
@@ -486,9 +491,61 @@ class PositionInfo:
             reduce_count = self.shares
         self.shares -= reduce_count
         self.cost = self.avg_cost * self.shares if self.shares > 0 else 0
-        # 减仓后重置peak_price(和backtest L349一致: etf_peak_value = pos.shares * price)
-        self.peak_price = 0  # 下次运行时会重新设为当前价
+        # 减仓后用当前价作为新峰值, 硬止损20%仍然有效
+        self.peak_price = price
         self.update_dead_active()
+
+    def _enter_position(self, date_str, price, channel_name):
+        """6通道入场统一初始化: record_buy + 建仓状态设置"""
+        self.record_buy(date_str)
+        self.build_phase = 1
+        self.build_first_price = price
+        self.base_price = price
+        self.empty_days = 0
+        return "买入", channel_name, "buy"
+
+    def to_dict(self, today_str):
+        """将状态序列化为字典(用于持久化)"""
+        return {
+            "build_phase": self.build_phase,
+            "build_first_price": self.build_first_price,
+            "stop_level": self.stop_level,
+            "reached_8pct": self.reached_8pct,
+            "reached_15pct": self.reached_15pct,
+            "trailing_stop_price": self.trailing_stop_price,
+            "cooldown_until": self.cooldown_until,
+            "grid_frozen": self.grid_frozen,
+            "last_grid_trigger": self.last_grid_trigger,
+            "peak_price": self.peak_price,
+            "below_ma20_count": self.below_ma20_count,
+            "below_ma20_date": self.below_ma20_date,
+            "add_count": self.add_count,
+            "ma5_touch_count": self.ma5_touch_count,
+            "prev_rsi": self.prev_rsi,
+            "prev_macd_status": self.prev_macd_status,
+            "liquidate_dates": self.liquidate_dates,
+            "daily_trade_log": {today_str: self.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
+        }
+
+    def from_dict(self, data):
+        """从字典恢复状态(用于持久化恢复)"""
+        self.build_phase = data.get("build_phase", 0)
+        self.build_first_price = data.get("build_first_price", 0.0)
+        self.stop_level = data.get("stop_level", 0)
+        self.reached_8pct = data.get("reached_8pct", False)
+        self.reached_15pct = data.get("reached_15pct", False)
+        self.trailing_stop_price = data.get("trailing_stop_price", 0.0)
+        self.below_ma20_count = data.get("below_ma20_count", 0)
+        self.below_ma20_date = data.get("below_ma20_date", None)
+        self.cooldown_until = data.get("cooldown_until")
+        self.grid_frozen = data.get("grid_frozen", False)
+        self.peak_price = data.get("peak_price", 0.0)
+        self.add_count = data.get("add_count", 0)
+        self.ma5_touch_count = data.get("ma5_touch_count", 0)
+        self.prev_rsi = data.get("prev_rsi")
+        self.prev_macd_status = data.get("prev_macd_status")
+        self.liquidate_dates = data.get("liquidate_dates", [])
+        self.last_grid_trigger = data.get("last_grid_trigger")
 
 
 def t0_buy_score(rsi, macd_status, vol_ratio_5min, vol_ratio_120):
@@ -531,12 +588,11 @@ def evaluate_grid_signals(price, base_price, spacing, grid_frozen=False):
         return "网格冻结(跌破第5档,等站上MA5解冻)", 0
 
     tolerance = spacing * 0.15
-    inverted_weights = [0.20, 0.25, 0.30, 0.35, 0.40]
 
     for i in range(1, GRID_BUY_LEVELS + 1):
         grid_price = base_price * (1 - spacing * i)
         if abs(price - grid_price) <= tolerance * grid_price:
-            weight = inverted_weights[i - 1]
+            weight = INVERTED_WEIGHTS[i - 1]
             frozen_note = " [熔断!第5档后冻结网格]" if i == 5 else ""
             return f"触及第{i}档买入(网格价{grid_price:.3f},仓位{weight*100:.0f}%){frozen_note}", weight
 
@@ -569,11 +625,10 @@ def check_grid_reset(price, base_price, spacing, date_str, last_reset_date=None)
 def compute_grid_table(base_price, spacing, fund):
     if base_price is None: return None
     import math
-    inverted_weights = [0.20, 0.25, 0.30, 0.35, 0.40]
     table = {"base": base_price, "spacing": spacing, "buy": [], "sell": []}
     for i in range(1, GRID_BUY_LEVELS + 1):
         p = base_price * (1 - spacing * i)
-        w = inverted_weights[i - 1]
+        w = INVERTED_WEIGHTS[i - 1]
         per_fund = fund * w
         if math.isnan(p) or p <= 0:
             continue
@@ -623,23 +678,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 if code in saved_state and code in positions:
                     s = saved_state[code]
                     p = positions[code]
-                    p.build_phase = s.get("build_phase", 0)
-                    p.build_first_price = s.get("build_first_price", 0.0)
-                    p.stop_level = s.get("stop_level", 0)
-                    p.reached_8pct = s.get("reached_8pct", False)
-                    p.reached_15pct = s.get("reached_15pct", False)
-                    p.trailing_stop_price = s.get("trailing_stop_price", 0.0)
-                    p.below_ma20_count = s.get("below_ma20_count", 0)
-                    p.below_ma20_date = s.get("below_ma20_date", None)
-                    p.cooldown_until = s.get("cooldown_until")
-                    p.grid_frozen = s.get("grid_frozen", False)
-                    p.peak_price = s.get("peak_price", 0.0)
-                    p.add_count = s.get("add_count", 0)
-                    p.ma5_touch_count = s.get("ma5_touch_count", 0)
-                    p.prev_rsi = s.get("prev_rsi")
-                    p.prev_macd_status = s.get("prev_macd_status")
-                    p.liquidate_dates = s.get("liquidate_dates", [])
-                    p.last_grid_trigger = s.get("last_grid_trigger")
+                    p.from_dict(s)
                     # 持仓数量从 portfolio 恢复
                     pos_pf = pf_data["positions"].get(code, {})
                     if pos_pf.get("shares", 0) > 0:
@@ -652,8 +691,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     saved_log = s.get("daily_trade_log", {})
                     if today_str in saved_log:
                         p.daily_trade_log[today_str] = saved_log[today_str]
-                    # 恢复liquidate_dates
-                    p.liquidate_dates = s.get("liquidate_dates", [])
                     # last_grid_trigger跨天重置
                     if p.last_grid_trigger and p.last_grid_trigger != today_str:
                         p.last_grid_trigger = None
@@ -661,13 +698,19 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             pass
 
     # 获取数据
-    realtime = fetch_realtime_quotes()
+    try:
+        realtime = fetch_realtime_quotes()
+    except Exception as e:
+        print(f"[WARN] fetch_realtime_quotes失败: {e}")
+        realtime = {code: {"name": ETFS[code]["name"], "price": 0, "pct_change": 0, "change": 0,
+                           "volume": 0, "amount": 0, "high": 0, "low": 0, "open": 0, "prev_close": 0}
+                    for code in ETFS}
 
     # 如果没有传入K线和指标数据，需要获取
     if all_klines is None:
         all_klines = {}
         for code in ETFS:
-            all_klines[code] = fetch_klines_120min(code, limit=100)
+            all_klines[code] = fetch_klines_daily(code)
 
     if all_tech is None:
         all_tech = {}
@@ -733,6 +776,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             signals_output[code] = {"action": "持有(观望)", "reason": "无实时数据", "price": "N/A"}
             continue
         r = realtime[code]
+        if r.get("price", 0) == 0:
+            signals_output[code] = {"action": "持有(观望)", "reason": "无实时数据", "price": "N/A"}
+            continue
         if code not in all_tech or all_tech[code].get("macd_status") == "数据不足":
             signals_output[code] = {"action": "持有(观望)", "reason": "指标数据不足", "price": f"{realtime[code]['price']:.3f}"}
             continue
@@ -987,26 +1033,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         if pos.build_phase == 0:
                             # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%
                             if t["macd_status"] == "金叉" and (t["rsi"] is None or t["rsi"] <= 80) and pos.can_buy_today(today_str, atr_pct):
-                                pos.record_buy(today_str)
-                                pos.build_phase = 1
-                                pos.build_first_price = price
-                                pos.base_price = price
-                                pos.empty_days = 0
-                                action = "买入"
-                                position_ratio = "30%(RSI抄底)"
+                                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
                                 reason = f"RSI抄底:MACD金叉(RSI={t['rsi']})"
-                                trade_type = "buy"
                             # 通道2: 趋势跟踪 (空仓>10天+价>MA20+MACD红柱) → 30%
                             elif pos.empty_days > 10 and t["macd_status"] in ["红柱放大", "红柱缩短"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
-                                pos.record_buy(today_str)
-                                pos.build_phase = 1
-                                pos.build_first_price = price
-                                pos.base_price = price
-                                pos.empty_days = 0
-                                action = "买入"
-                                position_ratio = "30%(趋势跟踪)"
+                                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(趋势跟踪)")
                                 reason = f"趋势跟踪:价>MA20+{t['macd_status']}"
-                                trade_type = "buy"
                             # 通道3: 突破入场 (20日新高+MACD金叉) → 30%
                             elif t["macd_status"] == "金叉" and pos.can_buy_today(today_str, atr_pct):
                                 # 检查20日新高(不含当日)
@@ -1014,48 +1046,20 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                     # 不含当日: 用倒数第2到第22根(排除最后一根=当日)
                                     closes_20 = [k["close"] for k in all_klines[code][-22:-1]]
                                     if closes_20 and price > max(closes_20):
-                                        pos.record_buy(today_str)
-                                        pos.build_phase = 1
-                                        pos.build_first_price = price
-                                        pos.base_price = price
-                                        pos.empty_days = 0
-                                        action = "买入"
-                                        position_ratio = "30%(突破入场)"
+                                        action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(突破入场)")
                                         reason = f"突破入场:20日新高+金叉"
-                                        trade_type = "buy"
                             # 通道4: 分批建仓 (金叉/红柱放大+RSI>40+站MA5) → 30%
                             if action == "持有" and t["macd_status"] in ["金叉", "红柱放大"] and rsi_ok and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
-                                pos.record_buy(today_str)
-                                pos.build_phase = 1
-                                pos.build_first_price = price
-                                pos.base_price = price
-                                pos.empty_days = 0
-                                action = "买入"
-                                position_ratio = "30%(分批1)"
+                                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(分批1)")
                                 reason = "分批建仓1:首笔30%试探(MACD健康+RSI满足+站上MA5)"
-                                trade_type = "buy"
                             # 通道5: Test抄底 (RSI<35+绿柱缩短+站MA5+前一日也是绿柱缩短) → 30%
                             if action == "持有" and t["rsi"] is not None and t["rsi"] < 35 and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
-                                pos.record_buy(today_str)
-                                pos.build_phase = 1
-                                pos.build_first_price = price
-                                pos.base_price = price
-                                pos.empty_days = 0
-                                action = "买入"
-                                position_ratio = "30%(Test抄底)"
+                                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(Test抄底)")
                                 reason = f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5"
-                                trade_type = "buy"
                             # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>30+站MA5) → 15%
                             if action == "持有" and t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_minimal and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
-                                pos.record_buy(today_str)
-                                pos.build_phase = 1
-                                pos.build_first_price = price
-                                pos.base_price = price
-                                pos.empty_days = 0
-                                action = "买入"
-                                position_ratio = "15%(试探)"
+                                action, position_ratio, trade_type = pos._enter_position(today_str, price, "15%(试探)")
                                 reason = f"试探建仓:15%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站上MA5)"
-                                trade_type = "buy"
                             if action == "持有":
                                 action = "持有(观望)"
                                 position_ratio = "0%"
@@ -1166,12 +1170,15 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             "market_weak": defense_weak if code != DEFENSE_CODE else False,
         }
 
-    # 可读汇总
-    liquid_s = [c for c, s in signals_output.items() if "清仓" in s["action"]]
-    reduce_s = [c for c, s in signals_output.items() if "减仓" in s["action"]]
-    sell_s = [c for c, s in signals_output.items() if "卖出" in s["action"]]
-    buy_s = [c for c, s in signals_output.items() if "买入" in s["action"]]
-    hold_s = [c for c, s in signals_output.items() if "持有" in s["action"]]
+    # 可读汇总(用trade_type精确匹配, 不依赖中文字符串)
+    liquid_s = [c for c, s in signals_output.items() if s.get("trade_type") == "liquidate"]
+    reduce_s = [c for c, s in signals_output.items() if s.get("trade_type") == "reduce"]
+    sell_s = [c for c, s in signals_output.items() if s.get("trade_type") in ("sell", "t0")]
+    buy_s = [c for c, s in signals_output.items() if s.get("trade_type") in ("buy", "t0") and s.get("trade_type") != "t0" or s.get("trade_type") == "t0" and "买入" in s.get("action", "")]
+    # 修正: buy_s包含buy和t0买入, sell_s包含sell和t0卖出
+    buy_s = [c for c, s in signals_output.items() if s.get("trade_type") == "buy" or (s.get("trade_type") == "t0" and "买入" in s.get("action", ""))]
+    sell_s = [c for c, s in signals_output.items() if s.get("trade_type") == "sell" or (s.get("trade_type") == "t0" and "卖出" in s.get("action", ""))]
+    hold_s = [c for c, s in signals_output.items() if s.get("trade_type") is None]
 
     parts = []
     if liquid_s: parts.append(f"紧急清仓: {','.join(liquid_s)}")

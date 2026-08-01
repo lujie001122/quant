@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
 同花顺 Mac 客户端 Python 接口（基于 Evolving）
-在 Evolving 之上封装：自动处理弹窗、窗口检查、撤单修复
+在 Evolving 之上封装：自动激活窗口、撤单、限价单、异常日志
 """
-import json, time, os, sys
+import json, time, os, sys, logging
 
 # 添加 Evolving 路径
 sys.path.insert(0, os.path.expanduser("~/hermes-trading/.venv/lib/python3.9/site-packages"))
 
 from evolving import evolving
+
+logger = logging.getLogger("ths_client")
+logging.basicConfig(level=logging.INFO, format="[%(name)s] %(levelname)s: %(message)s")
 
 
 class THSClient:
@@ -24,44 +27,53 @@ class THSClient:
         os.system("""osascript -e 'tell application "同花顺" to activate' 2>/dev/null""")
         time.sleep(2)
 
-    # ─── 查询（直接用 Evolving） ───
+    def _query_with_retry(self, method_name, *args, retries=1, delay=1):
+        """通用查询方法：带重试和日志"""
+        method = getattr(self._e, method_name, None)
+        if method is None:
+            logger.error(f"Evolving无方法: {method_name}")
+            return {"status": False, "info": f"method {method_name} not found"}
+        for attempt in range(retries + 1):
+            try:
+                result = method(*args)
+                if not result.get("status"):
+                    logger.warning(f"{method_name} 返回失败(尝试{attempt+1}): {result.get('info', 'unknown')}")
+                    if attempt < retries:
+                        time.sleep(delay)
+                        continue
+                return result
+            except Exception as e:
+                logger.error(f"{method_name} 异常(尝试{attempt+1}): {e}")
+                if attempt < retries:
+                    time.sleep(delay)
+                    continue
+                return {"status": False, "info": str(e)}
+        return result
+
+    # ─── 查询 ───
 
     def get_holding_shares(self, asset_type="stock"):
         """获取持仓"""
-        result = self._e.getHoldingShares(asset_type)
-        if not result.get("status"):
-            # 一次重试
-            time.sleep(1)
-            result = self._e.getHoldingShares(asset_type)
-        return result
+        return self._query_with_retry("getHoldingShares", asset_type)
 
     def get_account_info(self):
         """获取账户资金信息"""
-        result = self._e.getAccountInfo()
-        if not result.get("status"):
-            time.sleep(1)
-            result = self._e.getAccountInfo()
-        return result
+        return self._query_with_retry("getAccountInfo")
 
     def get_entrust(self):
         """获取今日委托"""
-        result = self._e.getEntrust()
-        if not result.get("status"):
-            time.sleep(1)
-            result = self._e.getEntrust()
-        return result
+        return self._query_with_retry("getEntrust")
 
     def get_closed_deals(self):
         """获取成交记录"""
-        return self._e.getClosedDeals()
+        return self._query_with_retry("getClosedDeals")
 
-    # ─── 交易（直接用 Evolving，先撤同方向同标的未成交挂单） ───
+    # ─── 交易（先撤同方向未成交挂单） ───
 
     def _revoke_pending(self, stock_code, direction):
         """撤销同标的同方向的未成交挂单
         direction: '买入' 或 '卖出'
-        Evolving返回的委托列表是扁平列表拼接，合同编号位置不固定，
-        所以用revokeAllBuyEntrust/revokeAllSellEntrust批量撤更可靠。
+        用revokeAllBuyEntrust/revokeAllSellEntrust批量撤更可靠。
         """
         try:
             if "买" in direction:
@@ -69,8 +81,8 @@ class THSClient:
             else:
                 self._e.revokeAllSellEntrust()
             time.sleep(0.5)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"撤单失败({direction}): {e}")
 
     def buy(self, stock_code, amount, price):
         """限价买入，返回 (status, contractNo)
@@ -81,17 +93,28 @@ class THSClient:
         if price and amount * price > 44000:
             amount = int(44000 / price / 100) * 100
             if amount < 100:
+                logger.warning(f"买入{stock_code}超过4.4万仓位上限，无法下单")
                 return False, "超过4.4万仓位上限"
-        status, contract = self._e.buy(stock_code, amount, price)
-        return status, contract
+        try:
+            status, contract = self._e.buy(stock_code, amount, price)
+            logger.info(f"买入{stock_code} {amount}股@{price}: status={status}, contract={contract}")
+            return status, contract
+        except Exception as e:
+            logger.error(f"买入{stock_code}异常: {e}")
+            return False, str(e)
 
     def sell(self, stock_code, amount, price):
         """限价卖出，返回 (status, contractNo)
         先撤销同标的卖出未成交挂单
         """
         self._revoke_pending(stock_code, "卖出")
-        status, contract = self._e.sell(stock_code, amount, price)
-        return status, contract
+        try:
+            status, contract = self._e.sell(stock_code, amount, price)
+            logger.info(f"卖出{stock_code} {amount}股@{price}: status={status}, contract={contract}")
+            return status, contract
+        except Exception as e:
+            logger.error(f"卖出{stock_code}异常: {e}")
+            return False, str(e)
 
     # ─── 撤单 ───
 
@@ -101,7 +124,8 @@ class THSClient:
             self._e.revokeAllEntrust()
             time.sleep(0.5)
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"全撤异常: {e}")
             return False
 
     def revoke_all_buy(self):
@@ -110,7 +134,8 @@ class THSClient:
             self._e.revokeAllBuyEntrust()
             time.sleep(0.5)
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"撤买异常: {e}")
             return False
 
     def revoke_all_sell(self):
@@ -119,7 +144,8 @@ class THSClient:
             self._e.revokeAllSellEntrust()
             time.sleep(0.5)
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"撤卖异常: {e}")
             return False
 
     # ─── 便捷 ───

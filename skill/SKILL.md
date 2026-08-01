@@ -16,15 +16,19 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 - Data source: Sina API (primary) + akshare (fallback)
 - Python 3.11, venv at ~/hermes-trading/.venv/
 - Fund model: shared 220k pool with 44k per-ETF position cap (professional quant approach — shared pool maximizes capital efficiency, cap prevents over-allocation)
+- **Git repo**: `git@github.com:lujie001122/quant.git` (main branch). Contains all strategy code + skill/SKILL.md + references/. Source files live at ~/hermes/scripts/ — push to repo after significant changes.
+- **GitHub backup rule**: push to GitHub after every confirmed strategy file change. Daily cron backup at 21:00 runs git_backup.sh (syncs ~/hermes/scripts/ + skill files to ~/quant/ then pushes). Local repo at ~/quant/.
+- **Security**: credentials (AppID, AppSecret, passwords, tokens, keys) must NEVER be uploaded to GitHub or any external platform. Store locally only.
 
 ## File Layout
 
 | File | Location | Purpose |
 |------|----------|---------|
 | backtest_5etf_1m.py | ~/hermes/scripts/ | Backtest engine (~600 lines, shared 220k pool + 44k per-ETF cap, 6 channels, Sharpe/win rate) |
-| signal_generator.py | ~/hermes/scripts/ | Live signal generator v3.1 (~1200 lines) |
+| signal_generator.py | ~/hermes/scripts/ | Live signal generator v3.1 (~1200 lines, refactored 2026-08-01: CODE_MAP/INVERTED_WEIGHTS module constants, _enter_position/_get_daily_log/to_dict/from_dict methods, _safe_float helper, fetch_klines_120min removed) |
 | ~~engine.py~~ | ~~deleted~~ | Removed 2026-08-01 — signal_generator.py fully replaces it |
 | ~~indicators.py~~ | ~~deleted~~ | Removed 2026-08-01 — MACD was inconsistent with signal_generator; intraday_t_once.py now imports from signal_generator |
+| ~~fetch_klines_120min~~ | ~~deleted~~ | Removed 2026-08-01 — was a 1-line wrapper around fetch_klines_daily; callers now use fetch_klines_daily directly |
 | intraday_t_once.py | ~/hermes/scripts/ | Intraday T+0 module |
 | sentiment_check.py | ~/hermes/scripts/ | Sina news sentiment |
 | portfolio.json | ~/hermes/scripts/ | Persistent position state |
@@ -32,6 +36,7 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 Cron scripts (must live in ~/.hermes/scripts/):
 - etf_premarket.sh - pre-market signal, runs at 9:00 weekdays
 - etf_intraday.sh - intraday monitoring, runs every 30min during trading hours
+- git_backup.sh - daily GitHub backup, syncs ~/hermes/scripts/ + skill files to ~/quant/ and pushes
 
 ## Cron Jobs
 
@@ -40,6 +45,7 @@ Cron scripts (must live in ~/.hermes/scripts/):
 | ETF舆情早报 | 30 8 * * 1-5 | Agent | Runs sentiment_check.py, analyzes 5 sectors for negative news, writes `sentiment_block.json` if any blocklisted |
 | ETF交易监控 | 0,30 10-14 * * 1-5 | Agent | Runs signal_generator.py, checks sentiment_block.json for blocked ETFs, executes trades via THSClient (which wraps Evolving with activate + revoke-before-order + limit orders), silent when no signal |
 | ETF复盘 | 0 20 * * 1-5 | Agent | Fetches holdings/account/entrust from 同花顺, gets ETF prices via akshare, analyzes trade quality + sector moves |
+| ETF策略GitHub备份 | 0 21 * * * | Agent | Runs git_backup.sh, syncs all strategy files + skill to ~/quant/ and pushes to GitHub, silent when no changes |
 
 All use agent mode (no_agent=false, LLM processes and decides). Deliver to origin.
 
@@ -57,6 +63,7 @@ See references/cua-driver-china-setup.md for cua-driver installation on China-ma
 See references/evolving-setup.md for Evolving setup and usage (Mac同花顺自动化 — preferred over cua-driver).
 See references/daily-review-format.md for the daily review (复盘) report format and sentiment block criteria.
 See references/t0-scoring-audit.md for the T+0 scoring rewrite details (6 bugs found, same-day conflict fix, verification methodology).
+See references/wechat-publishing.md for WeChat公众号 publishing setup (md2wechat tool, credentials, IP whitelist, integration).
 
 ### T+0 (做T) — v3.1.1 (2026-08-01)
 
@@ -124,8 +131,8 @@ Dip add (build_phase==1, inside correct branch): 15% per add, max 5 adds
 2. No T+0 simulation in backtest (day-K limitation)
 3. Base/active position split not in backtest
 4. dynamic_spacing: backtest uses fixed, live uses 0.6*base+0.4*ATR
-5. 5-min volume ratio: fetch_klines_5min always returns empty
-6. 120-min K-line: degrades to daily K-line
+- **5-min volume ratio: fetch_klines_5min always returns empty** — retained with `# TODO: 未来启用5分钟量比`, `calc_5min_vol_ratio` deleted (was never called)
+- **120-min K-line: degrades to daily K-line** — `fetch_klines_120min` deleted entirely; callers now use `fetch_klines_daily` directly
 7. **Cron last-run buy risk**: 14:30 run may execute buys at close auction (15:00), which can have unfavorable prices. Should consider restricting last run to sell-only.
 8. **T+0 buy/sell share t0_count**: Both buy-T and sell-T call `record_t0()`, sharing one counter. After a T+0 buy, the paired T+0 sell is blocked by `MAX_DAILY_T0=1`. This is intentional — prevents frequent trading. T+0 buy and sell are independent signals, not paired operations. Note: the independent hedge channel (绿柱缩短+RSI<40+价低于成本) also uses `record_t0()`, so it shares the same counter.
 9. **t0_sell_score receives prev_rsi but never uses it**: Dead parameter. Low priority.
@@ -250,6 +257,40 @@ The backtest script (`backtest_5etf_1m.py`) hardcodes all 5 ETFs. To backtest a 
 1. **Preferred**: use an inline Python script (see "Evaluating New ETFs" above) — embeds the full strategy logic, avoids file copy issues.
 2. **Alternative**: Copy the script: `cp backtest_5etf_1m.py backtest_<code>_1y.py`, modify `TRADE_START`/`CODES`/`INIT_CASH`, run with venv.
 3. Do NOT modify the original script — always work on a copy or inline script
+
+## WeChat Official Account Publishing
+
+User wants to publish ETF daily reports / 复盘 to their WeChat official account (公众号).
+
+### Tool: md2wechat (installed in venv)
+
+CLI tool that converts Markdown to WeChat-compatible HTML and publishes to drafts. Uses `wechatpy` SDK internally.
+
+```bash
+# Publish markdown article to drafts (never auto-publishes)
+WECHAT_APPID=xxx WECHAT_APP_SECRET=xxx md2wechat \
+  --markdown article.md --style tech --title "ETF日报"
+
+# Visual styles: academic_gray (default), tech, festival, announcement
+# --comment to enable comments, --type newspic for 小绿书 format
+```
+
+**Setup requirements**:
+1. Credentials stored locally at `~/hermes/scripts/.env.wechat` — NEVER upload to GitHub
+2. **IP whitelist**: login mp.weixin.qq.com → 设置 → 开发 → 基本配置 → IP白名单, add the machine's public IP. Without this, API returns errcode 40164.
+3. Article must contain at least one image (used as cover). Use `![cover](path)` in markdown.
+4. md2wechat only saves to drafts (草稿箱) — user manually reviews and publishes.
+
+**Subscription account (未认证订阅号) limitations**: many APIs return errcode 48001 (unauthorized):
+- ✅ Draft API: works (create/list drafts)
+- ❌ Comment open/close: requires certified service account — user must manually enable comments in WeChat backend
+- ❌ Original declaration (原创声明): requires certified service account — user must manually enable when publishing
+- ❌ Freepublish API: requires certified service account
+- Workaround: `--comment` flag in md2wechat won't take effect on subscription accounts; remind user to manually enable comments + original declaration in WeChat backend after publishing
+
+**Article style preference**: user rejected first draft as "太虚了" (too vague/hype). Write practical, actionable content — real code snippets, real numbers, real pitfalls. Include GitHub repo link for interested readers. No fluff or marketing language.
+
+**Integration with cron**: the ETF复盘 job can optionally generate a markdown report and push to drafts via md2wechat, so user reviews on phone.
 
 ## Operating 同花顺
 
@@ -397,7 +438,7 @@ cua-driver was installed then uninstalled per user request. User chose Evolving 
 - **prev_ms look-ahead bug pattern**: When backtesting, any variable that stores "previous day's" indicator must be updated at END-OF-DAY, not immediately after computing today's indicator. If updated mid-loop, the "previous" value is actually today's, making the condition redundant (e.g. Test抄底 `prev_ms==绿柱缩短` becomes `ms==绿柱缩短`). Always check: does the "previous X" variable get written before or after the logic that reads it?
 - **empty_days per-day tracking**: Like below_ma20_count, empty_days must only increment once per calendar day (not per script run). Use a separate date field (empty_days_date) for deduplication. The signal_generator may run 4+ times per trading day (9:30/10:30/13:30/14:30).
 - **add_count on confirm add**: After confirm-add (70%), signal_generator was resetting add_count to 0 (allowing 5 more dip-adds), while backtest incremented it by 1. This is a backtest-vs-live consistency issue that could lead to over-allocation. Always check: does the confirm-add reset or increment the add counter?
-- **peak_price reset on partial sell**: When reducing shares (e.g. 30% stop-loss), the peak_price must be reset to 0 (or recalculated). Otherwise, the hard stop 20% check uses the old peak × new shares, which is incorrect. The backtest resets etf_peak_value on partial sell (L349); signal_generator must match.
+- **peak_price reset on partial sell**: When reducing shares (e.g. 30% stop-loss), `reduce_shares(pct, price)` now sets `self.peak_price = price` (current price as new peak). Previously was `self.peak_price = 0` which temporarily disabled hard stop 20% until the next run. The `price` parameter is required — pass the current price at the time of reduction.
 - **Stop-loss priority order matters**: backtest processes stops in order: 均价止损10% → 硬止盈30% → 移动止盈 → 分级止损 → 硬止损20%. If 硬止盈30% and 分级止损 both trigger on the same day, the backtest takes 硬止盈 (full profit exit). signal_generator was collecting all stop_actions then picking by type priority, but the order of collection was wrong (分级止损 before 硬止盈). Fix: collect stop_actions in the same order as backtest.
 - **realtime data KeyError guard**: When fetching realtime quotes, any ETF may be missing (halted, API error, network timeout). Always guard with `if code not in realtime: continue` before accessing `realtime[code]`. Same for all_tech. A missing ETF should produce a "持有(观望)" signal, not a crash.
 - **intraday_t_once.py now imports from signal_generator** (not indicators.py): `from signal_generator import calc_rsi_wilder, calc_macd`. This ensures MACD calculation is identical to the main signal generator. The old indicators.py had a different MACD algorithm (SMA-warm with different DEA initialization) that produced different golden/death cross signals.
@@ -424,3 +465,9 @@ cua-driver was installed then uninstalled per user request. User chose Evolving 
 - **Backtest yearly benchmark (v3.1.5, shared pool + 44k cap)**: 2022 -6.94%/8.17%dd, 2023 +5.57%/10.21%dd, 2024 +17.28%/14.13%dd, 2025 +47.30%/6.36%dd, 2026YTD +24.83%/10.19%dd. 5-year: +91.10%/19.11%dd. No year with drawdown >15%.
 - **Yearly backtest requires TRADE_END replacement**: when running yearly backtests, you must replace BOTH `TRADE_START` and `TRADE_END` in the script. The regex must account for whitespace: `re.sub(r'TRADE_END\s*=\s*".*?"', f'TRADE_END = "{end}"', src)`. A simple `re.sub(r'TRADE_END = ".*?"', ...)` will FAIL because the original has `TRADE_END   = "..."` (3 spaces before =). Each year starts fresh (no position carryover) — the backtest engine initializes all positions to empty at the start of the date range.
 - **Evolving `e.revoke()` does NOT exist**: the correct single-order revoke method is `e.revokeEntrust(contractNo)`. Batch methods: `e.revokeAllEntrust()`, `e.revokeAllBuyEntrust()`, `e.revokeAllSellEntrust()`. Using `e.revoke()` will raise `AttributeError: 'Evolving' object has no attribute 'revoke'`. Always verify Evolving API methods by checking `dir(e)` before using them.
+- **md2wechat requires IP whitelist**: WeChat API returns errcode 40164 if the calling IP is not in the whitelist. Login mp.weixin.qq.com → 设置 → 开发 → 基本配置 → IP白名单, add the machine's public IP. This is a prerequisite — md2wechat will fail with "invalid ip" until whitelisted.
+- **md2wechat requires cover image**: WeChat draft API mandates a cover image. If the markdown has no images, md2wechat returns `MISSING_COVER_IMAGE`. Add at least one `![alt](path)` — the first image is used as cover.
+- **Credentials never go to GitHub**: AppID/AppSecret/passwords/tokens are stored locally only (e.g. ~/hermes/scripts/.env.wechat). Never commit .env files or credential strings to any git repo.
+- **Hermes Desktop app location**: after building, the app is at `~/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app`. Copy to `/Applications/` for Launchpad visibility: `cp -R ~/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app /Applications/`. The app won't appear in Launchpad/Finder until copied there.
+- **md2wechat --comment on subscription accounts**: the `--comment` flag is accepted but has no effect on 未认证订阅号 (errcode 48001). Remind user to manually enable comments + original declaration in WeChat backend.
+- **WeChat article style**: user explicitly rejected vague/hype content ("太虚了"). Articles must be practical and actionable: real code, real numbers, step-by-step instructions, real pitfalls. Include GitHub repo links. No marketing language.

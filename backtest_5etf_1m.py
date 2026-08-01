@@ -24,7 +24,7 @@
 补仓: 跌>3%+MACD非死叉/绿柱放大+add_count<5
 """
 import json, urllib.request, math, sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 TRADE_START = "2021-08-01"
 TRADE_END   = "2026-07-27"
@@ -44,16 +44,16 @@ DEAD_RATIO = 0.6
 ACTIVE_RATIO = 0.4
 FEE = 5
 SLIPPAGE = 0.001
-COOLDOWN_DAYS = 1
+COOLDOWN_DAYS = 2  # 与signal_generator一致(2天冷却期)
 
 # ═══════════════════════════════════════════════
-#  Indicator functions
+#  Indicator functions (与signal_generator逻辑一致)
 # ═══════════════════════════════════════════════
-def ma(c, n):
+def calc_ma(c, n):
     if len(c) < n: return None
     return sum(c[-n:]) / n
 
-def rsi(c, n=14):
+def calc_rsi_wilder(c, n=14):
     if len(c) < n + 1: return None
     gains = []; losses = []
     for i in range(1, len(c)):
@@ -69,7 +69,8 @@ def rsi(c, n=14):
     rs = avg_g / avg_l
     return round(100 - 100 / (1 + rs), 2)
 
-def macd(c):
+def calc_macd(c):
+    """返回 (dif, dea, macd_status) — 与signal_generator calc_macd一致但返回3元组"""
     slow, fast, sig = 26, 12, 9
     if len(c) < slow + sig: return None, None, "震荡"
     e12 = sum(c[:fast]) / fast
@@ -103,7 +104,7 @@ def macd(c):
     else:                    s = "震荡"
     return round(d, 4), round(e, 4), s
 
-def ao(highs, lows):
+def calc_ao(highs, lows):
     if len(highs) < 34: return []
     median = [(highs[i] + lows[i]) / 2 for i in range(len(highs))]
     ao_vals = []
@@ -127,14 +128,17 @@ def fetch_daily(code, sid):
         data = json.loads(resp.read().decode("utf-8"))
     result = []
     for d in data:
-        result.append({
-            "date":   d["day"],
-            "open":   float(d["open"]),
-            "close":  float(d["close"]),
-            "high":   float(d["high"]),
-            "low":    float(d["low"]),
-            "volume": float(d["volume"]),
-        })
+        try:
+            result.append({
+                "date":   d["day"],
+                "open":   float(d["open"]),
+                "close":  float(d["close"]),
+                "high":   float(d["high"]),
+                "low":    float(d["low"]),
+                "volume": float(d["volume"]),
+            })
+        except (ValueError, KeyError):
+            continue  # 跳过异常数据行
     # 前复权: 检测除权/分红(open/prev_close < 0.95视为调整)
     adj_factor = 1.0
     factors = [1.0] * len(result)
@@ -180,11 +184,11 @@ print(f"\n▸ 回测区间: {dates[0]} → {dates[-1]}  ({len(dates)} 个交易�
 # ═══════════════════════════════════════════════
 class Pos:
     __slots__ = (
-        'shares', 'cost', 'avg', 'base', 'peak', 'first_price',
+        'shares', 'cost', 'avg', 'base', 'first_price',
         'build_phase', 'bought_today', 'stop_level', 'below_ma20',
         'below_ma20_date', 'reached_8', 'reached_15', 'trail',
         'add_count', 'empty_days', 'empty_days_date',
-        'last_entry_date', 'stop_cooldown', 'cooldown_until',
+        'stop_cooldown', 'cooldown_until',
         'dead_shares', 'active_shares', 'prev_rsi',
         'ma5_touch_count', 'peak_price',
     )
@@ -193,8 +197,6 @@ class Pos:
         self.cost           = 0.0
         self.avg            = 0.0
         self.base           = 0.0
-        self.peak           = 0.0
-        self.peak_price     = 0.0
         self.first_price    = 0.0
         self.build_phase    = 0
         self.bought_today   = False
@@ -207,31 +209,27 @@ class Pos:
         self.add_count      = 0
         self.empty_days     = 0
         self.empty_days_date = ""
-        self.last_entry_date = ""
         self.stop_cooldown  = False
         self.cooldown_until = ""
         self.dead_shares    = 0
         self.active_shares  = 0
         self.prev_rsi       = None
         self.ma5_touch_count = 0
+        self.peak_price     = 0.0
 
     @property
     def has_position(self): return self.shares > 0
-
-    def market_value(self, price):
-        return self.shares * price
 
     def update_dead_active(self):
         self.dead_shares = int(self.shares * DEAD_RATIO)
         self.active_shares = self.shares - self.dead_shares
 
     def full_liquidate(self, price, date_str):
-        """清仓"""
+        """清仓 — 与signal_generator reset_on_liquidate一致"""
         self.shares = 0
         self.cost = 0
         self.avg = 0
         self.base = 0
-        self.peak = 0
         self.peak_price = 0
         self.build_phase = 0
         self.stop_level = 0
@@ -244,11 +242,25 @@ class Pos:
         self.dead_shares = 0
         self.active_shares = 0
         self.ma5_touch_count = 0
-        self.cooldown_until = date_str  # 1天冷却期
+        # 冷却期(与signal_generator一致: COOLDOWN_DAYS=2)
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            self.cooldown_until = (dt + timedelta(days=COOLDOWN_DAYS)).strftime("%Y-%m-%d")
+        except Exception:
+            self.cooldown_until = ""
 
     def is_in_cooldown(self, date_str):
         if not self.cooldown_until: return False
         return date_str <= self.cooldown_until
+
+    def init_on_entry(self, price, date_str):
+        """入场初始化(6通道共用)"""
+        self.base = price
+        self.first_price = price
+        self.build_phase = 1
+        self.bought_today = True
+        self.add_count = 0
+        self.empty_days = 0
 
 # 共享资金池
 cash = TOTAL_FUND
@@ -285,7 +297,6 @@ def do_buy(pos, price, shares):
     pos.cost += cost
     pos.shares += shares
     pos.avg = pos.cost / pos.shares
-    pos.peak = max(pos.peak, price)
     pos.peak_price = max(pos.peak_price, price)
     pos.update_dead_active()
     return shares
@@ -302,11 +313,24 @@ def do_sell(pos, price, shares):
     pos.update_dead_active()
     return shares
 
+def do_liquidate(pos, price, date_str, action, reason, pnl):
+    """统一清仓处理: pnl统计 + 资金回收 + 清仓"""
+    global cash, win_trades, loss_trades, win_amount, loss_amount
+    log_trade(date_str, "", action, price, pos.shares, reason, pnl)
+    if pnl >= 0:
+        win_trades += 1
+        win_amount += pnl
+    else:
+        loss_trades += 1
+        loss_amount += abs(pnl)
+    cash += pos.shares * price * (1 - SLIPPAGE) - FEE
+    pos.full_liquidate(price, date_str)
+    pos.stop_cooldown = True
+
 # ═══════════════════════════════════════════════
 #  Main loop
 # ═══════════════════════════════════════════════
 daily_values = []
-entry_dates = {c: "" for c in CODES}
 
 for di, date in enumerate(dates):
     day_data = klines_all[date]
@@ -324,48 +348,34 @@ for di, date in enumerate(dates):
 
         price   = kls[idx]["close"]
         closes  = [kls[i]["close"] for i in range(max(0, idx - 60), idx + 1)]
-        ma5_v   = ma(closes, 5)
-        ma20_v  = ma(closes, 20)
-        r       = rsi(closes, 14)
-        dif, dea, ms = macd(closes)
+        ma5_v   = calc_ma(closes, 5)
+        ma20_v  = calc_ma(closes, 20)
+        r       = calc_rsi_wilder(closes, 14)
+        dif, dea, ms = calc_macd(closes)
         if ma5_v is None or r is None or dif is None:
             continue
 
         # AO
         ao_highs = [kls[i]["high"] for i in range(idx + 1)]
         ao_lows  = [kls[i]["low"]  for i in range(idx + 1)]
-        ao_vals  = ao(ao_highs, ao_lows)
+        ao_vals  = calc_ao(ao_highs, ao_lows)
 
         # ── EXIT LOGIC (持仓时) ──
         if pos.has_position:
             # 更新峰值
             if price > pos.peak_price:
                 pos.peak_price = price
-            if price > pos.peak:
-                pos.peak = price
 
             # 均价止损10%
             if pos.avg > 0 and price <= pos.avg * 0.90:
                 pnl = pos.shares * price - pos.cost
-                log_trade(date, code, "均价止损10%", price, pos.shares,
-                         f"avg={pos.avg:.3f}", pnl)
-                if pnl >= 0: win_trades += 1; win_amount += pnl
-                else: loss_trades += 1; loss_amount += abs(pnl)
-                cash += pos.shares * price * (1 - SLIPPAGE) - FEE
-                pos.full_liquidate(price, date)
-                pos.stop_cooldown = True
+                do_liquidate(pos, price, date, "均价止损10%", f"avg={pos.avg:.3f}", pnl)
                 continue
 
             # 硬止盈30%
             if pos.base > 0 and price >= pos.base * 1.30:
                 pnl = pos.shares * price - pos.cost
-                log_trade(date, code, "硬止盈30%", price, pos.shares,
-                         f"base={pos.base:.3f}", pnl)
-                if pnl >= 0: win_trades += 1; win_amount += pnl
-                else: loss_trades += 1; loss_amount += abs(pnl)
-                cash += pos.shares * price * (1 - SLIPPAGE) - FEE
-                pos.full_liquidate(price, date)
-                pos.stop_cooldown = True
+                do_liquidate(pos, price, date, "硬止盈30%", f"base={pos.base:.3f}", pnl)
                 continue
 
             # 移动止盈
@@ -381,13 +391,7 @@ for di, date in enumerate(dates):
             if pos.trail > 0 and price <= pos.trail:
                 pnl = pos.shares * price - pos.cost
                 label = "移动止盈8%" if not pos.reached_15 else "移动止盈15%"
-                log_trade(date, code, label, price, pos.shares,
-                         f"trail={pos.trail:.3f}", pnl)
-                if pnl >= 0: win_trades += 1; win_amount += pnl
-                else: loss_trades += 1; loss_amount += abs(pnl)
-                cash += pos.shares * price * (1 - SLIPPAGE) - FEE
-                pos.full_liquidate(price, date)
-                pos.stop_cooldown = True
+                do_liquidate(pos, price, date, label, f"trail={pos.trail:.3f}", pnl)
                 continue
 
             # 硬止损20% (市值峰值回撤)
@@ -395,13 +399,7 @@ for di, date in enumerate(dates):
             peak_val = pos.peak_price * pos.shares
             if peak_val > 0 and mkt_val < peak_val * 0.80:
                 pnl = mkt_val - pos.cost
-                log_trade(date, code, "硬止损20%", price, pos.shares,
-                         f"mkt={mkt_val:.0f}<peak×0.8={peak_val*0.80:.0f}", pnl)
-                if pnl >= 0: win_trades += 1; win_amount += pnl
-                else: loss_trades += 1; loss_amount += abs(pnl)
-                cash += pos.shares * price * (1 - SLIPPAGE) - FEE
-                pos.full_liquidate(price, date)
-                pos.stop_cooldown = True
+                do_liquidate(pos, price, date, "硬止损20%", f"mkt={mkt_val:.0f}<peak×0.8={peak_val*0.80:.0f}", pnl)
                 continue
 
             # 分级止损
@@ -420,7 +418,7 @@ for di, date in enumerate(dates):
                     do_sell(pos, price, ss)
                     pos.stop_level = 1
                     pos.stop_cooldown = True
-                    pos.peak_price = 0  # 减仓后重置peak
+                    pos.peak_price = price  # 减仓后用当前价(非0，保持硬止损20%有效)
                     log_trade(date, code, "止损1-30%", price, ss, f"MA20连续{pos.below_ma20}日跌破")
 
             # Level 2: DIF<0减30%
@@ -430,18 +428,13 @@ for di, date in enumerate(dates):
                     do_sell(pos, price, ss)
                     pos.stop_level = 2
                     pos.stop_cooldown = True
-                    pos.peak_price = 0
+                    pos.peak_price = price  # 减仓后用当前价(非0，保持硬止损20%有效)
                     log_trade(date, code, "止损2-30%", price, ss, "DIF<0")
 
             # Level 3: MACD死叉/绿柱放大清仓
             if pos.stop_level == 2 and ms in ("死叉", "绿柱放大"):
                 pnl = pos.shares * price - pos.cost
-                log_trade(date, code, "止损3清仓", price, pos.shares, f"MACD{ms}", pnl)
-                if pnl >= 0: win_trades += 1; win_amount += pnl
-                else: loss_trades += 1; loss_amount += abs(pnl)
-                cash += pos.shares * price * (1 - SLIPPAGE) - FEE
-                pos.full_liquidate(price, date)
-                pos.stop_cooldown = True
+                do_liquidate(pos, price, date, "止损3清仓", f"MACD{ms}", pnl)
                 continue
 
             # 分级止损恢复(加严: 价>MA20+DIF>0+MACD红柱)
@@ -462,10 +455,7 @@ for di, date in enumerate(dates):
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)
                     if actual >= 100:
-                        pos.base = price; pos.first_price = price; pos.build_phase = 1
-                        pos.bought_today = True; pos.add_count = 0
-                        pos.empty_days = 0; pos.last_entry_date = date
-                        entry_dates[code] = date
+                        pos.init_on_entry(price, date)
                         log_trade(date, code, "RSI抄底30%", price, actual, f"RSI={r} 金叉")
                         entered = True
 
@@ -475,10 +465,7 @@ for di, date in enumerate(dates):
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)
                     if actual >= 100:
-                        pos.base = price; pos.first_price = price; pos.build_phase = 1
-                        pos.bought_today = True; pos.add_count = 0
-                        pos.empty_days = 0; pos.last_entry_date = date
-                        entry_dates[code] = date
+                        pos.init_on_entry(price, date)
                         log_trade(date, code, "趋势跟踪30%", price, actual, f"空仓{pos.empty_days}d 价>MA20 {ms}")
                         entered = True
 
@@ -490,10 +477,7 @@ for di, date in enumerate(dates):
                     if ss >= 100:
                         actual = do_buy(pos, price, ss)
                         if actual >= 100:
-                            pos.base = price; pos.first_price = price; pos.build_phase = 1
-                            pos.bought_today = True; pos.add_count = 0
-                            pos.empty_days = 0; pos.last_entry_date = date
-                            entry_dates[code] = date
+                            pos.init_on_entry(price, date)
                             log_trade(date, code, "突破入场30%", price, actual, f"20日高={h20:.3f} 金叉")
                             entered = True
 
@@ -503,10 +487,7 @@ for di, date in enumerate(dates):
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)
                     if actual >= 100:
-                        pos.base = price; pos.first_price = price; pos.build_phase = 1
-                        pos.bought_today = True; pos.add_count = 0
-                        pos.empty_days = 0; pos.last_entry_date = date
-                        entry_dates[code] = date
+                        pos.init_on_entry(price, date)
                         log_trade(date, code, "分批建仓30%", price, actual, f"MACD{ms} RSI={r} 站MA5")
                         entered = True
 
@@ -516,10 +497,7 @@ for di, date in enumerate(dates):
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)
                     if actual >= 100:
-                        pos.base = price; pos.first_price = price; pos.build_phase = 1
-                        pos.bought_today = True; pos.add_count = 0
-                        pos.empty_days = 0; pos.last_entry_date = date
-                        entry_dates[code] = date
+                        pos.init_on_entry(price, date)
                         log_trade(date, code, "Test抄底30%", price, actual, f"RSI={r}<35 绿柱缩短")
                         entered = True
 
@@ -529,10 +507,7 @@ for di, date in enumerate(dates):
                 if ss >= 100:
                     actual = do_buy(pos, price, ss)
                     if actual >= 100:
-                        pos.base = price; pos.first_price = price; pos.build_phase = 1
-                        pos.bought_today = True; pos.add_count = 0
-                        pos.empty_days = 0; pos.last_entry_date = date
-                        entry_dates[code] = date
+                        pos.init_on_entry(price, date)
                         log_trade(date, code, "试探建仓15%", price, actual, f"MACD{ms} RSI={r}")
                         entered = True
 
@@ -568,7 +543,6 @@ for di, date in enumerate(dates):
                             pos.add_count += 1
                             # 确认加仓后重置基准
                             pos.base = pos.avg
-                            pos.peak = price
                             pos.peak_price = price
                             pos.first_price = price
                             pos.reached_8 = False
@@ -596,7 +570,7 @@ for di, date in enumerate(dates):
             idx = next((i for i, k in enumerate(kls) if k["date"] == date), None)
             if idx is not None and idx >= 50:
                 closes = [kls[i]["close"] for i in range(max(0, idx - 60), idx + 1)]
-                _, _, ms_val = macd(closes)
+                _, _, ms_val = calc_macd(closes)
                 prev_ms[c] = ms_val
 
     # Portfolio value
@@ -632,7 +606,7 @@ trading_days = len(daily_values)
 years = trading_days / 242
 annual_ret = ((final_total / TOTAL_FUND) ** (1 / years) - 1) * 100 if years > 0 else 0
 
-# 夏普比率
+# 夏普比率 (样本标准差)
 daily_returns = []
 for i in range(1, len(daily_values)):
     prev_val = daily_values[i-1][1]
@@ -641,17 +615,15 @@ for i in range(1, len(daily_values)):
         daily_returns.append((curr_val - prev_val) / prev_val)
 if daily_returns:
     avg_daily_ret = sum(daily_returns) / len(daily_returns)
-    std_daily_ret = (sum((r - avg_daily_ret)**2 for r in daily_returns) / len(daily_returns)) ** 0.5
+    std_daily_ret = (sum((r - avg_daily_ret)**2 for r in daily_returns) / (len(daily_returns) - 1)) ** 0.5
     sharpe = (avg_daily_ret / std_daily_ret) * (242 ** 0.5) if std_daily_ret > 0 else 0
 else:
     sharpe = 0
 
-# 胜率/盈亏比
+# 胜率/盈亏比 (总盈亏比)
 total_trades = win_trades + loss_trades
 win_rate = win_trades / total_trades * 100 if total_trades > 0 else 0
-avg_win = win_amount / win_trades if win_trades > 0 else 0
-avg_loss = loss_amount / loss_trades if loss_trades > 0 else 0
-profit_factor = avg_win / avg_loss if avg_loss > 0 else 0
+profit_factor = win_amount / loss_amount if loss_amount > 0 else 0
 
 print(f"\n  初始资金:    ¥{TOTAL_FUND:>12,.0f}  (共享资金池, 单只上限¥{MAX_PER_ETF:,})")
 print(f"  最终资金:    ¥{final_total:>12,.0f}")
