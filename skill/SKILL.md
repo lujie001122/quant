@@ -15,7 +15,7 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 - 159516 (半导体设备) / 515880 (通信) / 588170 (科创半导体) / 159532 / 515050 (中证全指)
 - Data source: Sina API (primary) + akshare (fallback)
 - Python 3.11, venv at ~/hermes-trading/.venv/
-- Fund model: shared 220k pool, NO per-ETF position cap. Strategy manages signal + position ratios (e.g. 30%/70% of total fund), broker handles fund constraints. User explicitly corrected: "这不是共享资金池，这是仓位管理" and "仓位上限也不用管" — position management, not capital allocation.
+- Fund model: shared 220k pool. Each ETF gets 20% of total fund (4.4万 at 22万). Position ratios are fractions of per-ETF allocation (e.g. 30%=4.4万×30%=1.32万). User explicitly corrected: "这不是共享资金池，这是仓位管理" and "仓位上限也不用管" — position management, not capital allocation. **CRITICAL**: `_buy(data, pct)` uses `etf_fund = broker.getvalue() * 0.20` then `target_value = etf_fund * pct`, NOT `broker.getvalue() * pct`. The old approach (total fund × pct) gave 5x larger positions than live.
 - **Git repo**: `git@github.com:lujie001122/quant.git` (main branch). Contains all strategy code + skill/SKILL.md + references/. Source files live at ~/hermes/scripts/ — push to repo after significant changes.
 - **GitHub backup rule**: push to GitHub after every confirmed strategy file change. Daily cron backup at 21:00 runs git_backup.sh (syncs ~/hermes/scripts/ + skill files to ~/quant/ then pushes). Local repo at ~/quant/.
 - **Security**: credentials (AppID, AppSecret, passwords, tokens, keys) must NEVER be uploaded to GitHub or any external platform. Store locally only.
@@ -24,7 +24,7 @@ Use when: user asks about ETF signals, backtesting, portfolio, intraday T, cron 
 
 | File | Location | Purpose |
 |------|----------|---------|
-| backtest_bt.py | ~/hermes/scripts/ | Backtrader backtest engine (v3.2, 5-ETF shared pool, 7 channels, Analyzers for Sharpe/DD/Trade, warmup data, MA60/ADX indicators) |
+| backtest_bt.py | ~/hermes/scripts/ | Backtrader backtest engine (v3.3, 5-ETF shared pool, 6 channels + trend profit sell + MA5 active sell, Analyzers, warmup data, position ratio=per-ETF 20%×pct) |
 | backtest_5etf_1m.py.bak | ~/hermes/scripts/ | Legacy hand-written backtest (superseded by backtest_bt.py, kept for reference) |
 | signal_generator.py | ~/hermes/scripts/ | Live signal generator v3.1 (~1200 lines, refactored 2026-08-01: CODE_MAP/INVERTED_WEIGHTS module constants, _enter_position/_get_daily_log/to_dict/from_dict methods, _safe_float helper, fetch_klines_120min removed, t0 scoring functions now shared with intraday_t_once) |
 | ~~engine.py~~ | ~~deleted~~ | Removed 2026-08-01 — signal_generator.py fully replaces it |
