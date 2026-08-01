@@ -1,25 +1,8 @@
 #!/bin/bash
 # 每日备份策略文件到GitHub
 REPO="/Users/lujie/Documents/code/quant"
-SCRIPTS="/Users/lujie/hermes/scripts"
-SKILL_DIR="/Users/lujie/.hermes/skills/mlops/etf-trading"
 
 cd "$REPO"
-
-# 同步最新策略文件
-cp "$SCRIPTS"/backtest_bt.py .
-cp "$SCRIPTS"/signal_generator.py .
-cp "$SCRIPTS"/intraday_t_once.py .
-cp "$SCRIPTS"/sentiment_check.py .
-cp "$SCRIPTS"/ths_client.py .
-cp "$SCRIPTS"/portfolio.json .
-cp "$SCRIPTS"/etf_intraday.sh .
-cp "$SCRIPTS"/etf_premarket.sh .
-
-# 同步skill
-mkdir -p skill references
-cp "$SKILL_DIR"/SKILL.md skill/
-cp "$SKILL_DIR"/references/*.md references/ 2>/dev/null
 
 # 提交推送
 git add -A
