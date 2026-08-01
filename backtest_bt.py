@@ -276,7 +276,7 @@ class ETFStrategy(bt.Strategy):
     def _buy(self, data, pct, reason):
         """按总资金比例买入，与实盘一致"""
         name = data._name
-        target_value = self.broker.getvalue() * pct
+        target_value = min(self.broker.getvalue() * pct, self.broker.getvalue() * 0.60)
         price = data.close[0]
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
