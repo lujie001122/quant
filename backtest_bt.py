@@ -349,6 +349,8 @@ class ETFStrategy(bt.Strategy):
                 "cooldown_until": "", "peak_price": 0.0,
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
                 "pending_order": None, "stop_cooldown": False,
+                "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(最多3次)
+                "active_sell_until": "",  # 活动仓卖出冷却日期(3天内不重复)
             }
 
         # 统计
@@ -440,6 +442,7 @@ class ETFStrategy(bt.Strategy):
         ps["stop_level"] = 0; ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
         ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
+        ps["active_sell_count"] = 0; ps["active_sell_until"] = ""
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -554,21 +557,32 @@ class ETFStrategy(bt.Strategy):
                 if ps["stop_level"] > 0 and ma20_v and price > ma20_v and dif_val > 0 and ms in ("红柱放大", "红柱缩短"):
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
-                # 趋势止盈: MACD红柱缩短+破MA5 → 卖20%活动仓
-                if name not in self._order_pending and ms == "红柱缩短" and price < ma5_v:
+                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓(累计最多3次,3天冷却)
+                if (name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
+                        and ps["active_sell_count"] < 3
+                        and date_str >= ps["active_sell_until"]):
                     active_shares = int(shares * ACTIVE_RATIO)
-                    sell_shares = int(active_shares * 0.20 / 100) * 100
+                    sell_shares = int(active_shares * 0.10 / 100) * 100
                     if sell_shares >= 100:
-                        self._sell(d, 20, f"趋势止盈 红柱缩短+破MA5")
+                        if self._sell(d, 10, f"趋势止盈 红柱缩短+破MA5"):
+                            ps["active_sell_count"] += 1
+                            ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
 
-                # 破MA5卖活动仓10%: RSI>50时
-                if name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50:
+                # 破MA5卖活动仓5%: RSI>50时(累计最多3次,3天冷却)
+                if (name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
+                        and ps["active_sell_count"] < 3
+                        and date_str >= ps["active_sell_until"]):
                     active_shares = int(shares * ACTIVE_RATIO)
-                    if active_shares > 0:
-                        self._sell(d, 10, f"破MA5卖活动仓10% RSI={rsi_val:.1f}")
+                    sell_shares = int(active_shares * 0.05 / 100) * 100
+                    if sell_shares >= 100:
+                        if self._sell(d, 5, f"破MA5卖活动仓5% RSI={rsi_val:.1f}"):
+                            ps["active_sell_count"] += 1
+                            ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
 
             # ═══ ENTRY LOGIC ═══
-            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str):
+            # P1: 入场MA20趋势过滤 — 新开仓时要求price > MA20
+            ma20_ok = (ma20_v and price > ma20_v)
+            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and ma20_ok:
                 entered = False
 
                 # 通道1: RSI抄底 (RSI为None时允许,与实盘一致)
@@ -648,9 +662,30 @@ def main():
     run_000725 = "--000725" in sys.argv
     run_515880 = "--515880" in sys.argv
 
+    # --period X 支持: 5y/3y/2y/1y/6m/3m
+    period_map = {
+        "5y": ("2021-08-01", "2026-07-27"),
+        "3y": ("2023-08-01", "2026-07-27"),
+        "2y": ("2024-08-01", "2026-07-27"),
+        "1y": ("2025-08-01", "2026-07-27"),
+        "6m": ("2026-01-27", "2026-07-27"),
+        "3m": ("2026-04-27", "2026-07-27"),
+    }
+    period = None
+    for arg in sys.argv:
+        if arg.startswith("--period="):
+            period = arg.split("=")[1]
+            break
+
     if run_000725:
         active_codes = {"000725": CODES["000725"]}
         trade_start, trade_end = "2025-08-01", "2026-07-27"
+    elif run_515880:
+        active_codes = {"515880": CODES["515880"]}
+        trade_start, trade_end = "2024-08-01", "2026-07-27"
+    elif period and period in period_map:
+        active_codes = {k: v for k, v in CODES.items() if k != "000725"}
+        trade_start, trade_end = period_map[period]
     elif run_515880:
         active_codes = {"515880": CODES["515880"]}
         trade_start, trade_end = "2024-08-01", "2026-07-27"
