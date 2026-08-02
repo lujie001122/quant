@@ -1218,6 +1218,15 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     pos.prev_macd_status = all_tech[code]["macd_status"]
                 state_to_save[code] = pos.to_dict(today_str)
             pf_data["_signal_state"] = state_to_save
+            # 更新 account 字段
+            mv = sum(p.get("market_value", 0) for p in pf_data.get("positions", {}).values())
+            cash = pf_data.get("account", {}).get("cash", 0) or 0
+            pf_data["account"] = {
+                "total_asset": round(mv + cash, 2),
+                "cash": cash,
+                "market_value": round(mv, 2),
+            }
+            pf_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             with open(pf_path, "w") as _f:
                 json.dump(pf_data, _f, ensure_ascii=False, indent=2)
             # 同步到~/.hermes/scripts/
