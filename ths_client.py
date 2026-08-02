@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
 """
-同花顺 Mac 客户端 Python 接口（基于 Evolving）
-在 Evolving 之上封装：自动激活窗口、撤单、限价单、异常日志
+同花顺 Mac 客户端 Python 接口（基于 EvolvingSim）
+在 EvolvingSim 之上封装：自动激活窗口、撤单、限价单、异常日志
 """
 import json, time, os, sys, logging
 
-# 添加 Evolving 路径
-sys.path.insert(0, os.path.expanduser("~/hermes-trading/.venv/lib/python3.9/site-packages"))
-
-from evolving import evolving
+from evolving.evolving import EvolvingSim
 
 logger = logging.getLogger("ths_client")
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(levelname)s: %(message)s")
 
 
 class THSClient:
-    """基于 Evolving 的同花顺客户端接口（精简版，不干扰Evolving）"""
+    """基于 EvolvingSim 的同花顺客户端接口（精简版，不干扰Evolving）"""
 
     def __init__(self, mode="模拟"):
         self.mode = mode
-        self._e = evolving.Evolving()
+        self._e = EvolvingSim()
         self._activate()
 
     def _activate(self):
@@ -83,7 +80,7 @@ class THSClient:
                 if (item.get("stock_code") == stock_code
                         and item.get("direction") == direction
                         and item.get("status") == "未成交"):
-                    self._e.revokeEntrust(item["entrust_no"])
+                    self._e.revokeEntrust(revokeType="contractNo", contractNo=item["entrust_no"])
                     time.sleep(0.3)
         except Exception as e:
             logger.warning(f"撤单失败({stock_code} {direction}): {e}")
@@ -119,7 +116,7 @@ class THSClient:
     def revoke_all(self):
         """撤销所有委托"""
         try:
-            self._e.revokeAllEntrust()
+            self._e.revokeEntrust(revokeType="allBuyAndSell")
             time.sleep(0.5)
             return True
         except Exception as e:
@@ -129,7 +126,7 @@ class THSClient:
     def revoke_all_buy(self):
         """撤销所有买入委托"""
         try:
-            self._e.revokeAllBuyEntrust()
+            self._e.revokeEntrust(revokeType="allBuy")
             time.sleep(0.5)
             return True
         except Exception as e:
@@ -139,7 +136,7 @@ class THSClient:
     def revoke_all_sell(self):
         """撤销所有卖出委托"""
         try:
-            self._e.revokeAllSellEntrust()
+            self._e.revokeEntrust(revokeType="allSell")
             time.sleep(0.5)
             return True
         except Exception as e:
