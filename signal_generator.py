@@ -210,15 +210,16 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
                 "volume": float(item["volume"]), "amount": 0,
                 "pct": 0,
             })
-        # ── 前复权: detect splits and adjust historical prices ──
+        # ── 前复权: 检测跳空>20%自动复权(与backtest_bt.py一致) ──
         adj_factor = 1.0
         factors = [1.0] * len(klines)
         for i in range(len(klines) - 1, -1, -1):
             factors[i] = adj_factor
             if i > 0 and klines[i-1]["close"] > 0:
                 ratio = klines[i]["open"] / klines[i-1]["close"]
-                if ratio < 0.95:  # split/dividend detected (5%阈值,与backtest一致)
+                if ratio < 0.80:  # 20%阈值(5%太激进,正常波动会误判)
                     adj_factor *= ratio
+                    print(f"  ⚠ {code} 除权检测: {klines[i]['date']} 跳空{(1 - ratio) * 100:.1f}% (复权因子={adj_factor:.4f})")
         for i in range(len(klines)):
             klines[i]["open"]  = round(klines[i]["open"]  * factors[i], 4)
             klines[i]["close"] = round(klines[i]["close"] * factors[i], 4)

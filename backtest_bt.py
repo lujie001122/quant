@@ -9,10 +9,13 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 """
-import json, urllib.request, math, sys
+import json, urllib.request, math, os, sys
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
+
+# 东方财富API绕过代理(直连国内服务器)
+os.environ["NO_PROXY"] = "push2his.eastmoney.com,push2.eastmoney.com,*.eastmoney.com"
 
 # ═══════════════════════════════════════════════
 #  Config
@@ -23,7 +26,7 @@ TOTAL_FUND = 220000
 MAX_PER_ETF = 44000
 FEE = 5
 SLIPPAGE_PCT = 0.001
-COOLDOWN_DAYS = 2
+COOLDOWN_DAYS = 3
 DEAD_RATIO = 0.6
 ACTIVE_RATIO = 0.4
 
@@ -37,9 +40,113 @@ CODES = {
 }
 
 # ═══════════════════════════════════════════════
-#  Data fetch
+#  Data fetch (前复权)
 # ═══════════════════════════════════════════════
+
+# 东方财富直连opener(绕过代理)
+_NO_PROXY_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({"http": "", "https": ""})
+)
+
+
+def _detect_splits(code, market):
+    """检测除权事件并输出日志(对比不复权数据)
+    market: "1"=上海, "0"=深圳
+    """
+    try:
+        secid = f"{market}.{code}"
+        url = (f"https://push2his.eastmoney.com/api/qt/stock/kline/get?"
+               f"secid={secid}&fields1=f1,f2,f3,f4,f5,f6&"
+               f"fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&"
+               f"klt=101&fqt=0&beg=20200101&end=20991231&lmt=1250")
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://quote.eastmoney.com",
+        })
+        with _NO_PROXY_OPENER.open(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if not data.get("data") or not data["data"].get("klines"):
+            return
+
+        splits = []
+        klines = data["data"]["klines"]
+        for i in range(1, len(klines)):
+            prev_parts = klines[i - 1].split(",")
+            curr_parts = klines[i].split(",")
+            if len(prev_parts) < 3 or len(curr_parts) < 2:
+                continue
+            prev_close = float(prev_parts[2])
+            curr_open = float(curr_parts[1])
+            if prev_close > 0:
+                ratio = curr_open / prev_close
+                if ratio < 0.80:  # 跳空>20%视为除权
+                    splits.append({
+                        "date": curr_parts[0],
+                        "prev_close": prev_close,
+                        "curr_open": curr_open,
+                        "ratio": ratio,
+                    })
+
+        if splits:
+            print(f"  ⚠ {code} 检测到 {len(splits)} 次除权事件:")
+            for s in splits:
+                print(f"    {s['date']}: 前收={s['prev_close']:.3f} → 今开={s['curr_open']:.3f} "
+                      f"(跳空{(1 - s['ratio']) * 100:.1f}%)")
+    except Exception:
+        pass  # 静默失败，不影响主流程
+
+
 def fetch_daily(code, sid):
+    """获取前复权日K线数据
+    优先: 东方财富API (fqt=1 前复权)
+    备选: Sina API + 跳空检测复权(20%阈值)
+    """
+    # ── 主数据源: 东方财富 API (前复权) ──
+    try:
+        market = "1" if code[0] in ("5", "6") else "0"
+        secid = f"{market}.{code}"
+        url = (f"https://push2his.eastmoney.com/api/qt/stock/kline/get?"
+               f"secid={secid}&fields1=f1,f2,f3,f4,f5,f6&"
+               f"fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&"
+               f"klt=101&fqt=1&beg=20200101&end=20991231&lmt=1250")
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://quote.eastmoney.com",
+        })
+        with _NO_PROXY_OPENER.open(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if data.get("data") and data["data"].get("klines"):
+            rows = []
+            for line in data["data"]["klines"]:
+                parts = line.split(",")
+                if len(parts) < 6:
+                    continue
+                try:
+                    rows.append({
+                        "date": parts[0],
+                        "open": float(parts[1]),
+                        "close": float(parts[2]),
+                        "high": float(parts[3]),
+                        "low": float(parts[4]),
+                        "volume": float(parts[5]),
+                    })
+                except (ValueError, IndexError):
+                    continue
+
+            if len(rows) > 50:
+                # 检测除权事件(对比不复权数据)
+                _detect_splits(code, market)
+
+                df = pd.DataFrame(rows)
+                df["date"] = pd.to_datetime(df["date"])
+                df.set_index("date", inplace=True)
+                return df[["open", "high", "low", "close", "volume"]]
+    except Exception as e:
+        print(f"[WARN] {code} 东方财富API失败: {e}, 降级为Sina")
+
+    # ── 备选: Sina API + 跳空检测复权(20%阈值) ──
     url = (f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            f"CN_MarketData.getKLineData?symbol={sid}&scale=240&ma=no&datalen=1250")
     req = urllib.request.Request(url, headers={
@@ -56,16 +163,20 @@ def fetch_daily(code, sid):
             })
         except (ValueError, KeyError):
             continue
-    # 前复权
+
+    # 前复权: 检测跳空>20%自动复权
     adj = 1.0; factors = [1.0] * len(rows)
     for i in range(len(rows) - 1, -1, -1):
         factors[i] = adj
-        if i > 0 and rows[i-1]["close"] > 0:
-            ratio = rows[i]["open"] / rows[i-1]["close"]
-            if ratio < 0.95: adj *= ratio
+        if i > 0 and rows[i - 1]["close"] > 0:
+            ratio = rows[i]["open"] / rows[i - 1]["close"]
+            if ratio < 0.80:  # 20%阈值(更保守,避免正常波动误判)
+                adj *= ratio
+                print(f"  ⚠ 除权检测: {rows[i]['date']} 跳空{(1 - ratio) * 100:.1f}% (复权因子={adj:.4f})")
     for i in range(len(rows)):
         for k in ("open", "close", "high", "low"):
             rows[i][k] = round(rows[i][k] * factors[i], 4)
+
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
     df.set_index("date", inplace=True)
@@ -210,6 +321,9 @@ class ETFStrategy(bt.Strategy):
         ("cooldown_days", COOLDOWN_DAYS),
     )
 
+    # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
+    MIN_WARMUP = 35
+
     def __init__(self):
         # 指标
         self.rsi = {}; self.macd = {}; self.ao = {}
@@ -294,8 +408,13 @@ class ETFStrategy(bt.Strategy):
         """按仓位比例卖出"""
         name = data._name
         current = self._get_shares(data)
+        if current < 100: return False  # 无持仓可卖
         shares = int(current * pct / 100 / 100) * 100
         if shares < 100: return False
+        # 防止卖出超过持仓
+        if shares > current:
+            shares = (current // 100) * 100
+            if shares < 100: return False
         self._order_pending[name] = self.sell(data=data, size=shares)
         return True
 
@@ -337,6 +456,10 @@ class ETFStrategy(bt.Strategy):
             ps = self.ps[name]
             price = d.close[0]
 
+            # 跳过未上市ETF(volume=-1标记为未上市, 区别于节假日volume=0)
+            if d.volume[0] < 0:
+                continue
+
             # 有挂单时跳过(避免重复下单)
             if name in self._order_pending:
                 continue
@@ -368,9 +491,9 @@ class ETFStrategy(bt.Strategy):
             if has_pos:
                 if price > ps["peak_price"]: ps["peak_price"] = price
 
-                # 均价止损10%
-                if avg > 0 and price <= avg * 0.90:
-                    self._close(d, f"均价止损10% avg={avg:.3f}")
+                # 均价止损12%
+                if avg > 0 and price <= avg * 0.88:
+                    self._close(d, f"均价止损12% avg={avg:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 
@@ -412,9 +535,16 @@ class ETFStrategy(bt.Strategy):
                     if self._sell(d, 30, f"止损1-30% MA20连续{ps['below_ma20']}日"):
                         ps["stop_level"] = 1; ps["peak_price"] = price
 
+                # 有挂单时不再继续卖出(止损1已提交，止损2等次日)
+                if name in self._order_pending:
+                    continue
+
                 if ps["stop_level"] == 1 and dif_val < 0:
                     if self._sell(d, 30, "止损2-30% DIF<0"):
                         ps["stop_level"] = 2; ps["peak_price"] = price
+
+                if name in self._order_pending:
+                    continue
 
                 if ps["stop_level"] == 2 and ms in ("死叉", "绿柱放大"):
                     self._close(d, f"止损3清仓 MACD{ms}")
@@ -425,14 +555,14 @@ class ETFStrategy(bt.Strategy):
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
                 # 趋势止盈: MACD红柱缩短+破MA5 → 卖20%活动仓
-                if ms == "红柱缩短" and price < ma5_v:
+                if name not in self._order_pending and ms == "红柱缩短" and price < ma5_v:
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.20 / 100) * 100
                     if sell_shares >= 100:
                         self._sell(d, 20, f"趋势止盈 红柱缩短+破MA5")
 
                 # 破MA5卖活动仓10%: RSI>50时
-                if price < ma5_v and rsi_val is not None and rsi_val > 50:
+                if name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50:
                     active_shares = int(shares * ACTIVE_RATIO)
                     if active_shares > 0:
                         self._sell(d, 10, f"破MA5卖活动仓10% RSI={rsi_val:.1f}")
@@ -516,27 +646,51 @@ class ETFStrategy(bt.Strategy):
 def main():
     # ── 命令行参数 ──
     run_000725 = "--000725" in sys.argv
+    run_515880 = "--515880" in sys.argv
 
     if run_000725:
         active_codes = {"000725": CODES["000725"]}
         trade_start, trade_end = "2025-08-01", "2026-07-27"
+    elif run_515880:
+        active_codes = {"515880": CODES["515880"]}
+        trade_start, trade_end = "2024-08-01", "2026-07-27"
     else:
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = TRADE_START, TRADE_END
 
-    print("▸ 拉取历史K线 (Sina API, datalen=1250)...")
+    print("▸ 拉取历史K线 (东方财富前复权 API, 降级Sina+跳空检测)...")
     dataframes = {}
     for code, cfg in active_codes.items():
         try:
             df = fetch_daily(code, cfg["sid"])
             dataframes[code] = df
-            print(f"  ✓ {code} {cfg['name']:10s}  {len(df):3d} 条K线")
+            print(f"  ✓ {code} {cfg['name']:10s}  {len(df):3d} 条K线 (前复权)")
         except Exception as e:
             print(f"  ✗ {code} {cfg['name']:10s}  拉取失败: {e}"); sys.exit(1)
 
     start = pd.Timestamp(trade_start); end = pd.Timestamp(trade_end)
     for code in dataframes:
         dataframes[code] = dataframes[code][start:end]
+
+    # ── 对齐数据: 晚上市ETF补前置行, 使backtrader多数据同步不卡住 ──
+    # backtrader要求所有数据都就绪才触发next(), 如果588170从2025年才有数据,
+    # 则前3.5年的next()都不会被调用. 解决方案: 用首根K线价格回填上市前日期,
+    # 策略中通过volume<0标记跳过未上市ETF.
+    all_dates = pd.date_range(start=start, end=end, freq="B")  # 工作日
+    for code in dataframes:
+        df = dataframes[code]
+        # 记录原始上市日期(reindex前)
+        first_date = df.index[0]
+        # 重新索引到完整交易日历
+        df = df.reindex(all_dates)
+        # 上市前: 用首根K线价格回填(bfill), volume设为-1标记为"未上市"
+        # 上市后缺日(节假日): 用前值填充(ffill), volume=0
+        for col in ["open", "high", "low", "close"]:
+            df[col] = df[col].ffill().bfill()
+        df["volume"] = df["volume"].fillna(0).astype(float)
+        # 将上市前的volume标记为-1(区别于节假日的0)
+        df.loc[df.index < first_date, "volume"] = -1.0
+        dataframes[code] = df
 
     cerebro = bt.Cerebro()
 
