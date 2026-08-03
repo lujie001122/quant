@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-08-03 10:30:33",
+  "orders": [
+    {
+      "code": "159532",
+      "name": "中证2000ETF",
+      "action": "买入",
+      "direction": "buy",
+      "signal_price": 1.492,
+      "current_price": 1.492,
+      "limit_price": 1.492,
+      "rule": "min(信号价,现价)=1.492",
+      "fund": 44000,
+      "ratio": "30%",
+      "amount": 13129.6,
+      "shares": 8800,
+      "channel": "RSI抄底",
+      "reason": "RSI抄底:MACD金叉(RSI=38.43)",
+      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 159532 8800 1.492"
+    }
+  ],
+  "market_environment": "正常",
+  "other_etfs": {
+    "159516": "持有(观望) MACD绿柱放大 RSI36.01",
+    "515880": "持有(观望) MACD绿柱缩短 RSI33.67",
+    "588170": "持有(观望) MACD绿柱放大 RSI37.29",
+    "515050": "持有(观望) MACD绿柱缩短 RSI34.32"
+  }
+}

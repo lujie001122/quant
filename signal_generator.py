@@ -680,7 +680,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
     # 读取 portfolio.json 判断哪些标的今日已交易
     import os as _os
-    pf_path = _os.path.expanduser("~/hermes/scripts/portfolio.json")
+    pf_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "portfolio.json")
     already_traded_today = set()
     pf_data = {}
     if _os.path.exists(pf_path):
@@ -1240,12 +1240,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             pf_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             with open(pf_path, "w") as _f:
                 json.dump(pf_data, _f, ensure_ascii=False, indent=2)
-            # 同步到~/.hermes/scripts/
-            try:
-                import shutil
-                shutil.copy(pf_path, _os.path.expanduser("~/.hermes/scripts/portfolio.json"))
-            except Exception as e:
-                print(f"[WARN] portfolio.json同步到~/.hermes/scripts/失败: {e}")
+            # 同步到~/.hermes/scripts/ (已废弃，项目已迁移至 ~/Documents/code/quant/)
         except Exception:
             pass
 

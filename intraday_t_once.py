@@ -129,7 +129,7 @@ if not allow_t_in and not allow_t_out:
     exit()
 
 # ═══ 从 portfolio.json 读取持仓 ═══
-pf_path = os.path.expanduser("~/hermes/scripts/portfolio.json")
+pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
 positions = {}
 if os.path.exists(pf_path):
     try:

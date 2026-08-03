@@ -1,27 +1,31 @@
 {
   "_signal_state": {
     "159516": {
-      "build_phase": 1,
-      "build_first_price": 0.747,
-      "stop_level": 3,
+      "build_phase": 0,
+      "build_first_price": 0.0,
+      "stop_level": 0,
       "reached_8pct": false,
       "reached_15pct": false,
       "trailing_stop_price": 0.0,
-      "cooldown_until": null,
+      "cooldown_until": "2026-08-05",
       "grid_frozen": false,
       "last_grid_trigger": null,
-      "peak_price": 0.747,
-      "below_ma20_count": 2,
+      "peak_price": 0.0,
+      "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 41.5,
-      "prev_macd_status": "绿柱缩短",
-      "liquidate_dates": [],
+      "prev_rsi": 37.47,
+      "prev_macd_status": "绿柱放大",
+      "liquidate_dates": [
+        "2026-08-03"
+      ],
+      "empty_days": 1,
+      "empty_days_date": "2026-08-03",
       "daily_trade_log": {
-        "2026-08-01": {
-          "buy_count": 2,
-          "t0_count": 2
+        "2026-08-03": {
+          "buy_count": 0,
+          "t0_count": 0
         }
       }
     },
@@ -40,38 +44,44 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 34.53,
+      "prev_rsi": 34.51,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
+      "empty_days": 1,
+      "empty_days_date": "2026-08-03",
       "daily_trade_log": {
-        "2026-08-01": {
+        "2026-08-03": {
           "buy_count": 0,
           "t0_count": 0
         }
       }
     },
     "588170": {
-      "build_phase": 1,
-      "build_first_price": 0.979,
-      "stop_level": 3,
+      "build_phase": 0,
+      "build_first_price": 0.0,
+      "stop_level": 0,
       "reached_8pct": false,
       "reached_15pct": false,
       "trailing_stop_price": 0.0,
-      "cooldown_until": null,
+      "cooldown_until": "2026-08-05",
       "grid_frozen": false,
       "last_grid_trigger": null,
-      "peak_price": 0.979,
-      "below_ma20_count": 2,
+      "peak_price": 0.0,
+      "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 41.25,
-      "prev_macd_status": "绿柱缩短",
-      "liquidate_dates": [],
+      "prev_rsi": 38.25,
+      "prev_macd_status": "绿柱放大",
+      "liquidate_dates": [
+        "2026-08-03"
+      ],
+      "empty_days": 1,
+      "empty_days_date": "2026-08-03",
       "daily_trade_log": {
-        "2026-08-01": {
-          "buy_count": 2,
-          "t0_count": 2
+        "2026-08-03": {
+          "buy_count": 0,
+          "t0_count": 0
         }
       }
     },
@@ -85,16 +95,18 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
-      "peak_price": 1.486,
+      "peak_price": 1.496,
       "below_ma20_count": 2,
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 37.53,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 39.0,
+      "prev_macd_status": "金叉",
       "liquidate_dates": [],
+      "empty_days": 0,
+      "empty_days_date": null,
       "daily_trade_log": {
-        "2026-08-01": {
+        "2026-08-03": {
           "buy_count": 0,
           "t0_count": 1
         }
@@ -115,11 +127,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 35.69,
+      "prev_rsi": 34.85,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
+      "empty_days": 1,
+      "empty_days_date": "2026-08-03",
       "daily_trade_log": {
-        "2026-08-01": {
+        "2026-08-03": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -191,12 +205,9 @@
     }
   },
   "account": {
-    "total_assets": 213157.28,
-    "total_market_value": 73189.62,
-    "total_pnl": -5860.49,
-    "daily_pnl": 2804.0,
-    "available_cash": 139967.66,
-    "timestamp": "2026-07-31 14:31"
+    "total_asset": 74065.9,
+    "cash": 0,
+    "market_value": 74065.9
   },
-  "last_updated": "2026-07-31 14:31"
+  "last_updated": "2026-08-03 10:37"
 }
