@@ -9,7 +9,7 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 """
-import json, urllib.request, math, sys
+import json, urllib.request, math, os, sys
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
@@ -27,7 +27,8 @@ COOLDOWN_DAYS = 3
 DEAD_RATIO = 0.6
 ACTIVE_RATIO = 0.4
 
-CODES = {
+# 默认ETF配置(回退用, etf_pool.json不存在时使用)
+_DEFAULT_CODES = {
     "159516": {"name": "半导体设备ETF", "sid": "sz159516"},
     "515880": {"name": "通信ETF", "sid": "sh515880"},
     "588170": {"name": "科创半导体ETF", "sid": "sh588170"},
@@ -35,6 +36,39 @@ CODES = {
     "515050": {"name": "中证全指ETF", "sid": "sh515050"},
     "000725": {"name": "京东方A", "sid": "sz000725"},
 }
+
+
+def _load_etf_pool():
+    """从 etf_pool.json 读取ETF列表, 不存在则回退到默认5只"""
+    pool_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etf_pool.json")
+    if os.path.exists(pool_path):
+        try:
+            with open(pool_path, "r", encoding="utf-8") as f:
+                pool = json.load(f)
+            if pool.get("codes") and len(pool["codes"]) >= 3:
+                return pool
+        except Exception:
+            pass
+    return None
+
+
+def _build_codes():
+    """构建CODES配置字典, 优先从etf_pool.json读取"""
+    pool = _load_etf_pool()
+    if pool:
+        codes = {}
+        for code in pool["codes"]:
+            codes[code] = {
+                "name": pool.get("names", {}).get(code, code),
+                "sid": pool.get("sids", {}).get(code, ""),
+            }
+        # 保留000725(京东方A)用于--000725模式
+        codes["000725"] = _DEFAULT_CODES["000725"]
+        return codes
+    return dict(_DEFAULT_CODES)
+
+
+CODES = _build_codes()
 
 # ═══════════════════════════════════════════════
 #  Data fetch (腾讯前复权)

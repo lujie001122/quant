@@ -14,6 +14,7 @@
 
 import akshare as ak
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -23,38 +24,76 @@ from datetime import datetime, timedelta
 # ============================================================
 # 一、配置
 # ============================================================
-ETFS = {
-    "159516": {
-        "name": "半导体设备ETF",
-        "fund": 44000,
-        "base_spacing": 0.025,
-        "style": "核心高波动仓位",
-    },
-    "515880": {
-        "name": "通信ETF",
-        "fund": 44000,
-        "base_spacing": 0.025,
-        "style": "核心高波动仓位",
-    },
-    "588170": {
-        "name": "科创半导体ETF",
-        "fund": 44000,
-        "base_spacing": 0.03,
-        "style": "高波动进攻型",
-    },
-    "159532": {
-        "name": "ETF",
-        "fund": 44000,
-        "base_spacing": 0.03,
-        "style": "待观察",
-    },
-    "515050": {
-        "name": "中证全指ETF",
-        "fund": 44000,
-        "base_spacing": 0.025,
-        "style": "待观察",
-    },
+
+# 默认ETF配置(回退用, etf_pool.json不存在时使用)
+_DEFAULT_ETF_CODES = ["159516", "515880", "588170", "159532", "515050"]
+_DEFAULT_ETF_NAMES = {
+    "159516": "半导体设备ETF",
+    "515880": "通信ETF",
+    "588170": "科创半导体ETF",
+    "159532": "ETF",
+    "515050": "中证全指ETF",
 }
+_DEFAULT_ETF_SIDS = {
+    "159516": "sz159516",
+    "515880": "sh515880",
+    "588170": "sh588170",
+    "159532": "sz159532",
+    "515050": "sh515050",
+}
+
+
+def _load_etf_pool():
+    """从 etf_pool.json 读取ETF列表, 不存在则回退到默认5只"""
+    pool_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etf_pool.json")
+    if os.path.exists(pool_path):
+        try:
+            with open(pool_path, "r", encoding="utf-8") as f:
+                pool = json.load(f)
+            if pool.get("codes") and len(pool["codes"]) >= 3:
+                return pool
+        except Exception:
+            pass
+    return None
+
+
+def _build_etfs_config():
+    """构建ETFS配置字典, 优先从etf_pool.json读取"""
+    pool = _load_etf_pool()
+    if pool:
+        codes = pool["codes"]
+        names = pool.get("names", {})
+        etfs = {}
+        for code in codes:
+            etfs[code] = {
+                "name": names.get(code, code),
+                "fund": 44000,
+                "base_spacing": 0.025,
+                "style": "轮动标的",
+            }
+        return etfs
+    # 回退: 默认5只
+    etfs = {}
+    for code in _DEFAULT_ETF_CODES:
+        etfs[code] = {
+            "name": _DEFAULT_ETF_NAMES.get(code, code),
+            "fund": 44000,
+            "base_spacing": 0.025 if code != "588170" and code != "159532" else 0.03,
+            "style": "核心高波动仓位",
+        }
+    return etfs
+
+
+def _build_code_map():
+    """构建CODE_MAP, 优先从etf_pool.json读取"""
+    pool = _load_etf_pool()
+    if pool:
+        return {code: pool["sids"][code] for code in pool["codes"] if code in pool.get("sids", {})}
+    return dict(_DEFAULT_ETF_SIDS)
+
+
+ETFS = _build_etfs_config()
+CODE_MAP = _build_code_map()
 
 CASH_RESERVE = 0
 TOTAL_FUND = 220000
@@ -68,9 +107,6 @@ DEFENSE_CODE = None   # 无防御盾
 COOLDOWN_DAYS = 2
 
 API_DELAY = 1  # akshare调用间隔(秒)
-
-# 模块级常量: ETF代码→Sina代码映射
-CODE_MAP = {"159516": "sz159516", "515880": "sh515880", "588170": "sh588170", "159532": "sz159532", "515050": "sh515050"}
 
 # 模块级常量: 倒金字塔权重
 INVERTED_WEIGHTS = [0.20, 0.25, 0.30, 0.35, 0.40]
