@@ -262,6 +262,7 @@ class ETFStrategy(bt.Strategy):
                 "pending_order": None, "stop_cooldown": False,
                 "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(最多3次)
                 "active_sell_until": "",  # 活动仓卖出冷却日期(3天内不重复)
+                "breakeven_activated": False,  # 浮盈≥10%激活保本线
             }
 
         # 统计
@@ -354,6 +355,7 @@ class ETFStrategy(bt.Strategy):
         ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
         ps["active_sell_count"] = 0; ps["active_sell_until"] = ""
+        ps["breakeven_activated"] = False
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -405,6 +407,15 @@ class ETFStrategy(bt.Strategy):
             if has_pos:
                 if price > ps["peak_price"]: ps["peak_price"] = price
 
+                # 保本止盈: 浮盈≥10%后激活, 价格回落到成本+2%时清仓
+                pp = (price - avg) / avg if avg > 0 else 0
+                if pp >= 0.10 - 0.0001:
+                    ps["breakeven_activated"] = True
+                if ps["breakeven_activated"] and avg > 0 and price <= avg * 1.02:
+                    self._close(d, f"保本止盈 avg={avg:.3f} price={price:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
+
                 # 均价止损12%
                 if avg > 0 and price <= avg * 0.88:
                     self._close(d, f"均价止损12% avg={avg:.3f}")
@@ -418,7 +429,7 @@ class ETFStrategy(bt.Strategy):
                     continue
 
                 # 移动止盈(8%后不改线，15%后再设)
-                pp = (price - avg) / avg if avg > 0 else 0
+                # pp 已在保本止盈中计算
                 if pp >= 0.08 - 0.0001 and not ps["reached_8"]:
                     ps["reached_8"] = True
                 if pp >= 0.15 - 0.0001 and not ps["reached_15"]:
@@ -545,6 +556,7 @@ class ETFStrategy(bt.Strategy):
                             ps["build_phase"] = 2; ps["bought_today"] = True; ps["add_count"] += 1
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
                             ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
+                            ps["breakeven_activated"] = False
                     else:
                         if price > ma5_v: ps["ma5_touch_count"] += 1
                         else: ps["ma5_touch_count"] = 0

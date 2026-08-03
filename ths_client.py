@@ -51,7 +51,7 @@ class THSClient:
 
     def get_holding_shares(self, asset_type="stock"):
         """获取持仓"""
-        return self._query_with_retry("getHoldingShares", asset_type)
+        return self._query_with_retry("getHoldingShares")
 
     def get_account_info(self):
         """获取账户资金信息"""
@@ -59,11 +59,11 @@ class THSClient:
 
     def get_entrust(self):
         """获取今日委托"""
-        return self._query_with_retry("getEntrust")
+        return self._query_with_retry("getEntrust", "today", True)
 
     def get_closed_deals(self):
         """获取成交记录"""
-        return self._query_with_retry("getClosedDeals")
+        return self._query_with_retry("getClosedDeals", "today")
 
     # ─── 交易（先撤同方向未成交挂单） ───
 
@@ -73,14 +73,14 @@ class THSClient:
         只撤指定标的的挂单，避免影响其他ETF。
         """
         try:
-            entrust = self._e.getEntrust()
+            entrust = self._e.getEntrust("today", True)
             if not entrust.get("status"):
                 return
             for item in entrust.get("info", []):
-                if (item.get("stock_code") == stock_code
+                if (item.get("stockCode") == stock_code
                         and item.get("direction") == direction
                         and item.get("status") == "未成交"):
-                    self._e.revokeEntrust(revokeType="contractNo", contractNo=item["entrust_no"])
+                    self._e.revokeEntrust(revokeType="contractNo", contractNo=item["contractNo"])
                     time.sleep(0.3)
         except Exception as e:
             logger.warning(f"撤单失败({stock_code} {direction}): {e}")
