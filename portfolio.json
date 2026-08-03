@@ -157,42 +157,16 @@
     }
   },
   "positions": {
-    "159516": {
-      "name": "半导体设备ETF",
-      "shares": 95600,
-      "avg_cost": 0.741,
-      "total_cost": 70874.2,
-      "base_price": 0.741,
-      "market_price": 0.688,
-      "market_value": 60956.8,
-      "pnl": -5227.4,
-      "pnl_pct": -7.9,
-      "trades": [
-        {
-          "date": "2026-07-31",
-          "action": "持有(等确认)",
-          "reason": "分批建仓1已入场,等回踩MA5站稳或突破首笔价0.747"
-        },
-        {
-          "date": "2026-07-31",
-          "action": "买入",
-          "price": 0.67,
-          "quantity": 7000,
-          "amount": 4690.0,
-          "contract": "6176200036"
-        }
-      ]
-    },
     "159532": {
-      "name": "中证2000ETF",
-      "shares": 4400,
-      "avg_cost": 1.486,
-      "total_cost": 6538.4,
+      "name": "中证2000ET",
+      "shares": 58600,
+      "avg_cost": 1.495,
+      "total_cost": 87607.0,
       "base_price": 1.486,
-      "market_price": 1.488,
-      "market_value": 6547.2,
-      "pnl": 8.8,
-      "pnl_pct": 0.13,
+      "market_price": 1.497,
+      "market_value": 87724.2,
+      "pnl": 101.62,
+      "pnl_pct": 0.12,
       "trades": [
         {
           "date": "2026-07-31",
@@ -200,30 +174,14 @@
           "reason": "MACD绿柱缩短+RSI37.95+站上MA5, 15%底仓4400股"
         }
       ]
-    },
-    "588170": {
-      "name": "科创半导体ETF",
-      "shares": 6900,
-      "avg_cost": 0.982,
-      "total_cost": 6777.0,
-      "base_price": 0.982,
-      "market_price": 0.951,
-      "market_value": 6561.9,
-      "pnl": -213.9,
-      "pnl_pct": -3.16,
-      "trades": [
-        {
-          "date": "2026-07-31",
-          "action": "持有",
-          "reason": "绿柱缩短+RSI43.28, 浮亏3.2%, 可用300股"
-        }
-      ]
     }
   },
   "account": {
-    "total_asset": 74065.9,
-    "cash": 0,
-    "market_value": 74065.9
+    "total_asset": 207049.49,
+    "cash": 119325.29,
+    "market_value": 87724.2,
+    "pnl": 101.62,
+    "daily_pnl": 127.9
   },
-  "last_updated": "2026-08-03 14:33"
+  "last_updated": "2026-08-03 20:25"
 }
