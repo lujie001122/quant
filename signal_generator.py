@@ -77,7 +77,7 @@ INVERTED_WEIGHTS = [0.20, 0.25, 0.30, 0.35, 0.40]
 
 
 # ============================================================
-# 二、数据获取层（akshare + 重试+降级）
+# 二、数据获取层（腾讯前复权 + akshare降级）
 # ============================================================
 
 def _akshare_retry(func, *args, retries=3, initial_delay=API_DELAY, **kwargs):
@@ -170,7 +170,56 @@ def fetch_realtime_quotes():
 
 
 def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
-    """获取日K线(akshare→Sina降级)"""
+    """获取日K线(腾讯前复权接口, 自带qfq无需手动复权)"""
+    sid = CODE_MAP.get(code, "")
+    if not sid:
+        raise RuntimeError(f"{code} 无代码映射")
+
+    # 腾讯接口: qfq=前复权, datalen=1200条
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
+           f"param={sid},day,,,1200,qfq")
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+
+        # 解析: data[sid]["qfqday"] 数组, 每项 ["日期","开","收","高","低","成交量"]
+        stock_data = raw.get("data", {})
+        qfq_key = None
+        for key in (sid, sid.lower(), sid.upper()):
+            if key in stock_data:
+                qfq_key = key
+                break
+        if not qfq_key:
+            raise RuntimeError(f"{code} 腾讯接口返回无数据")
+
+        klines_raw = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
+        if not klines_raw:
+            raise RuntimeError(f"{code} 腾讯接口K线为空")
+
+        klines = []
+        for item in klines_raw:
+            if len(item) < 6:
+                continue
+            try:
+                o, c, h, l = float(item[1]), float(item[2]), float(item[3]), float(item[4])
+                v = float(item[5])
+                pct = round((c - o) / o * 100, 2) if o > 0 else 0
+                klines.append({
+                    "date": item[0],
+                    "open": o, "close": c, "high": h, "low": l,
+                    "volume": v, "amount": 0, "pct": pct,
+                })
+            except (ValueError, IndexError):
+                continue
+        if klines:
+            return klines
+    except Exception as e:
+        print(f"[WARN] {code} 腾讯接口失败: {e}, 降级为akshare")
+
+    # 降级: akshare
     try:
         df = _akshare_retry(
             ak.fund_etf_hist_em,
@@ -188,44 +237,6 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             })
         if klines:
             return klines
-    except Exception as e:
-        print(f"[WARN] {code} akshare日K线失败: {e}, 降级为Sina")
-
-    # 降级为Sina日K线
-    sid = CODE_MAP.get(code, "")
-    sina_url = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sid}&scale=240&ma=no&datalen=100"
-    try:
-        req = urllib.request.Request(sina_url, headers={
-            "User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn",
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode("utf-8")
-        data = json.loads(raw)
-        klines = []
-        for item in data:
-            klines.append({
-                "date": item["day"],
-                "open": float(item["open"]), "close": float(item["close"]),
-                "high": float(item["high"]), "low": float(item["low"]),
-                "volume": float(item["volume"]), "amount": 0,
-                "pct": 0,
-            })
-        # ── 前复权: 检测跳空>20%自动复权(与backtest_bt.py一致) ──
-        adj_factor = 1.0
-        factors = [1.0] * len(klines)
-        for i in range(len(klines) - 1, -1, -1):
-            factors[i] = adj_factor
-            if i > 0 and klines[i-1]["close"] > 0:
-                ratio = klines[i]["open"] / klines[i-1]["close"]
-                if ratio < 0.80:  # 20%阈值(5%太激进,正常波动会误判)
-                    adj_factor *= ratio
-                    print(f"  ⚠ {code} 除权检测: {klines[i]['date']} 跳空{(1 - ratio) * 100:.1f}% (复权因子={adj_factor:.4f})")
-        for i in range(len(klines)):
-            klines[i]["open"]  = round(klines[i]["open"]  * factors[i], 4)
-            klines[i]["close"] = round(klines[i]["close"] * factors[i], 4)
-            klines[i]["high"]  = round(klines[i]["high"]  * factors[i], 4)
-            klines[i]["low"]   = round(klines[i]["low"]   * factors[i], 4)
-        return klines
     except Exception as e2:
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
 

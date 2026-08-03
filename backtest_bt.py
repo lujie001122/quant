@@ -9,13 +9,10 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 """
-import json, urllib.request, math, os, sys
+import json, urllib.request, math, sys
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
-
-# 东方财富API绕过代理(直连国内服务器)
-os.environ["NO_PROXY"] = "push2his.eastmoney.com,push2.eastmoney.com,*.eastmoney.com"
 
 # ═══════════════════════════════════════════════
 #  Config
@@ -40,142 +37,56 @@ CODES = {
 }
 
 # ═══════════════════════════════════════════════
-#  Data fetch (前复权)
+#  Data fetch (腾讯前复权)
 # ═══════════════════════════════════════════════
 
-# 东方财富直连opener(绕过代理)
-_NO_PROXY_OPENER = urllib.request.build_opener(
-    urllib.request.ProxyHandler({"http": "", "https": ""})
-)
-
-
-def _detect_splits(code, market):
-    """检测除权事件并输出日志(对比不复权数据)
-    market: "1"=上海, "0"=深圳
-    """
-    try:
-        secid = f"{market}.{code}"
-        url = (f"https://push2his.eastmoney.com/api/qt/stock/kline/get?"
-               f"secid={secid}&fields1=f1,f2,f3,f4,f5,f6&"
-               f"fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&"
-               f"klt=101&fqt=0&beg=20200101&end=20991231&lmt=1250")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://quote.eastmoney.com",
-        })
-        with _NO_PROXY_OPENER.open(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-        if not data.get("data") or not data["data"].get("klines"):
-            return
-
-        splits = []
-        klines = data["data"]["klines"]
-        for i in range(1, len(klines)):
-            prev_parts = klines[i - 1].split(",")
-            curr_parts = klines[i].split(",")
-            if len(prev_parts) < 3 or len(curr_parts) < 2:
-                continue
-            prev_close = float(prev_parts[2])
-            curr_open = float(curr_parts[1])
-            if prev_close > 0:
-                ratio = curr_open / prev_close
-                if ratio < 0.80:  # 跳空>20%视为除权
-                    splits.append({
-                        "date": curr_parts[0],
-                        "prev_close": prev_close,
-                        "curr_open": curr_open,
-                        "ratio": ratio,
-                    })
-
-        if splits:
-            print(f"  ⚠ {code} 检测到 {len(splits)} 次除权事件:")
-            for s in splits:
-                print(f"    {s['date']}: 前收={s['prev_close']:.3f} → 今开={s['curr_open']:.3f} "
-                      f"(跳空{(1 - s['ratio']) * 100:.1f}%)")
-    except Exception:
-        pass  # 静默失败，不影响主流程
-
-
 def fetch_daily(code, sid):
-    """获取前复权日K线数据
-    优先: 东方财富API (fqt=1 前复权)
-    备选: Sina API + 跳空检测复权(20%阈值)
+    """获取前复权日K线数据 (腾讯接口, 自带前复权)
+    code: 6位代码如 "515880"
+    sid:  带市场前缀如 "sh515880", "sz159516"
     """
-    # ── 主数据源: 东方财富 API (前复权) ──
-    try:
-        market = "1" if code[0] in ("5", "6") else "0"
-        secid = f"{market}.{code}"
-        url = (f"https://push2his.eastmoney.com/api/qt/stock/kline/get?"
-               f"secid={secid}&fields1=f1,f2,f3,f4,f5,f6&"
-               f"fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&"
-               f"klt=101&fqt=1&beg=20200101&end=20991231&lmt=1250")
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://quote.eastmoney.com",
-        })
-        with _NO_PROXY_OPENER.open(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-        if data.get("data") and data["data"].get("klines"):
-            rows = []
-            for line in data["data"]["klines"]:
-                parts = line.split(",")
-                if len(parts) < 6:
-                    continue
-                try:
-                    rows.append({
-                        "date": parts[0],
-                        "open": float(parts[1]),
-                        "close": float(parts[2]),
-                        "high": float(parts[3]),
-                        "low": float(parts[4]),
-                        "volume": float(parts[5]),
-                    })
-                except (ValueError, IndexError):
-                    continue
-
-            if len(rows) > 50:
-                # 检测除权事件(对比不复权数据)
-                _detect_splits(code, market)
-
-                df = pd.DataFrame(rows)
-                df["date"] = pd.to_datetime(df["date"])
-                df.set_index("date", inplace=True)
-                return df[["open", "high", "low", "close", "volume"]]
-    except Exception as e:
-        print(f"[WARN] {code} 东方财富API失败: {e}, 降级为Sina")
-
-    # ── 备选: Sina API + 跳空检测复权(20%阈值) ──
-    url = (f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-           f"CN_MarketData.getKLineData?symbol={sid}&scale=240&ma=no&datalen=1250")
+    # 腾讯接口: qfq=前复权, datalen=1250条
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
+           f"param={sid},day,,,1250,qfq")
     req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"
+        "User-Agent": "Mozilla/5.0",
     })
     with urllib.request.urlopen(req, timeout=20) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+        raw = json.loads(resp.read().decode("utf-8"))
+
+    # 解析: data[sid]["qfqday"] 数组, 每项 ["日期","开","收","高","低","成交量"]
+    stock_data = raw.get("data", {})
+    # sid可能是小写或大写, 尝试匹配
+    qfq_key = None
+    for key in (sid, sid.lower(), sid.upper()):
+        if key in stock_data:
+            qfq_key = key
+            break
+    if not qfq_key:
+        raise RuntimeError(f"{code} 腾讯接口返回无数据: {list(stock_data.keys())}")
+
+    klines = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
+    if not klines:
+        raise RuntimeError(f"{code} 腾讯接口K线为空")
+
     rows = []
-    for d in data:
+    for item in klines:
+        if len(item) < 6:
+            continue
         try:
             rows.append({
-                "date": d["day"], "open": float(d["open"]), "close": float(d["close"]),
-                "high": float(d["high"]), "low": float(d["low"]), "volume": float(d["volume"]),
+                "date": item[0],
+                "open": float(item[1]),
+                "close": float(item[2]),
+                "high": float(item[3]),
+                "low": float(item[4]),
+                "volume": float(item[5]),
             })
-        except (ValueError, KeyError):
+        except (ValueError, IndexError):
             continue
 
-    # 前复权: 检测跳空>20%自动复权
-    adj = 1.0; factors = [1.0] * len(rows)
-    for i in range(len(rows) - 1, -1, -1):
-        factors[i] = adj
-        if i > 0 and rows[i - 1]["close"] > 0:
-            ratio = rows[i]["open"] / rows[i - 1]["close"]
-            if ratio < 0.80:  # 20%阈值(更保守,避免正常波动误判)
-                adj *= ratio
-                print(f"  ⚠ 除权检测: {rows[i]['date']} 跳空{(1 - ratio) * 100:.1f}% (复权因子={adj:.4f})")
-    for i in range(len(rows)):
-        for k in ("open", "close", "high", "low"):
-            rows[i][k] = round(rows[i][k] * factors[i], 4)
+    if len(rows) <= 50:
+        raise RuntimeError(f"{code} 腾讯接口K线不足({len(rows)}条)")
 
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
@@ -693,7 +604,7 @@ def main():
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = TRADE_START, TRADE_END
 
-    print("▸ 拉取历史K线 (东方财富前复权 API, 降级Sina+跳空检测)...")
+    print("▸ 拉取历史K线 (腾讯前复权 API)...")
     dataframes = {}
     for code, cfg in active_codes.items():
         try:
