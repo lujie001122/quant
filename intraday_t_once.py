@@ -39,15 +39,19 @@ def save_cooldown(data):
         pass
 
 
-def is_in_cooldown(code, cooldown_data, now_ts, cooldown_minutes=30):
-    """检查标的是否在冷却期内"""
-    last_ts = cooldown_data.get(code, 0)
+def is_in_cooldown(code, cooldown_data, now_ts, direction='any', cooldown_minutes=30):
+    """检查标的是否在冷却期内
+    direction: 'buy'/'sell'/'any' — 区分买卖方向
+    """
+    key = f"{code}_{direction}" if direction != 'any' else code
+    last_ts = cooldown_data.get(key, 0)
     return (now_ts - last_ts) < cooldown_minutes * 60
 
 
-def record_cooldown(code, cooldown_data, now_ts):
-    """记录触发时间"""
-    cooldown_data[code] = now_ts
+def record_cooldown(code, cooldown_data, now_ts, direction='any'):
+    """记录触发时间，direction区分买卖方向"""
+    key = f"{code}_{direction}" if direction != 'any' else code
+    cooldown_data[key] = now_ts
 
 
 # ═══ 时间过滤 ═══
@@ -211,17 +215,17 @@ for code, sid in CODE_MAP.items():
         sig = None
 
         # T入: 综合评分≥2分 + 时间允许 + 不在冷却期
-        if buy_pct > 0 and allow_t_in and not is_in_cooldown(code, cooldown_data, now_ts):
-            t_shares = int(pos['shares'] * buy_pct / 100 / 100) * 100  # 取整到100股
+        if buy_pct > 0 and allow_t_in and not is_in_cooldown(code, cooldown_data, now_ts, 'buy'):
+            t_shares = int(pos['shares'] * buy_pct / 100 / 100) * 100
             if t_shares >= 100:
-                record_cooldown(code, cooldown_data, now_ts)
+                record_cooldown(code, cooldown_data, now_ts, 'buy')
                 sig = (f"T入\n  {t_shares}股 @{cur:.3f} ({buy_pct}%仓位)\n"
                        f"  ¥{t_shares * cur / 10000:.1f}万\n"
                        f"  RSI{rsi:.1f}(软评分{rsi_buy}) {macd_status}(评分{macd_buy}) 综合{total_buy_score}\n"
                        f"  量比{vol_ratio_5min or 'N/A'}")
 
         # T出: 综合评分≥2分 + 时间允许 + 不在冷却期
-        if sig is None and sell_pct > 0 and allow_t_out and not is_in_cooldown(code, cooldown_data, now_ts):
+        if sig is None and sell_pct > 0 and allow_t_out and not is_in_cooldown(code, cooldown_data, now_ts, 'sell'):
             t_shares = int(pos['shares'] * sell_pct / 100 / 100) * 100  # 取整到100股
             if t_shares >= 100:
                 # P1: 纯市场结构条件（去掉成本价过滤）
@@ -230,7 +234,7 @@ for code, sid in CODE_MAP.items():
                 # 避险: MACD趋势恶化
                 hedge_ok = macd_status in ["死叉", "绿柱放大"]
                 if profit_ok or hedge_ok:
-                    record_cooldown(code, cooldown_data, now_ts)
+                    record_cooldown(code, cooldown_data, now_ts, 'sell')
                     label = "避险" if hedge_ok else ""
                     sig = (f"T出{label}\n  {t_shares}股 @{cur:.3f} ({sell_pct}%仓位)\n"
                            f"  ¥{t_shares * cur / 10000:.1f}万\n"
