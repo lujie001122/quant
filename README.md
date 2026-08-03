@@ -1,126 +1,84 @@
 # ETF量化交易系统 v3.5
 
-## 项目概述
+> 5只ETF共享22万资金池，macOS全自动交易。回测5年+94%，最大回撤13%。
 
-5只ETF共享22万资金池的量化交易系统，运行在macOS上，通过同花顺客户端自动下单。策略基于backtrader回测引擎，信号由Python代码生成，不依赖LLM决策。
-
-## 快速部署
+## 安装部署
 
 ```bash
-# 1. 克隆仓库
 git clone git@github.com:lujie001122/quant.git
 cd quant
-
-# 2. 创建虚拟环境
 python3 -m venv .venv
 source .venv/bin/activate
-
-# 3. 安装依赖
 pip install akshare backtrader pandas numpy
-
-# 4. 验证回测
-python3 backtest_bt.py
+python3 backtest_bt.py   # 验证回测
 ```
 
-## 架构
+## 文件说明
+
+| 文件 | 用途 | 运行方式 |
+|------|------|---------|
+| `backtest_bt.py` | 回测引擎 | `python3 backtest_bt.py` |
+| `signal_generator.py` | 信号生成 | `python3 signal_generator.py` |
+| `rotation.py` | 每周选池 | `python3 rotation.py` |
+| `intraday_t_once.py` | 日内做T | `python3 intraday_t_once.py` |
+| `sentiment_check.py` | 舆情扫描 | `python3 sentiment_check.py` |
+| `ths_client.py` | 同花顺下单 | `python3 ths_client.py buy/sell` |
+| `etf_pool.json` | 当前标的池 | rotation.py 写入 |
+| `portfolio.json` | 持仓状态 | 交易系统写入 |
+| `.env` | 微信凭证 | 需自行创建(已gitignore) |
+
+## 运行流程
 
 ```
-quant/
-├── backtest_bt.py          # 回测引擎 (backtrader)
-├── signal_generator.py     # 实盘信号生成器
-├── rotation.py             # ETF轮动选池 (每周一)
-├── intraday_t_once.py      # 日内做T模块
-├── sentiment_check.py      # 舆情扫描
-├── ths_client.py           # 同花顺下单客户端
-├── batch_test.py           # 批量回测脚本
-├── etf_pool.json           # 轮动选池结果 (运行时生成)
-├── portfolio.json          # 持仓状态 (运行时更新)
-└── .env                    # 微信凭证 (已gitignore, 需自行创建)
+每周一 8:00   rotation.py           → 扫描20只ETF，选TOP5写入 etf_pool.json
+工作日 8:30   sentiment_check.py    → 舆情扫描，利空则拦截当日交易
+工作日 10-14  signal_generator.py   → 每30分钟跑信号，有买点→ths_client.py下单
+每天   20:00  复盘任务              → 持仓+舆情汇总
+每天   21:00  git_backup.sh         → GitHub备份
 ```
 
-## 策略核心
+## 策略参数
 
-### 标的池
-- 默认5只: 半导体设备ETF(159516)、通信ETF(515880)、科创半导体(588170)、中证2000(159532)、中证全指(515050)
-- 轮动模式: 每周一rotation.py扫描20只ETF，选动量TOP3+防御TOP2替换池子
+**入场(6通道)**: RSI抄底30% / MACD金叉追涨30% / 突破追30% / 分批建仓15% / 确认加仓70% / 试探10%
 
-### 入场逻辑 (6通道)
-| 通道 | 条件 | 仓位 |
-|------|------|------|
-| 通道1 RSI抄底 | RSI<35 + 价格创新低 + AO上升 | 30% |
-| 通道2 趋势跟踪 | MACD金叉 + 20日新高 | 30% |
-| 通道3 突破 | 价格突破前高 + AO上升 | 30% |
-| 通道4 分批建仓1 | MACD绿柱缩短 + RSI>30 + 站上MA5 | 15% |
-| 通道5 分批建仓2 | 确认建仓 + AO上升 | 70% |
-| 通道6 试探 | MACD绿柱缩短 + RSI>50 + 站上MA5 | 10% |
+**出场**: 均价止损12% / 保本止盈(浮盈>10%后成本价+2%触发) / 分级止损(破MA20→DIF<0→MACD恶化) / 移动止盈(涨8%后回撤5%) / 硬止盈30%
 
-### 出场逻辑
-- **均价止损**: 价格 ≤ 成本价×0.88
-- **保本止盈**: 浮盈>10%后, 价格 ≤ 成本价×1.02
-- **分级止损**: 破MA20(连续3天)→ 减仓30% → DIF<0 → 减仓30% → MACD恶化 → 清仓
-- **移动止盈**: 涨幅>8%后设峰值回撤5%线; >15%后重置
-- **硬止盈**: 涨幅>30%
-- **趋势止盈/破MA5**: 冷却期3天, 累计最多3次, 每次卖10%/5%
+**做T**: RSI软评分+MACD+5分钟量比，仓位20-30%，同方向30分钟冷却
 
-### 做T逻辑
-- 评分: RSI软评分 + MACD贡献 + 5分钟量比
-- 仓位: 2分→20%, 2.5分→25%, 3分→30%
-- 限制: 同方向30分钟冷却, 开盘15分钟/午盘/收盘前15分钟过滤
+**资金**: 共享资金池22万，清仓后冷却3天，MA20趋势过滤
 
-### 资金管理
-- 共享资金池: ¥220,000
-- 入场比例: 15%-70% (按通道)
-- 冷却期: 清仓后3天
+## 回测结果
 
-## 回测结果 (前复权, 腾讯接口)
-
-| 周期 | 总收益 | 年化 | 最大回撤 | 夏普 | 交易笔数 | 胜率 |
-|------|--------|------|---------|------|---------|------|
+| 周期 | 总收益 | 年化 | 回撤 | 夏普 | 笔数 | 胜率 |
+|------|--------|------|------|------|------|------|
 | 5年 | **+94.21%** | +14.23% | 13.35% | 0.75 | 46 | 47.8% |
 | 3年 | +94.21% | +24.94% | 13.35% | 1.04 | 46 | 47.8% |
 | 2年 | **+128.81%** | +51.70% | 14.67% | 1.75 | 23 | 56.5% |
 | 1年 | +11.11% | +11.27% | 9.53% | 0.60 | 15 | 46.7% |
 
-过拟合CV=0.16, 策略稳定。
+过拟合CV=0.16，策略稳定。
 
-## 数据源
+## 技术要求
 
-- **K线**: 腾讯API (前复权, `web.ifzq.gtimg.cn`)
-- **行情**: Sina实时接口
-- **舆情**: Sina财经新闻
-- **备选**: akshare (东方财富, 国内网络偶尔不通)
+- macOS + Python 3.11
+- 同花顺客户端(模拟交易界面保持前台，不切换窗口)
+- Evolving库(同花顺Python接口)
+- 微信公众号订阅号(用于发文章草稿，需AppID/AppSecret)
 
-## Cron任务
+## 给AI Agent的指令
 
-| 任务 | 时间 | 说明 |
-|------|------|------|
-| ETF轮动选池 | 每周一 8:00 | rotation.py 更新 etf_pool.json |
-| ETF舆情早报 | 工作日 8:30 | sentiment_check.py |
-| ETF交易监控 | 工作日 10-14点每30分钟 | signal_generator.py + ths_client.py |
-| ETF复盘 | 每天 20:00 | 持仓+舆情汇总 |
-| GitHub备份 | 每天 21:00 | git_backup.sh |
+如果你是一个AI Agent，拿到这个仓库后:
 
-## 环境要求
+1. 阅读本README了解项目结构
+2. 所有代码修改通过Claude Code完成，不直接编辑文件
+3. 策略参数用比例，不改绝对数值
+4. 改动后跑 `python3 backtest_bt.py` 验证回测
+5. 改坏了 `git checkout` 回退
+6. `.env` 和 `portfolio.json` 不上传GitHub
 
-- macOS 26.6+
-- Python 3.11
-- 同花顺客户端 (macOS版, 交易界面保持前台)
-- 微信公众号 (订阅号, 用于发草稿)
+### 重要规则
 
-## 注意事项
-
-- 所有代码修改通过Claude Code完成, 不直接编辑
-- 策略参数用比例而非绝对数字
-- 复权数据必须用前复权 (腾讯接口)
-- 同花顺下单前需激活窗口 (THSClient已封装)
-- .env存微信AppID/Secret, 已gitignore
-- 回测之前必须验证, 改动后跑全周期回测
-
-## 协作规则 (给AI Agent)
-
-1. 不碰代码/脚本, 只传话给Claude Code
-2. 提示词先展示等确认再发
-3. 只提要求不加判断/建议
-4. 改坏了git回退
-5. 策略参数用比例, 不改绝对数值
-6. 角色=传话筒+跑腿
+- 同花顺下单: 直接调用 `EvolvingSim`，不激活窗口(用户已保持交易界面)
+- 持仓查询: `e.getHoldingShares()` — 不调用 `_activate()`
+- 数据源: 腾讯前复权接口 > akshare，不用Sina
+- 过拟合检测: 6个不同起点跑2年，CV<0.5才安全
