@@ -6,48 +6,12 @@
 """
 import json, urllib.request, logging, os
 from datetime import datetime
+from tracker import get_tracked_with_keywords
 
 logger = logging.getLogger("sentiment_check")
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(levelname)s: %(message)s")
 
-# etf_pool.json 路径（与脚本同目录）
-_POOL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etf_pool.json")
-
-# 默认回退（etf_pool.json 不存在时使用）
-_DEFAULT_TRACKED = {
-    "512690": {"name": "酒ETF", "kw": ["酒ETF", "酒ETFETF", "512690"]},
-    "517090": {"name": "共赢ETF", "kw": ["共赢ETF", "共赢ETFETF", "517090"]},
-    "512170": {"name": "医疗ETF", "kw": ["医疗ETF", "医疗ETFETF", "512170"]},
-    "510880": {"name": "红利ETF", "kw": ["红利ETF", "红利ETFETF", "510880"]},
-    "159611": {"name": "电力ETF", "kw": ["电力ETF", "电力ETFETF", "159611"]},
-}
-
-
-def _build_tracked():
-    """从 etf_pool.json 动态构建 TRACKED，失败则回退到默认"""
-    try:
-        with open(_POOL_PATH, "r", encoding="utf-8") as f:
-            pool = json.load(f)
-        codes = pool.get("codes", [])
-        names = pool.get("names", {})
-        if not codes or not names:
-            raise ValueError("codes/names 为空")
-        tracked = {}
-        for code in codes:
-            name = names.get(code, code)
-            # 自动生成关键词: 名称 + 名称+"ETF" + 代码
-            kw = [name]
-            if not name.endswith("ETF"):
-                kw.append(name + "ETF")
-            kw.append(code)
-            tracked[code] = {"name": name, "kw": kw}
-        return tracked
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
-        logger.warning(f"etf_pool.json 读取失败({e})，使用默认标的")
-        return _DEFAULT_TRACKED
-
-
-TRACKED = _build_tracked()
+TRACKED = get_tracked_with_keywords()
 
 NEG = {"利空": 3, "暴跌": 3, "崩盘": 3, "减持": 2, "亏损": 2, "下滑": 1,
        "预警": 2, "暴雷": 3, "跌停": 3, "退市": 3, "制裁": 3, "关税": 3,

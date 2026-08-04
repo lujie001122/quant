@@ -37,38 +37,11 @@ _DEFAULT_CODES = {
     "000725": {"name": "京东方A", "sid": "sz000725"},
 }
 
+from tracker import get_code_map
 
-def _load_etf_pool():
-    """从 etf_pool.json 读取ETF列表, 不存在则回退到默认5只"""
-    pool_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etf_pool.json")
-    if os.path.exists(pool_path):
-        try:
-            with open(pool_path, "r", encoding="utf-8") as f:
-                pool = json.load(f)
-            if pool.get("codes") and len(pool["codes"]) >= 3:
-                return pool
-        except Exception:
-            pass
-    return None
-
-
-def _build_codes():
-    """构建CODES配置字典, 优先从etf_pool.json读取"""
-    pool = _load_etf_pool()
-    if pool:
-        codes = {}
-        for code in pool["codes"]:
-            codes[code] = {
-                "name": pool.get("names", {}).get(code, code),
-                "sid": pool.get("sids", {}).get(code, ""),
-            }
-        # 保留000725(京东方A)用于--000725模式
-        codes["000725"] = _DEFAULT_CODES["000725"]
-        return codes
-    return dict(_DEFAULT_CODES)
-
-
-CODES = _build_codes()
+CODES = get_code_map()
+# 保留 000725 用于 --000725 模式
+CODES["000725"] = _DEFAULT_CODES["000725"]
 
 # ═══════════════════════════════════════════════
 #  Data fetch (腾讯前复权)
