@@ -1,48 +1,31 @@
 {
-  "generated_at": "2026-08-03 14:33:51",
+  "generated_at": "2026-08-04 10:00:32",
   "status": "PENDING_EXECUTION",
   "note": "EvolvingSim/GUI automation unavailable in cron. Execute manually or via interactive session.",
   "orders": [
     {
-      "code": "159516",
-      "name": "半导体设备ETF",
-      "action": "清仓卖出",
-      "direction": "sell",
-      "signal_price": 0.610,
-      "current_price": 0.610,
-      "limit_price": 0.610,
-      "rule": "max(信号价,现价)=0.610",
-      "shares": 95600,
-      "avg_cost": 0.741,
-      "pnl_pct": -17.7,
-      "reason": "均价止损10%(avg=0.741→现价0.610)",
-      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py sell 159516 95600 0.610"
-    },
-    {
-      "code": "588170",
-      "name": "科创半导体ETF",
-      "action": "清仓卖出",
-      "direction": "sell",
-      "signal_price": 0.837,
-      "current_price": 0.837,
-      "limit_price": 0.837,
-      "rule": "max(信号价,现价)=0.837",
-      "shares": 6900,
-      "avg_cost": 0.982,
-      "pnl_pct": -14.8,
-      "reason": "均价止损10%(avg=0.982→现价0.837)",
-      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py sell 588170 6900 0.837"
-    }
-  ],
-  "skipped": [
-    {
-      "code": "159532",
-      "reason": "T0买入信号但今日T0额度已用完(daily_t0_count=1)",
-      "signal_price": 1.493
+      "code": "512170",
+      "name": "医疗ETF",
+      "action": "买入(分批建仓1)",
+      "direction": "buy",
+      "signal_price": 0.334,
+      "current_price": 0.334,
+      "limit_price": 0.334,
+      "rule": "min(信号价,现价)=0.334",
+      "shares": 39500,
+      "fund": 13193.0,
+      "position_pct": "30%",
+      "reason": "分批建仓1:首笔30%试探(MACD红柱放大+RSI58.0+站上MA5)",
+      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 512170 39500 0.334"
     }
   ],
   "hold": [
-    {"code": "515880", "status": "持有(分批建仓1已入场,今日买入1次已用完)", "price": 0.582},
-    {"code": "515050", "status": "持有(观望)建仓条件未满足", "price": 0.905}
+    {"code": "512690", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI58.21)", "price": 0.442},
+    {"code": "517090", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI62.56)", "price": 1.600},
+    {"code": "510880", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI53.55)", "price": 3.228},
+    {"code": "159611", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI51.67)", "price": 1.073}
+  ],
+  "legacy_position": [
+    {"code": "159532", "note": "不在当前ETF池中，58600股@1.495，信号未覆盖，需手动管理", "price": 1.497}
   ]
 }

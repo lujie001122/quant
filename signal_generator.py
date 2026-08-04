@@ -58,12 +58,14 @@ def _load_etf_pool():
 
 
 def _build_etfs_config():
-    """构建ETFS配置字典, 优先从etf_pool.json读取"""
+    """构建ETFS配置字典, 优先从etf_pool.json读取，并合并portfolio.json的实际持仓标的"""
     pool = _load_etf_pool()
+    etfs = {}
+
+    # 从 etf_pool.json 读取选池标的
     if pool:
         codes = pool["codes"]
         names = pool.get("names", {})
-        etfs = {}
         for code in codes:
             etfs[code] = {
                 "name": names.get(code, code),
@@ -71,25 +73,60 @@ def _build_etfs_config():
                 "base_spacing": 0.025,
                 "style": "轮动标的",
             }
-        return etfs
-    # 回退: 默认5只
-    etfs = {}
-    for code in _DEFAULT_ETF_CODES:
-        etfs[code] = {
-            "name": _DEFAULT_ETF_NAMES.get(code, code),
-            "fund": 44000,
-            "base_spacing": 0.025 if code != "588170" and code != "159532" else 0.03,
-            "style": "核心高波动仓位",
-        }
+    else:
+        # 回退: 默认5只
+        for code in _DEFAULT_ETF_CODES:
+            etfs[code] = {
+                "name": _DEFAULT_ETF_NAMES.get(code, code),
+                "fund": 44000,
+                "base_spacing": 0.025 if code != "588170" and code != "159532" else 0.03,
+                "style": "核心高波动仓位",
+            }
+
+    # 合并 portfolio.json 的实际持仓标的（即使不在选池中也要监控）
+    pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+    if os.path.exists(pf_path):
+        try:
+            with open(pf_path, "r", encoding="utf-8") as f:
+                pf = json.load(f)
+            for code, pos_data in pf.get("positions", {}).items():
+                if code not in etfs:
+                    etfs[code] = {
+                        "name": pos_data.get("name", code),
+                        "fund": 44000,
+                        "base_spacing": 0.025,
+                        "style": "实际持仓",
+                    }
+        except Exception:
+            pass
+
     return etfs
 
 
 def _build_code_map():
-    """构建CODE_MAP, 优先从etf_pool.json读取"""
+    """构建CODE_MAP, 优先从etf_pool.json读取，portfolio-only标的自动生成sid(5→sh, 1→sz)"""
     pool = _load_etf_pool()
     if pool:
-        return {code: pool["sids"][code] for code in pool["codes"] if code in pool.get("sids", {})}
-    return dict(_DEFAULT_ETF_SIDS)
+        code_map = {code: pool["sids"][code] for code in pool["codes"] if code in pool.get("sids", {})}
+    else:
+        code_map = dict(_DEFAULT_ETF_SIDS)
+
+    # 为 portfolio.json 中的实际持仓补充 sid（不在 pool 中的标的）
+    pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+    if os.path.exists(pf_path):
+        try:
+            with open(pf_path, "r", encoding="utf-8") as f:
+                pf = json.load(f)
+            for code in pf.get("positions", {}):
+                if code not in code_map:
+                    if code.startswith("5"):
+                        code_map[code] = f"sh{code}"
+                    elif code.startswith("1"):
+                        code_map[code] = f"sz{code}"
+        except Exception:
+            pass
+
+    return code_map
 
 
 ETFS = _build_etfs_config()
@@ -732,11 +769,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             # 恢复持仓状态
             saved_state = pf_data.get("_signal_state", {})
             for code in ETFS:
-                if code in saved_state and code in positions:
-                    s = saved_state[code]
+                if code in positions:
                     p = positions[code]
-                    p.from_dict(s)
-                    # 持仓数量从 portfolio 恢复
+                    # 从 _signal_state 恢复信号状态
+                    if code in saved_state:
+                        s = saved_state[code]
+                        p.from_dict(s)
+                        # 恢复daily_trade_log（当天）
+                        saved_log = s.get("daily_trade_log", {})
+                        if today_str in saved_log:
+                            p.daily_trade_log[today_str] = saved_log[today_str]
+                    # 持仓数量从 portfolio 恢复（即使没有 _signal_state 也要恢复持仓）
                     pos_pf = pf_data["positions"].get(code, {})
                     if pos_pf.get("shares", 0) > 0:
                         p.shares = pos_pf["shares"]
@@ -744,10 +787,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         p.avg_cost = pos_pf["avg_cost"]
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
                         p.update_dead_active()
-                    # 恢复daily_trade_log（当天）
-                    saved_log = s.get("daily_trade_log", {})
-                    if today_str in saved_log:
-                        p.daily_trade_log[today_str] = saved_log[today_str]
                     # last_grid_trigger跨天重置
                     if p.last_grid_trigger and p.last_grid_trigger != today_str:
                         p.last_grid_trigger = None
