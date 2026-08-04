@@ -134,6 +134,33 @@
           "t0_count": 0
         }
       }
+    },
+    "159532": {
+      "build_phase": 0,
+      "build_first_price": 0.0,
+      "stop_level": 0,
+      "reached_8pct": false,
+      "reached_15pct": false,
+      "trailing_stop_price": 0.0,
+      "cooldown_until": null,
+      "grid_frozen": false,
+      "last_grid_trigger": null,
+      "peak_price": 1.542,
+      "below_ma20_count": 1,
+      "below_ma20_date": "2026-08-04",
+      "add_count": 0,
+      "ma5_touch_count": 0,
+      "prev_rsi": 45.32,
+      "prev_macd_status": "红柱放大",
+      "liquidate_dates": [],
+      "empty_days": 0,
+      "empty_days_date": null,
+      "daily_trade_log": {
+        "2026-08-04": {
+          "buy_count": 0,
+          "t0_count": 0
+        }
+      }
     }
   },
   "positions": {
@@ -161,5 +188,5 @@
     "cash": 119325.29,
     "market_value": 87724.2
   },
-  "last_updated": "2026-08-04 20:53"
+  "last_updated": "2026-08-04 21:01"
 }
