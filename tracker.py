@@ -181,11 +181,11 @@ def get_tracked_with_keywords():
     else:
         # 回退
         _DEFAULT_TRACKED = {
-            "512690": {"name": "酒ETF", "kw": ["酒ETF", "酒ETFETF", "512690"]},
-            "517090": {"name": "共赢ETF", "kw": ["共赢ETF", "共赢ETFETF", "517090"]},
-            "512170": {"name": "医疗ETF", "kw": ["医疗ETF", "医疗ETFETF", "512170"]},
-            "510880": {"name": "红利ETF", "kw": ["红利ETF", "红利ETFETF", "510880"]},
-            "159611": {"name": "电力ETF", "kw": ["电力ETF", "电力ETFETF", "159611"]},
+            "159516": {"name": "半导体设备ETF", "kw": ["半导体设备ETF", "半导体设备ETFETF", "159516"]},
+            "515880": {"name": "通信ETF", "kw": ["通信ETF", "通信ETFETF", "515880"]},
+            "588170": {"name": "科创半导体ETF", "kw": ["科创半导体ETF", "科创半导体ETFETF", "588170"]},
+            "159532": {"name": "中证2000ETF", "kw": ["中证2000ETF", "中证2000ETFETF", "159532"]},
+            "515050": {"name": "中证全指ETF", "kw": ["中证全指ETF", "中证全指ETFETF", "515050"]},
         }
         tracked = dict(_DEFAULT_TRACKED)
 
