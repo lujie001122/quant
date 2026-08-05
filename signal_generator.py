@@ -922,7 +922,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # ═══ 综合action判定 ═══
         action = "持有"
-        position_ratio = "0%"
+        # 计算实际持仓占比（基于总资产，用于无信号时的展示）
+        _total_asset = pf_data.get("account", {}).get("total_asset", TOTAL_FUND) if pf_data else TOTAL_FUND
+        if pos.has_position and _total_asset > 0:
+            _mv = pos.shares * price
+            position_ratio = f"{_mv / _total_asset * 100:.0f}%"
+        else:
+            position_ratio = "0%"
         reason = ""
         trade_type = None
 
