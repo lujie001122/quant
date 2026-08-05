@@ -69,7 +69,6 @@ def revoke_direction(code, direction):
 
 def do_buy(code, shares, price):
     e = EvolvingSim()
-    revoke_direction(code, '买入')
     r = e.buy(code, shares, price)
     if r[0]:
         print(f"✅ 买入 {code} {shares}股@{price} 合同:{r[1]}")
@@ -79,12 +78,32 @@ def do_buy(code, shares, price):
 
 def do_sell(code, shares, price):
     e = EvolvingSim()
-    revoke_direction(code, '卖出')
     r = e.sell(code, shares, price)
     if r[0]:
         print(f"✅ 卖出 {code} {shares}股@{price} 合同:{r[1]}")
     else:
         print(f"❌ 卖出失败: {r}")
+
+
+def do_revoke(code, direction):
+    """注意: revokeEntrust 是 EvolvingSim 库本身的 bug，不可靠。
+    建议手动在同花顺撤单，或等未成交自动过期。"""
+    e = EvolvingSim()
+    ent = e.getEntrust()
+    count = 0
+    if isinstance(ent, dict) and ent.get('data'):
+        for row in ent['data']:
+            if row and len(row) > 10 and row[2] == code and row[4] == direction and row[5] == '未成交':
+                contract = row[10]
+                if contract.strip():
+                    try:
+                        r = e.revokeEntrust(contract)
+                        print(f"{'✅' if r[0] else '❌'} 撤: {contract}")
+                        count += 1
+                    except Exception as ex:
+                        print(f"❌ 撤单失败(库bug): {ex}")
+    if count == 0:
+        print("无待撤委托或撤单失败")
 
 
 if __name__ == '__main__':
@@ -104,6 +123,6 @@ if __name__ == '__main__':
     elif cmd == 'sell':
         do_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
     elif cmd == 'revoke':
-        revoke_direction(sys.argv[2], sys.argv[3])
+        do_revoke(sys.argv[2], sys.argv[3])
     else:
         print(f"未知: {cmd}")
