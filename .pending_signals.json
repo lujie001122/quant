@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-08-05 13:30:36",
+  "status": "PENDING_EXECUTION",
+  "note": "macOS 26.6 cron环境无法访问同花顺GUI窗口(0 windows)。EvolvingSim AppleScript全部失败。需手动执行或通过interactive session执行。",
+  "signals": {
+    "515050": {
+      "action": "买入",
+      "trade_type": "buy",
+      "price": 1.014,
+      "position_ratio": "15%(试探)",
+      "reason": "试探建仓:15%底仓(MACD绿柱缩短+RSI44.51+站上MA5)",
+      "estimated_shares": 30300,
+      "estimated_amount": 30724,
+      "limit_price": 1.014,
+      "rsi": 44.51,
+      "macd_status": "绿柱缩短"
+    },
+    "512170": {
+      "action": "买入",
+      "trade_type": "buy",
+      "price": 0.337,
+      "position_ratio": "30%(分批1)",
+      "reason": "分批建仓1:首笔30%试探(MACD健康+RSI63.78+站上MA5)",
+      "estimated_shares": 39100,
+      "estimated_amount": 13177,
+      "limit_price": 0.337,
+      "note": "⚠已有持仓156800股@0.336，今日buy_count=1。确认是否需重复买入。",
+      "rsi": 63.78,
+      "macd_status": "红柱放大"
+    }
+  },
+  "hold_signals": {
+    "159516": "持有(无持仓,EMA空头)",
+    "515880": "持有(无持仓,金叉但EMA空头)",
+    "588170": "持有(无持仓,EMA空头)",
+    "159532": "持有(震荡区间,23500股@1.382,浮盈+13.65%)"
+  },
+  "portfolio_snapshot": {
+    "total_asset": 205101.86,
+    "cash": 115184.96,
+    "positions": {
+      "159532": {"shares": 23500, "avg_cost": 1.382, "market": 1.571},
+      "512170": {"shares": 156800, "avg_cost": 0.336, "market": 0.337}
+    }
+  }
+}

@@ -1,31 +1,51 @@
 {
-  "generated_at": "2026-08-04 10:00:32",
+  "generated_at": "2026-08-05 13:30:36",
   "status": "PENDING_EXECUTION",
-  "note": "EvolvingSim/GUI automation unavailable in cron. Execute manually or via interactive session.",
+  "note": "同花顺在cron环境中无GUI窗口(macOS 26.6)，EvolvingSim AppleScript完全无法执行。需手动执行或interactive session中操作同花顺。",
   "orders": [
     {
+      "code": "515050",
+      "name": "中证全指ETF",
+      "action": "买入(试探建仓)",
+      "direction": "buy",
+      "signal_price": 1.014,
+      "current_price": 1.014,
+      "limit_price": 1.014,
+      "rule": "min(信号价,现价)=1.014",
+      "shares": 30300,
+      "fund": 30724.0,
+      "position_pct": "15%",
+      "reason": "试探建仓:15%底仓(MACD绿柱缩短+RSI44.51+站上MA5)",
+      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 515050 30300 1.014"
+    },
+    {
       "code": "512170",
-      "name": "医疗ETF",
+      "name": "医疗ETF华",
       "action": "买入(分批建仓1)",
       "direction": "buy",
-      "signal_price": 0.334,
-      "current_price": 0.334,
-      "limit_price": 0.334,
-      "rule": "min(信号价,现价)=0.334",
-      "shares": 39500,
-      "fund": 13193.0,
-      "position_pct": "30%",
-      "reason": "分批建仓1:首笔30%试探(MACD红柱放大+RSI58.0+站上MA5)",
-      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 512170 39500 0.334"
+      "signal_price": 0.337,
+      "current_price": 0.337,
+      "limit_price": 0.337,
+      "rule": "min(信号价,现价)=0.337",
+      "note": "⚠ 已有持仓156800股@0.336，今日已执行1次买入(daily_trade_count.buy_count=1)。信号仍显示买入但需确认未重复下单。",
+      "shares": 39100,
+      "fund": 13177.0,
+      "position_pct": "30%(分批1)",
+      "reason": "分批建仓1:首笔30%试探(MACD健康+RSI63.78+站上MA5)",
+      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 512170 39100 0.337"
     }
   ],
   "hold": [
-    {"code": "512690", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI58.21)", "price": 0.442},
-    {"code": "517090", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI62.56)", "price": 1.600},
-    {"code": "510880", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI53.55)", "price": 3.228},
-    {"code": "159611", "status": "持有(观望)建仓条件未满足(MACD红柱缩短,RSI51.67)", "price": 1.073}
+    {"code": "159516", "status": "持有(观望)无持仓，EMA空头", "price": 0.702},
+    {"code": "515880", "status": "持有(观望)无持仓，金叉但EMA空头", "price": 0.649},
+    {"code": "588170", "status": "持有(观望)无持仓，EMA空头", "price": 0.950},
+    {"code": "159532", "status": "震荡区间,继续持有(23500股@1.382)", "price": 1.571},
+    {"code": "512170", "status": "已有持仓156800股@0.336，信号为分批建仓1", "price": 0.337}
   ],
-  "legacy_position": [
-    {"code": "159532", "note": "不在当前ETF池中，58600股@1.495，信号未覆盖，需手动管理", "price": 1.497}
-  ]
+  "portfolio": {
+    "total_asset": 205101.86,
+    "cash": 115184.96,
+    "market_value": 89916.90,
+    "last_sync": "2026-08-05 13:30"
+  }
 }

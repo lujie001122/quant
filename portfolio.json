@@ -1,8 +1,8 @@
 {
   "_signal_state": {
     "159516": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
+      "build_phase": 1,
+      "build_first_price": 0.669,
       "stop_level": 0,
       "reached_8pct": false,
       "reached_15pct": false,
@@ -15,14 +15,14 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 40.03,
+      "prev_rsi": 46.71,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 1,
+      "empty_days": 0,
       "empty_days_date": "2026-08-05",
       "daily_trade_log": {
         "2026-08-05": {
-          "buy_count": 0,
+          "buy_count": 1,
           "t0_count": 0
         }
       }
@@ -42,7 +42,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 43.15,
+      "prev_rsi": 43.58,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -55,8 +55,8 @@
       }
     },
     "588170": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
+      "build_phase": 1,
+      "build_first_price": 0.905,
       "stop_level": 0,
       "reached_8pct": false,
       "reached_15pct": false,
@@ -69,14 +69,14 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 39.67,
+      "prev_rsi": 45.96,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 1,
+      "empty_days": 0,
       "empty_days_date": "2026-08-05",
       "daily_trade_log": {
         "2026-08-05": {
-          "buy_count": 0,
+          "buy_count": 1,
           "t0_count": 0
         }
       }
@@ -84,19 +84,19 @@
     "159532": {
       "build_phase": 0,
       "build_first_price": 0.0,
-      "stop_level": 2,
+      "stop_level": 0,
       "reached_8pct": false,
       "reached_15pct": false,
       "trailing_stop_price": 0.0,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
-      "peak_price": 1.542,
-      "below_ma20_count": 2,
-      "below_ma20_date": "2026-08-05",
+      "peak_price": 1.573,
+      "below_ma20_count": 0,
+      "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 45.32,
+      "prev_rsi": 49.15,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -110,7 +110,7 @@
     },
     "515050": {
       "build_phase": 1,
-      "build_first_price": 0.986,
+      "build_first_price": 1.002,
       "stop_level": 0,
       "reached_8pct": false,
       "reached_15pct": false,
@@ -123,8 +123,62 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 42.4,
+      "prev_rsi": 43.65,
       "prev_macd_status": "绿柱缩短",
+      "liquidate_dates": [],
+      "empty_days": 0,
+      "empty_days_date": null,
+      "daily_trade_log": {
+        "2026-08-05": {
+          "buy_count": 1,
+          "t0_count": 0
+        }
+      }
+    },
+    "159611": {
+      "build_phase": 0,
+      "build_first_price": 0.0,
+      "stop_level": 0,
+      "reached_8pct": false,
+      "reached_15pct": false,
+      "trailing_stop_price": 0.0,
+      "cooldown_until": null,
+      "grid_frozen": false,
+      "last_grid_trigger": null,
+      "peak_price": 0.0,
+      "below_ma20_count": 0,
+      "below_ma20_date": null,
+      "add_count": 0,
+      "ma5_touch_count": 0,
+      "prev_rsi": 50.23,
+      "prev_macd_status": "红柱缩短",
+      "liquidate_dates": [],
+      "empty_days": 1,
+      "empty_days_date": "2026-08-05",
+      "daily_trade_log": {
+        "2026-08-05": {
+          "buy_count": 0,
+          "t0_count": 0
+        }
+      }
+    },
+    "512170": {
+      "build_phase": 1,
+      "build_first_price": 0.337,
+      "stop_level": 0,
+      "reached_8pct": false,
+      "reached_15pct": false,
+      "trailing_stop_price": 0.0,
+      "cooldown_until": null,
+      "grid_frozen": false,
+      "last_grid_trigger": null,
+      "peak_price": 0.0,
+      "below_ma20_count": 0,
+      "below_ma20_date": null,
+      "add_count": 0,
+      "ma5_touch_count": 0,
+      "prev_rsi": 63.78,
+      "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
@@ -139,27 +193,27 @@
   "positions": {
     "159532": {
       "name": "中证2000ET",
-      "shares": 58600,
-      "avg_cost": 1.495,
-      "total_cost": 87607.0,
-      "base_price": 1.486,
-      "market_price": 1.497,
-      "market_value": 87724.2,
-      "pnl": 101.62,
-      "pnl_pct": 0.12,
-      "trades": [
-        {
-          "date": "2026-07-31",
-          "action": "买入(试探建仓)",
-          "reason": "MACD绿柱缩短+RSI37.95+站上MA5, 15%底仓4400股"
-        }
-      ]
+      "shares": 23500,
+      "avg_cost": 1.382,
+      "market_price": 1.571,
+      "market_value": 36918.5,
+      "pnl": 4434.17,
+      "pnl_pct": 13.65
+    },
+    "512170": {
+      "name": "医疗ETF华",
+      "shares": 156800,
+      "avg_cost": 0.336,
+      "market_price": 0.338,
+      "market_value": 52998.4,
+      "pnl": 282.19,
+      "pnl_pct": 0.54
     }
   },
   "account": {
-    "total_asset": 207049.49,
-    "cash": 119325.29,
-    "market_value": 87724.2
+    "total_asset": 205101.86,
+    "cash": 115184.96,
+    "market_value": 89916.9
   },
-  "last_updated": "2026-08-05 09:03"
+  "last_updated": "2026-08-05 18:33"
 }
