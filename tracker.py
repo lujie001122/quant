@@ -17,7 +17,7 @@ _DEFAULT_NAMES = {
     "159516": "半导体设备ETF",
     "515880": "通信ETF",
     "588170": "科创半导体ETF",
-    "159532": "ETF",
+    "159532": "中证2000ETF",
     "515050": "中证全指ETF",
 }
 _DEFAULT_SIDS = {
@@ -160,10 +160,13 @@ def get_etfs_config(fund_per_etf=44000):
 def get_tracked_with_keywords():
     """
     返回 {code: {name, kw}}，供 sentiment_check 使用。
-    kw = [name, name+"ETF"(如果不以ETF结尾), code]
+    kw = [name, name+"ETF"(如果不以ETF结尾), code] + industry_kw(从 etf_pool.json)
     """
     pool = _load_pool()
     pf = _load_portfolio()
+
+    # 行业关键词 (从 etf_pool.json)
+    industry_kw_map = pool.get("industry_kw", {}) if pool else {}
 
     tracked = {}
 
@@ -177,16 +180,33 @@ def get_tracked_with_keywords():
             if not name.endswith("ETF"):
                 kw.append(name + "ETF")
             kw.append(code)
+            # 合并行业关键词
+            ikw = industry_kw_map.get(code, [])
+            for k in ikw:
+                if k not in kw:
+                    kw.append(k)
             tracked[code] = {"name": name, "kw": kw}
     else:
         # 回退
-        _DEFAULT_TRACKED = {
-            "159516": {"name": "半导体设备ETF", "kw": ["半导体设备ETF", "半导体设备ETFETF", "159516"]},
-            "515880": {"name": "通信ETF", "kw": ["通信ETF", "通信ETFETF", "515880"]},
-            "588170": {"name": "科创半导体ETF", "kw": ["科创半导体ETF", "科创半导体ETFETF", "588170"]},
-            "159532": {"name": "中证2000ETF", "kw": ["中证2000ETF", "中证2000ETFETF", "159532"]},
-            "515050": {"name": "中证全指ETF", "kw": ["中证全指ETF", "中证全指ETFETF", "515050"]},
+        _DEFAULT_INDUSTRY_KW = {
+            "159516": ["半导体", "芯片", "光刻", "CPO", "光模块"],
+            "515880": ["通信", "5G", "6G", "光通信", "CPO", "光模块"],
+            "588170": ["科创", "半导体", "芯片", "科创板"],
+            "159532": ["中证2000", "小盘", "微盘"],
+            "515050": ["全指", "A股", "沪深"],
         }
+        _DEFAULT_TRACKED = {
+            "159516": {"name": "半导体设备ETF", "kw": ["半导体设备ETF", "159516"]},
+            "515880": {"name": "通信ETF", "kw": ["通信ETF", "515880"]},
+            "588170": {"name": "科创半导体ETF", "kw": ["科创半导体ETF", "588170"]},
+            "159532": {"name": "中证2000ETF", "kw": ["中证2000ETF", "159532"]},
+            "515050": {"name": "中证全指ETF", "kw": ["中证全指ETF", "515050"]},
+        }
+        for code, ikw in _DEFAULT_INDUSTRY_KW.items():
+            if code in _DEFAULT_TRACKED:
+                for k in ikw:
+                    if k not in _DEFAULT_TRACKED[code]["kw"]:
+                        _DEFAULT_TRACKED[code]["kw"].append(k)
         tracked = dict(_DEFAULT_TRACKED)
 
     # 合并 portfolio 实际持仓
@@ -197,6 +217,11 @@ def get_tracked_with_keywords():
             if not name.endswith("ETF"):
                 kw.append(name + "ETF")
             kw.append(code)
+            # 行业关键词
+            ikw = industry_kw_map.get(code, [])
+            for k in ikw:
+                if k not in kw:
+                    kw.append(k)
             tracked[code] = {"name": name, "kw": kw}
         else:
             # 已在列表中，用 portfolio 中的名称覆盖（如果不同）
@@ -206,6 +231,11 @@ def get_tracked_with_keywords():
                 if not name.endswith("ETF"):
                     kw.append(name + "ETF")
                 kw.append(code)
+                # 合并行业关键词
+                ikw = industry_kw_map.get(code, [])
+                for k in ikw:
+                    if k not in kw:
+                        kw.append(k)
                 tracked[code]["kw"] = kw
 
     return tracked

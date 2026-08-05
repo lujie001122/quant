@@ -1,10 +1,10 @@
-"""舆情扫描 v3.2 — Sina滚动新闻 + 情感分词
+"""舆情扫描 v4.0 — 多源新闻抓取（新浪 + 东财 + 同花顺）+ 情感分词
+- 三源合并，按标题去重
 - 健壮异常处理
-- 修复bare except
-- 修复KeyError
-- v3.2: 从 etf_pool.json 动态读取标的和关键词
+- 保留 v3.2 评分逻辑和输出格式
+- v4.0: 新增 fetch_eastmoney() / fetch_10jqka()
 """
-import json, urllib.request, logging, os
+import json, urllib.request, re, logging, os
 from datetime import datetime
 from tracker import get_tracked_with_keywords
 
@@ -23,20 +23,87 @@ POS = {"利好": 3, "涨停": 3, "突破": 2, "大增": 2, "预增": 2, "回购"
 NEG_THRESHOLD_WARN = 3   # 关注阈值
 NEG_THRESHOLD_BLOCK = 6  # 利空阈值
 
+_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
-def fetch():
+
+def fetch_sina():
+    """新浪滚动新闻 — 返回 [{\"title\": ..., \"digest\": ...}]"""
     url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=30&page=1"
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": _UA,
             "Referer": "https://finance.sina.com.cn/",
         })
         raw = urllib.request.urlopen(req, timeout=10).read()
         data = json.loads(raw)
-        return data.get("result", {}).get("data", [])
+        results = []
+        for item in data.get("result", {}).get("data", []):
+            title = item.get("title", "")
+            if title:
+                results.append({"title": title, "digest": item.get("intro", "")})
+        return results
     except Exception as e:
-        logger.warning(f"舆情抓取失败: {e}")
+        logger.warning(f"新浪抓取失败: {e}")
         return []
+
+
+def fetch_10jqka():
+    """同花顺快讯 — 返回 [{\"title\": ..., \"digest\": ...}]"""
+    url = "https://news.10jqka.com.cn/tapp/news/push/stock/"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": _UA,
+            "Referer": "https://news.10jqka.com.cn/",
+        })
+        raw = urllib.request.urlopen(req, timeout=10).read().decode("utf-8")
+        data = json.loads(raw)
+        results = []
+        for item in data.get("data", {}).get("list", []):
+            title = item.get("title", "")
+            if title:
+                results.append({"title": title, "digest": item.get("digest", "")})
+        return results
+    except Exception as e:
+        logger.warning(f"同花顺抓取失败: {e}")
+        return []
+
+
+def fetch_eastmoney():
+    """东财要闻 — 返回 [{\"title\": ...}]"""
+    url = "https://finance.eastmoney.com/a/cgsxw.html"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": _UA,
+            "Referer": "https://finance.eastmoney.com/",
+        })
+        raw = urllib.request.urlopen(req, timeout=10).read()
+        # 东财页面实际编码为 utf-8（非 gb2312）
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gb2312", errors="replace")
+        # 提取 <div class="title"><a>TITLE</a>
+        pattern = r'<div class="title">\s*<a[^>]*>([^<]+)</a>'
+        titles = re.findall(pattern, text)
+        return [{"title": t.strip()} for t in titles if t.strip()]
+    except Exception as e:
+        logger.warning(f"东财抓取失败: {e}")
+        return []
+
+
+def fetch_all():
+    """合并三源新闻，按标题去重"""
+    all_news = []
+    seen = set()
+
+    for source_news in [fetch_sina(), fetch_10jqka(), fetch_eastmoney()]:
+        for item in source_news:
+            title = item["title"].strip()
+            if title and title not in seen:
+                seen.add(title)
+                all_news.append(item)
+
+    return all_news
 
 
 def score(titles):
@@ -48,8 +115,8 @@ def score(titles):
 
 
 print(f"🔍 舆情 | {datetime.now().strftime('%H:%M')}")
-news = fetch()
-print(f"  抓取{len(news)}条新闻")
+news = fetch_all()
+print(f"  抓取{len(news)}条新闻（新浪+东财+同花顺）")
 alerts = []
 
 for code, info in TRACKED.items():
