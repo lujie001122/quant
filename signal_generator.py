@@ -845,6 +845,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 pos.below_ma20_count = 0
                 pos.below_ma20_date = None
 
+            # 分级止损恢复: stop_level=2 但 MACD 未恶化(非死叉/非绿柱放大) → 重置
+            # 因为 3 级止损的条件已不满足，不应继续等待
+            if pos.stop_level == 2 and t["macd_status"] not in ["死叉", "绿柱放大"]:
+                pos.stop_level = 0
+                pos.below_ma20_count = 0
+                pos.below_ma20_date = None
+
         # P1: 趋势止盈(MACD红柱缩短+破MA5)
         if pos.has_position and t["macd_status"] == "红柱缩短" and price < t["ma5"]:
             stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖20%活动仓", "trend_profit_sell"))
