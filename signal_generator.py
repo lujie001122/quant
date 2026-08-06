@@ -1083,7 +1083,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # 提前计算持仓占比（用于仓位上限检查，防重复计算）
         _position_ratio_val = pos.shares * price / TOTAL_FUND if pos.has_position else 0
-        _position_capped = pos.has_position and _position_ratio_val >= 0.20
+        _position_capped = pos.has_position and _position_ratio_val >= 0.50
 
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         if stop_actions:
@@ -1120,7 +1120,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 if _position_capped:
                     action = "持有(仓位已满)"
                     position_ratio = f"{_position_ratio_val*100:.0f}%"
-                    reason = f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                    reason = f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过"
                     trade_type = None
                 else:
                     pos.record_t0(today_str)
@@ -1142,7 +1142,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             if _position_capped:
                 action = "持有(仓位已满)"
                 position_ratio = f"{_position_ratio_val*100:.0f}%"
-                reason = f"网格买入信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                reason = f"网格买入信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过"
                 trade_type = None
             else:
                 # 检查是否已触发过同一档位
@@ -1239,7 +1239,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                     if _position_capped:
                                         action = "持有(仓位已满)"
                                         position_ratio = f"{_position_ratio_val*100:.0f}%"
-                                        reason = f"补仓信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                                        reason = f"补仓信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过"
                                         trade_type = None
                                     else:
                                         pos.record_buy(today_str)
@@ -1261,7 +1261,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 elif _position_capped:
                                     action = "持有(仓位已满)"
                                     position_ratio = f"{_position_ratio_val*100:.0f}%"
-                                    reason = f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                                    reason = f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过"
                                     trade_type = None
                                 elif pos.can_buy_today(today_str, atr_pct):
                                     pos.record_buy(today_str)
@@ -1303,7 +1303,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     reason = "网格冻结(跌破第5档),等站上MA5解冻"
                 elif _position_capped:
                     action = "持有(仓位已满)"
-                    reason = f"当前仓位{_position_ratio_val*100:.0f}%已达目标20%"
+                    reason = f"当前仓位{_position_ratio_val*100:.0f}%已达目标50%"
                 elif price > t["ma5"] and t["rsi"] and t["rsi"] > 50:
                     reason = "趋势偏强,继续持有"
                 elif price < t["ma5"]:
