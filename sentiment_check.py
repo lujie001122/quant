@@ -114,38 +114,52 @@ def score(titles):
     return n - p, n, p
 
 
-print(f"🔍 舆情 | {datetime.now().strftime('%H:%M')}")
-news = fetch_all()
-print(f"  抓取{len(news)}条新闻（新浪+东财+同花顺）")
-alerts = []
+def build_keywords(code, name, industry_kw_map=None):
+    """构建关键词列表: [name, name+ETF, code] + industry_kw"""
+    kw = [name]
+    if not name.endswith("ETF"):
+        kw.append(name + "ETF")
+    kw.append(code)
+    if industry_kw_map:
+        for k in industry_kw_map.get(code, []):
+            if k not in kw:
+                kw.append(k)
+    return kw
 
-for code, info in TRACKED.items():
-    matched = []
-    for n in news:
-        try:
-            title = n.get("title", "")
-            if any(kw in title for kw in info["kw"]):
-                matched.append(title)
-        except (KeyError, TypeError):
-            continue
 
-    s, neg, pos = score(matched)
-    if s >= NEG_THRESHOLD_BLOCK:
-        level = "🛑 利空"
-    elif s >= NEG_THRESHOLD_WARN:
-        level = "⚠️ 关注"
+if __name__ == "__main__":
+    print(f"🔍 舆情 | {datetime.now().strftime('%H:%M')}")
+    news = fetch_all()
+    print(f"  抓取{len(news)}条新闻（新浪+东财+同花顺）")
+    alerts = []
+
+    for code, info in TRACKED.items():
+        matched = []
+        for n in news:
+            try:
+                title = n.get("title", "")
+                if any(kw in title for kw in info["kw"]):
+                    matched.append(title)
+            except (KeyError, TypeError):
+                continue
+
+        s, neg, pos = score(matched)
+        if s >= NEG_THRESHOLD_BLOCK:
+            level = "🛑 利空"
+        elif s >= NEG_THRESHOLD_WARN:
+            level = "⚠️ 关注"
+        else:
+            level = "✅ 正常"
+        detail = f"  {level} {code} {info['name']} (负{neg}/正{pos})"
+        if matched:
+            detail += f"\n    {matched[0][:50]}"
+            if len(matched) > 1:
+                detail += f"\n    {matched[1][:50]}"
+        print(detail)
+        if s >= NEG_THRESHOLD_WARN:
+            alerts.append(code)
+
+    if alerts:
+        print(f"\n⚠️ 预警: {', '.join(alerts)} 建议手动确认")
     else:
-        level = "✅ 正常"
-    detail = f"  {level} {code} {info['name']} (负{neg}/正{pos})"
-    if matched:
-        detail += f"\n    {matched[0][:50]}"
-        if len(matched) > 1:
-            detail += f"\n    {matched[1][:50]}"
-    print(detail)
-    if s >= NEG_THRESHOLD_WARN:
-        alerts.append(code)
-
-if alerts:
-    print(f"\n⚠️ 预警: {', '.join(alerts)} 建议手动确认")
-else:
-    print("\n✅ 无利空，正常交易")
+        print("\n✅ 无利空，正常交易")

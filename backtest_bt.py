@@ -245,12 +245,14 @@ class ETFStrategy(bt.Strategy):
     def __init__(self):
         # 指标
         self.rsi = {}; self.macd = {}; self.ao = {}
+        self.atr = {}
         self.ma5 = {}; self.ma20 = {}
         for d in self.datas:
             n = d._name
             self.rsi[n] = WilderRSI(d.close)
             self.macd[n] = MACDStatus(d.close)
             self.ao[n] = AOIndicator(d)
+            self.atr[n] = bt.indicators.ATR(d, period=14)
             self.ma5[n] = bt.indicators.SMA(d.close, period=5)
             self.ma20[n] = bt.indicators.SMA(d.close, period=20)
 
@@ -311,7 +313,7 @@ class ETFStrategy(bt.Strategy):
     def _buy(self, data, pct, reason):
         """按总资金比例买入，与实盘一致"""
         name = data._name
-        target_value = min(self.broker.getvalue() * pct, self.broker.getvalue() * 0.60)
+        target_value = min(self.broker.getvalue() * pct, self.broker.getvalue() * 0.50)
         price = data.close[0]
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
@@ -395,6 +397,7 @@ class ETFStrategy(bt.Strategy):
             ma5_v = self.ma5[name][0]
             ma20_v = self.ma20[name][0]
             ao_val = self.ao[name].ao[0]
+            atr_val = self.atr[name].atr[0]
 
             # 20日新高
             h20 = None
@@ -511,7 +514,9 @@ class ETFStrategy(bt.Strategy):
             # ═══ ENTRY LOGIC ═══
             # P1: 入场MA20趋势过滤 — 新开仓时要求price > MA20
             ma20_ok = (ma20_v and price > ma20_v)
-            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and ma20_ok:
+            # ATR>50%跳过(除权日, 与实盘一致)
+            atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and ma20_ok and atr_ok:
                 entered = False
 
                 # 通道1: RSI抄底 (RSI为None时允许,与实盘一致)

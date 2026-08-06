@@ -979,9 +979,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 pos.below_ma20_count = 0
                 pos.below_ma20_date = None
 
-            # 分级止损恢复: stop_level=2 但 MACD 未恶化(非死叉/非绿柱放大) → 重置
-            # 因为 3 级止损的条件已不满足，不应继续等待
-            if pos.stop_level == 2 and t["macd_status"] not in ["死叉", "绿柱放大"]:
+            # 分级止损恢复: stop_level=2 但 MACD 未恶化且价格恢复 → 重置
+            # 加严条件: price > MA20 AND DIF > 0 都满足才重置, 防止过早恢复
+            if pos.stop_level == 2 and t["macd_status"] not in ["死叉", "绿柱放大"] and t["ma20"] and price > t["ma20"] and t["dif"] is not None and t["dif"] > 0:
                 pos.stop_level = 0
                 pos.below_ma20_count = 0
                 pos.below_ma20_date = None

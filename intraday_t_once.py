@@ -123,7 +123,11 @@ def score_to_position_pct(score):
 
 # ═══ 只在交易时段运行 ═══
 now = datetime.now()
-if now.hour < 10 or (now.hour == 11 and now.minute > 30) or now.hour == 12 or now.hour >= 15:
+# 交易时段: 9:30-11:30, 13:00-15:00
+if (now.hour < 9 or (now.hour == 9 and now.minute < 30)
+        or (now.hour == 11 and now.minute > 30)
+        or now.hour == 12
+        or now.hour >= 15):
     exit()
 
 # ═══ 时间过滤检查 ═══
@@ -193,8 +197,8 @@ for code, sid in CODE_MAP.items():
                 vol_ratio_5min = round(volumes[-1] / avg_vol, 2)
 
         # 用共享评分函数判断做T（传入量比）
-        buy_score = t0_buy_score(rsi, macd_status, vol_ratio_5min, None)
-        sell_score = t0_sell_score(rsi, None, macd_status, vol_ratio_5min, None)
+        buy_score = t0_buy_score(rsi, macd_status, vol_ratio_5min)
+        sell_score = t0_sell_score(rsi, macd_status, vol_ratio_5min)
 
         # P1: RSI软评分叠加
         rsi_buy = rsi_soft_score_buy(rsi)

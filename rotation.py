@@ -11,7 +11,6 @@ import json
 import urllib.request
 import sys
 import os
-import re
 from datetime import datetime
 
 # ── 项目根目录 ──────────────────────────────────────────
@@ -317,109 +316,7 @@ def calc_max_drawdown(closes):
 #  舆情抓取 (复用 sentiment_check 的逻辑)
 # ═══════════════════════════════════════════════════════
 
-_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-
-NEG = {"利空": 3, "暴跌": 3, "崩盘": 3, "减持": 2, "亏损": 2, "下滑": 1,
-       "预警": 2, "暴雷": 3, "跌停": 3, "退市": 3, "制裁": 3, "关税": 3,
-       "踩踏": 2, "抛售": 3, "危机": 3, "风险": 1, "债务": 2, "违约": 2}
-POS = {"利好": 3, "涨停": 3, "突破": 2, "大增": 2, "预增": 2, "回购": 2,
-       "增持": 2, "分红": 1, "扶持": 2, "超预期": 2, "新高": 2, "反弹": 1,
-       "领涨": 2, "走强": 1}
-
-
-def _fetch_sina():
-    """新浪滚动新闻"""
-    url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=30&page=1"
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": _UA,
-            "Referer": "https://finance.sina.com.cn/",
-        })
-        raw = urllib.request.urlopen(req, timeout=10).read()
-        data = json.loads(raw)
-        results = []
-        for item in data.get("result", {}).get("data", []):
-            title = item.get("title", "")
-            if title:
-                results.append({"title": title, "digest": item.get("intro", "")})
-        return results
-    except Exception:
-        return []
-
-
-def _fetch_10jqka():
-    """同花顺快讯"""
-    url = "https://news.10jqka.com.cn/tapp/news/push/stock/"
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": _UA,
-            "Referer": "https://news.10jqka.com.cn/",
-        })
-        raw = urllib.request.urlopen(req, timeout=10).read().decode("utf-8")
-        data = json.loads(raw)
-        results = []
-        for item in data.get("data", {}).get("list", []):
-            title = item.get("title", "")
-            if title:
-                results.append({"title": title, "digest": item.get("digest", "")})
-        return results
-    except Exception:
-        return []
-
-
-def _fetch_eastmoney():
-    """东财要闻"""
-    url = "https://finance.eastmoney.com/a/cgsxw.html"
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": _UA,
-            "Referer": "https://finance.eastmoney.com/",
-        })
-        raw = urllib.request.urlopen(req, timeout=10).read()
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("gb2312", errors="replace")
-        pattern = r'<div class="title">\s*<a[^>]*>([^<]+)</a>'
-        titles = re.findall(pattern, text)
-        return [{"title": t.strip()} for t in titles if t.strip()]
-    except Exception:
-        return []
-
-
-def fetch_all_news():
-    """合并三源新闻，按标题去重"""
-    all_news = []
-    seen = set()
-    for source_news in [_fetch_sina(), _fetch_10jqka(), _fetch_eastmoney()]:
-        for item in source_news:
-            title = item["title"].strip()
-            if title and title not in seen:
-                seen.add(title)
-                all_news.append(item)
-    return all_news
-
-
-def build_keywords(code, name, industry_kw_map=None):
-    """构建关键词列表: [name, name+ETF, code] + industry_kw"""
-    kw = [name]
-    if not name.endswith("ETF"):
-        kw.append(name + "ETF")
-    kw.append(code)
-    if industry_kw_map:
-        for k in industry_kw_map.get(code, []):
-            if k not in kw:
-                kw.append(k)
-    return kw
-
-
-def score_sentiment(titles):
-    """计算情感得分：负分越高越利空"""
-    n, p = 0, 0
-    for t in titles:
-        n += sum(v for k, v in NEG.items() if k in t)
-        p += sum(v for k, v in POS.items() if k in t)
-    return n - p, n, p
+from sentiment_check import fetch_all as fetch_all_news, score as score_sentiment, build_keywords, NEG, POS
 
 
 # ═══════════════════════════════════════════════════════
