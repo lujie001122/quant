@@ -213,9 +213,63 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
 
 
 def fetch_klines_5min(code, today=None):
-    """获取5分钟K线(直返空, 量比降级到日K)"""
-    # TODO: 未来启用5分钟量比
-    return []
+    """获取5分钟K线(腾讯接口, 48根覆盖4小时交易时段)
+    返回: [{"time","open","close","high","low","volume","amount"}, ...]
+    非交易时段返回空列表
+    """
+    sid = CODE_MAP.get(code, "")
+    if not sid:
+        return []
+
+    # 非交易时段快速返回（9:30前或15:00后）
+    now = datetime.now()
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    if now < market_open or now > market_close:
+        return []
+
+    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={sid},m5,,48"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+
+        stock_data = raw.get("data", {})
+        # 找到对应 sid 的数据
+        qfq_key = None
+        for key in (sid, sid.lower(), sid.upper()):
+            if key in stock_data:
+                qfq_key = key
+                break
+        if not qfq_key:
+            return []
+
+        kline_list = stock_data[qfq_key].get("m5") or stock_data[qfq_key].get("m5", [])
+        if not kline_list:
+            return []
+
+        klines = []
+        for item in kline_list:
+            if len(item) < 6:
+                continue
+            try:
+                o, c, h, l = float(item[1]), float(item[2]), float(item[3]), float(item[4])
+                v = float(item[5])
+                amt = float(item[7]) if len(item) > 7 else 0
+                klines.append({
+                    "time": item[0],
+                    "open": o, "close": c, "high": h, "low": l,
+                    "volume": v, "amount": amt,
+                })
+            except (ValueError, IndexError):
+                continue
+        return klines
+    except Exception as e:
+        print(f"[WARN] {code} 5分钟K线获取失败: {e}")
+        return []
 
 
 # ============================================================
@@ -316,6 +370,64 @@ def calc_vol_ratio_120min(volumes, period=20):
         return None
     avg_vol = sum(volumes[-(period + 1):-1]) / period
     return round(volumes[-1] / avg_vol, 2)
+
+
+def calc_5min_indicators(klines_5min):
+    """基于5分钟K线计算日内分时指标
+    返回: {
+        "rsi_5min": Wilder RSI(14) on 5min closes,
+        "macd_5min_dif/dea/bar/status": MACD(5,34,5) on 5min closes,
+        "vol_ratio_5min": 当前5分钟量 / 过去20根均量,
+        "day_high/day_low/day_pct": 当日最高/最低/涨跌幅
+    }
+    数据不足时返回 None 对应字段
+    """
+    if not klines_5min or len(klines_5min) < 14:
+        return None
+
+    closes = [k["close"] for k in klines_5min]
+    volumes = [k["volume"] for k in klines_5min]
+    highs = [k["high"] for k in klines_5min]
+    lows = [k["low"] for k in klines_5min]
+
+    # 5分钟 RSI(14) — Wilder 平滑
+    rsi_5min = calc_rsi_wilder(closes, 14)
+
+    # 5分钟 MACD(5, 34, 5) — 日内快参数
+    dif5, dea5, bar5, status5 = calc_macd(closes, fast=5, slow=34, sig=5)
+
+    # 5分钟量比: 当前5分钟量 / 过去20根均量
+    vol_ratio_5min = None
+    if len(volumes) >= 21:
+        avg_vol_20 = sum(volumes[-21:-1]) / 20
+        if avg_vol_20 > 0:
+            vol_ratio_5min = round(volumes[-1] / avg_vol_20, 2)
+
+    # 当日最高/最低/涨跌幅
+    if len(klines_5min) >= 2:
+        day_open = klines_5min[0]["open"]
+        day_high = max(highs)
+        day_low = min(lows)
+        day_close = closes[-1]
+        day_pct = round((day_close - day_open) / day_open * 100, 2) if day_open > 0 else 0
+    else:
+        day_open = klines_5min[0]["open"] if klines_5min else 0
+        day_high = day_open
+        day_low = day_open
+        day_close = closes[-1] if closes else 0
+        day_pct = 0
+
+    return {
+        "rsi_5min": rsi_5min,
+        "macd_5min_status": status5,
+        "macd_5min_dif": dif5,
+        "macd_5min_dea": dea5,
+        "macd_5min_bar": bar5,
+        "vol_ratio_5min": vol_ratio_5min,
+        "day_high": day_high,
+        "day_low": day_low,
+        "day_pct": day_pct,
+    }
 
 def dynamic_spacing(atr, price, base_spacing):
     if atr is None or price == 0:
@@ -540,35 +652,39 @@ class PositionInfo:
         self.empty_days_date = data.get("empty_days_date")
 
 
-def t0_buy_score(rsi, macd_status, vol_ratio_5min, vol_ratio_120):
-    """做T买入评分: RSI超卖+MACD多头确认+量能温和
-    RSI<40必须满足(超卖才摊低), MACD金叉/红柱放大(趋势确认)
-    死叉/绿柱放大时禁止做T买入(趋势恶化)
+def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
+    """做T买入评分(基于5分钟分时): RSI超卖+MACD多头确认+量能温和
+    - RSI_5min < 30 必须满足(超卖才摊低)
+    - MACD_5min 金叉或红柱(趋势确认)
+    - 量比 < 1.5(不放量砸盘)
     """
-    if rsi is None or rsi >= 40:
-        return 0  # RSI不超卖，不做T买入
-    if macd_status in ["死叉", "绿柱放大"]:
+    if rsi_5min is None or rsi_5min >= 30:
+        return 0  # 5分钟RSI不超卖，不做T买入
+    if macd_5min_status in ["死叉", "绿柱放大"]:
         return 0  # 趋势恶化，禁止做T买入
-    vol = vol_ratio_5min if vol_ratio_5min is not None else vol_ratio_120
-    score = 1  # RSI<40已满足
-    if macd_status in ["金叉", "红柱放大"]: score += 1
-    if vol is not None and vol < 1.5: score += 1
+    score = 1  # RSI_5min<30已满足
+    if macd_5min_status in ["金叉", "红柱放大"]:
+        score += 1
+    if vol_ratio_5min is not None and vol_ratio_5min < 1.5:
+        score += 1
     return score
 
-def t0_sell_score(rsi, prev_rsi, macd_status, vol_ratio_5min, vol_ratio_120):
-    """做T卖出评分: RSI偏高+MACD趋势结束+量能放大
-    RSI>50必须满足(超卖区不卖), RSI>65加分; MACD红柱缩短/死叉/绿柱放大(趋势结束)
-    金叉/红柱放大时禁止做T卖出(趋势向好)
+
+def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
+    """做T卖出评分(基于5分钟分时): RSI超买+MACD空头确认+量能放大
+    - RSI_5min > 70 必须满足(超买才卖)
+    - MACD_5min 死叉或绿柱(趋势结束)
+    - 量比 > 1.2(放量拉升)
     """
-    if rsi is None or rsi <= 50:
-        return 0  # RSI超卖区不卖出
-    if macd_status in ["金叉", "红柱放大"]:
+    if rsi_5min is None or rsi_5min <= 70:
+        return 0  # 5分钟RSI不超买，不卖出
+    if macd_5min_status in ["金叉", "红柱放大"]:
         return 0  # 趋势向好，禁止做T卖出
-    vol = vol_ratio_5min if vol_ratio_5min is not None else vol_ratio_120
-    score = 1  # RSI>50已满足
-    if rsi > 65: score += 1  # RSI明显偏高加分
-    if macd_status in ["红柱缩短", "死叉", "绿柱放大"]: score += 1
-    if vol is not None and vol > 1.2: score += 1
+    score = 1  # RSI_5min>70已满足
+    if macd_5min_status in ["死叉", "绿柱放大"]:
+        score += 1
+    if vol_ratio_5min is not None and vol_ratio_5min > 1.2:
+        score += 1
     return score
 
 
@@ -727,12 +843,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             lows = [k["low"] for k in klines]
             ao_now, ao_5ago = calc_ao(highs, lows)
 
+            # 5分钟分时指标
+            klines_5min = fetch_klines_5min(code)
+            indicators_5min = calc_5min_indicators(klines_5min)
+
             all_tech[code] = {
                 "ma5": ma5, "ma10": ma10, "ma20": ma20,
                 "rsi": rsi, "dif": dif, "dea": dea, "macd_bar": macd_bar,
                 "macd_status": macd_status, "vol_ratio_120": vol_ratio_120,
                 "atr": atr, "spacing": spacing,
-                "vol_ratio_5min": None,  # 5分钟量比降级
+                "vol_ratio_5min": indicators_5min["vol_ratio_5min"] if indicators_5min else None,
+                "rsi_5min": indicators_5min["rsi_5min"] if indicators_5min else None,
+                "macd_5min_status": indicators_5min["macd_5min_status"] if indicators_5min else None,
+                "macd_5min_dif": indicators_5min["macd_5min_dif"] if indicators_5min else None,
+                "macd_5min_dea": indicators_5min["macd_5min_dea"] if indicators_5min else None,
+                "macd_5min_bar": indicators_5min["macd_5min_bar"] if indicators_5min else None,
+                "day_high": indicators_5min["day_high"] if indicators_5min else None,
+                "day_low": indicators_5min["day_low"] if indicators_5min else None,
+                "day_pct": indicators_5min["day_pct"] if indicators_5min else None,
                 "ao_now": ao_now, "ao_5ago": ao_5ago,
             }
 
@@ -880,42 +1008,50 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         else:
             stop_signal = "未触发(无持仓)"
 
-        # Level 2: 做T弹性条件
-        buy_score = t0_buy_score(t["rsi"], t["macd_status"], t["vol_ratio_5min"], t["vol_ratio_120"])
-        sell_score = t0_sell_score(t["rsi"], pos.prev_rsi, t["macd_status"], t["vol_ratio_5min"], t["vol_ratio_120"])
+        # Level 2: 做T弹性条件（基于5分钟分时数据）
+        # 非交易时段直接返回"无"
+        now = datetime.now()
+        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+        is_market_hours = market_open <= now <= market_close
+
+        # 5分钟指标
+        rsi_5min = t.get("rsi_5min")
+        macd_5min_status = t.get("macd_5min_status")
+        vol_ratio_5min = t.get("vol_ratio_5min")
+
+        if not is_market_hours or rsi_5min is None:
+            buy_score = 0
+            sell_score = 0
+        else:
+            buy_score = t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min)
+            sell_score = t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min)
 
         t0_signal = "无"
-        if pos.has_position:
-            # T入: RSI超卖+MACD多头确认, 价低于成本×1.02(允许2%溢价)
+        if not is_market_hours:
+            t0_signal = "无(非交易时段)"
+        elif pos.has_position:
+            # T入: 5分钟RSI超卖+5分钟MACD多头+量比温和, 价低于成本×1.02(允许2%溢价)
             if buy_score >= 2 and pos.can_t0_today(today_str, atr_pct):
                 if pos.avg_cost > 0 and price < pos.avg_cost * 1.02:
                     pos.record_t0(today_str)
-                    t0_signal = f"买入做T({buy_score}项共振,{'半' if buy_score==2 else '全'}活动仓)"
+                    t0_signal = f"买入做T5m({buy_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
                 else:
-                    t0_signal = f"买入做T信号但价高于成本×1.02({pos.avg_cost*1.02:.3f}),不执行"
-            # T出: 止盈(价高于成本+RSI>50+MACD趋势结束) 或 避险(价低于成本+MACD趋势恶化)
+                    t0_signal = f"买入做T5m信号但价高于成本×1.02({pos.avg_cost*1.02:.3f}),不执行"
+            # T出: 5分钟RSI超买+5分钟MACD空头+量比放大
             elif sell_score >= 2 and pos.active_shares > 0 and pos.can_t0_today(today_str, atr_pct):
                 profit_ok = pos.avg_cost > 0 and price > pos.avg_cost
-                hedge_ok = (pos.avg_cost > 0 and price < pos.avg_cost
-                           and t["macd_status"] in ["死叉", "绿柱放大"])
-                if profit_ok or hedge_ok:
+                if profit_ok:
                     pos.record_t0(today_str)
-                    label = "避险" if hedge_ok else ""
-                    t0_signal = f"卖出做T({sell_score}项共振,{'半' if sell_score==2 else '全'}活动仓){label}"
+                    t0_signal = f"卖出做T5m({sell_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
                 else:
-                    t0_signal = f"卖出做T信号但价低于成本({pos.avg_cost:.3f}),不执行"
-            # 独立避险: 绿柱缩短+价低于成本(不走做T评分，避免和买入矛盾)
-            elif (pos.active_shares > 0 and pos.avg_cost > 0 and price < pos.avg_cost
-                  and t["macd_status"] == "绿柱缩短" and t["rsi"] is not None and t["rsi"] < 40
-                  and pos.can_t0_today(today_str, atr_pct)):
-                pos.record_t0(today_str)
-                t0_signal = "卖出避险(绿柱缩短+超卖+价低于成本,半活动仓)"
+                    t0_signal = f"卖出做T5m信号但价低于成本({pos.avg_cost:.3f}),不执行"
             elif buy_score >= 2 and not pos.can_t0_today(today_str, atr_pct):
-                t0_signal = f"买入做T({buy_score}项共振,今日已做T,等明日)"
+                t0_signal = f"买入做T5m({buy_score}项共振,今日已做T,等明日)"
             elif sell_score >= 2 and pos.active_shares == 0:
-                t0_signal = "卖出做T信号但活动仓为0(不卖底仓)"
+                t0_signal = "卖出做T5m信号但活动仓为0(不卖底仓)"
         elif buy_score >= 2 or sell_score >= 2:
-            t0_signal = "有做T信号但无底仓"
+            t0_signal = "有做T5m信号但无底仓"
 
         pos.prev_rsi = t["rsi"]
         # prev_macd_status只在日期变化时更新(同一天多次运行不覆盖)
@@ -1194,7 +1330,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "strategy_policy": {
             "stop_loss": "均价止损10%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
             "profit_take": "移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈30%→清仓",
-            "t0_signal": "弹性做T(2项→半仓, 3项→全仓)",
+            "t0_signal": "弹性做T(5分钟分时:RSI5m<30买入+MACD5m金叉/红柱+量比<1.5; RSI5m>70卖出+MACD5m死叉/绿柱+量比>1.2)",
             "entry": "5通道(RSI抄底/分批建仓/Test抄底/试探/补仓)统一30%→确认70%→补仓15%",
             "frequency": f"正常1买1T/天, ATR>5%时2买2T/天",
         },
