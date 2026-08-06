@@ -1150,9 +1150,20 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 action = "持有"
                 reason = grid_signal + "(活动仓为0,不卖底仓)"
 
+        # 仓位管理：持仓超20%跳过买入通道（独立判断，不受网格信号影响）
+        _skip_buy = False
+        if pos.has_position:
+            _ratio = pos.shares * price / TOTAL_FUND
+            if _ratio >= 0.20:
+                action = "持有(仓位已满)"
+                position_ratio = f"{_ratio*100:.0f}%"
+                reason = f"当前仓位{_ratio*100:.0f}%已达目标20%"
+                trade_type = None
+                _skip_buy = True
+
         # 无信号
         else:
-            if not pos.has_position and not pos.is_in_cooldown(today_str):
+            if not _skip_buy and not pos.has_position and not pos.is_in_cooldown(today_str):
                 # P2: 市场环境过滤
                 if defense_weak:
                     action = "持有(观望)"
@@ -1175,17 +1186,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         rsi_ok = t["rsi"] is not None and t["rsi"] > 40
                         rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
 
-                        # 仓位管理：持仓超20%跳过买入通道
-                        _skip_buy = False
-                        if pos.has_position:
-                            _ratio = pos.shares * price / TOTAL_FUND
-                            if _ratio >= 0.20:
-                                action = "持有(仓位已满)"
-                                position_ratio = f"{_ratio*100:.0f}%"
-                                reason = f"当前仓位{_ratio*100:.0f}%已达目标20%"
-                                _skip_buy = True
-
-                        if not _skip_buy and pos.build_phase == 0:
+                        if pos.build_phase == 0:
                             # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%
                             if t["macd_status"] == "金叉" and (t["rsi"] is None or t["rsi"] <= 80) and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
