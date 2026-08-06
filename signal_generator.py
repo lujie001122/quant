@@ -616,6 +616,7 @@ class PositionInfo:
             "cooldown_until": self.cooldown_until,
             "grid_frozen": self.grid_frozen,
             "last_grid_trigger": self.last_grid_trigger,
+            "last_reset_date": self.last_reset_date,
             "peak_price": self.peak_price,
             "below_ma20_count": self.below_ma20_count,
             "below_ma20_date": self.below_ma20_date,
@@ -648,6 +649,7 @@ class PositionInfo:
         self.prev_macd_status = data.get("prev_macd_status")
         self.liquidate_dates = data.get("liquidate_dates", [])
         self.last_grid_trigger = data.get("last_grid_trigger")
+        self.last_reset_date = data.get("last_reset_date")
         self.empty_days = data.get("empty_days", 0)
         self.empty_days_date = data.get("empty_days_date")
 
@@ -1036,24 +1038,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             t0_signal = "无(非交易时段)"
         elif pos.has_position:
             # T入: 5分钟RSI超卖+5分钟MACD多头+量比温和, 价低于成本×1.02(允许2%溢价)
-            if buy_score >= 2 and pos.can_t0_today(today_str, atr_pct):
-                if pos.avg_cost > 0 and price < pos.avg_cost * 1.02:
-                    pos.record_t0(today_str)
-                    t0_signal = f"买入做T5m({buy_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
+            if buy_score >= 2:
+                if pos.can_t0_today(today_str, atr_pct):
+                    if pos.avg_cost > 0 and price < pos.avg_cost * 1.02:
+                        t0_signal = f"买入做T5m({buy_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
+                    else:
+                        t0_signal = f"买入做T5m信号但价高于成本×1.02({pos.avg_cost*1.02:.3f}),不执行"
                 else:
-                    t0_signal = f"买入做T5m信号但价高于成本×1.02({pos.avg_cost*1.02:.3f}),不执行"
+                    t0_signal = f"买入做T5m({buy_score}项共振,今日已做T,等明日)"
             # T出: 5分钟RSI超买+5分钟MACD空头+量比放大
-            elif sell_score >= 2 and pos.active_shares > 0 and pos.can_t0_today(today_str, atr_pct):
-                profit_ok = pos.avg_cost > 0 and price > pos.avg_cost
-                if profit_ok:
-                    pos.record_t0(today_str)
-                    t0_signal = f"卖出做T5m({sell_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
+            elif sell_score >= 2:
+                if pos.can_t0_today(today_str, atr_pct):
+                    profit_ok = pos.avg_cost > 0 and price > pos.avg_cost
+                    if profit_ok:
+                        t0_signal = f"卖出做T5m({sell_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
+                    else:
+                        t0_signal = f"卖出做T5m信号但价低于成本({pos.avg_cost:.3f}),不执行"
                 else:
-                    t0_signal = f"卖出做T5m信号但价低于成本({pos.avg_cost:.3f}),不执行"
-            elif buy_score >= 2 and not pos.can_t0_today(today_str, atr_pct):
-                t0_signal = f"买入做T5m({buy_score}项共振,今日已做T,等明日)"
-            elif sell_score >= 2 and pos.active_shares == 0:
-                t0_signal = "卖出做T5m信号但活动仓为0(不卖底仓)"
+                    t0_signal = f"卖出做T5m({sell_score}项共振,今日已做T,等明日)"
         elif buy_score >= 2 or sell_score >= 2:
             t0_signal = "有做T5m信号但无底仓"
 
@@ -1079,7 +1081,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         reason = ""
         trade_type = None
 
-        # 优先级1: 止盈止损
+        # 提前计算持仓占比（用于仓位上限检查，防重复计算）
+        _position_ratio_val = pos.shares * price / TOTAL_FUND if pos.has_position else 0
+        _position_capped = pos.has_position and _position_ratio_val >= 0.20
+
+        # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         if stop_actions:
             for sig_name, sig_type in stop_actions:
                 if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct", "avg_stop_10pct", "hard_stop_20pct"):
@@ -1108,38 +1114,52 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     trade_type = "sell"
                     break
 
-        # 优先级2: 做T
+        # 优先级2: 做T（仓位超限时禁止T入，允许T出）
         elif t0_signal != "无" and "共振" in t0_signal and pos.has_position:
             if "买入" in t0_signal:
-                action = "买入"
-                ratio = ACTIVE_RATIO * 0.2 if "半" in t0_signal else ACTIVE_RATIO * 0.4
-                position_ratio = f"{ratio*100:.0f}%"
-                reason = t0_signal + "(量比)"
-                trade_type = "t0"
+                if _position_capped:
+                    action = "持有(仓位已满)"
+                    position_ratio = f"{_position_ratio_val*100:.0f}%"
+                    reason = f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                    trade_type = None
+                else:
+                    pos.record_t0(today_str)
+                    action = "买入"
+                    ratio = ACTIVE_RATIO * 0.2 if "半" in t0_signal else ACTIVE_RATIO * 0.4
+                    position_ratio = f"{ratio*100:.0f}%"
+                    reason = t0_signal + "(量比)"
+                    trade_type = "t0"
             elif "卖出" in t0_signal:
+                pos.record_t0(today_str)
                 action = "卖出"
                 ratio = 0.1 if "半" in t0_signal else 0.2
                 position_ratio = f"{ratio*100:.0f}%"
                 reason = t0_signal + "(量比)"
                 trade_type = "t0"
 
-        # 优先级3: 网格(仅持仓时生效，不触发建仓)
+        # 优先级3: 网格(仅持仓时生效，不触发建仓；仓位超限时禁止网格买入)
         elif grid_signal != "无" and "买入" in grid_signal and "等明日" not in grid_signal and not pos.grid_frozen and pos.has_position:
-            # 检查是否已触发过同一档位
-            grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
-            if pos.last_grid_trigger == grid_key:
-                action = "持有(等下一档)"
-                reason = f"网格{grid_key}今日已触发,等下一档"
+            if _position_capped:
+                action = "持有(仓位已满)"
+                position_ratio = f"{_position_ratio_val*100:.0f}%"
+                reason = f"网格买入信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                trade_type = None
             else:
-                pos.record_buy(today_str)
-                pos.last_grid_trigger = grid_key
-                action = "买入"
-                position_ratio = f"{grid_weight*100:.0f}%"
-                reason = grid_signal
-                trade_type = "buy"
-            # 网格熔断标记
-            if "熔断" in grid_signal:
-                pos.grid_frozen = True
+                # 检查是否已触发过同一档位
+                grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                if pos.last_grid_trigger == grid_key:
+                    action = "持有(等下一档)"
+                    reason = f"网格{grid_key}今日已触发,等下一档"
+                else:
+                    pos.record_buy(today_str)
+                    pos.last_grid_trigger = grid_key
+                    action = "买入"
+                    position_ratio = f"{grid_weight*100:.0f}%"
+                    reason = grid_signal
+                    trade_type = "buy"
+                # 网格熔断标记
+                if "熔断" in grid_signal:
+                    pos.grid_frozen = True
         elif grid_signal != "无" and "卖出" in grid_signal:
             if pos.active_shares > 0:
                 action = "卖出"
@@ -1150,20 +1170,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 action = "持有"
                 reason = grid_signal + "(活动仓为0,不卖底仓)"
 
-        # 仓位管理：持仓超20%跳过买入通道（独立判断，不受网格信号影响）
-        _skip_buy = False
-        if pos.has_position:
-            _ratio = pos.shares * price / TOTAL_FUND
-            if _ratio >= 0.20:
-                action = "持有(仓位已满)"
-                position_ratio = f"{_ratio*100:.0f}%"
-                reason = f"当前仓位{_ratio*100:.0f}%已达目标20%"
-                trade_type = None
-                _skip_buy = True
-
-        # 无信号
-        else:
-            if not _skip_buy and not pos.has_position and not pos.is_in_cooldown(today_str):
+        # 无信号: 建仓/补仓/持有逻辑（统一入口，action仍为"持有"时进入）
+        if action == "持有":
+            if not pos.has_position and not pos.is_in_cooldown(today_str):
                 # P2: 市场环境过滤
                 if defense_weak:
                     action = "持有(观望)"
@@ -1221,19 +1230,27 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 position_ratio = "0%"
                                 reason = f"建仓条件未满足(MACD{t['macd_status']},RSI{t['rsi']})"
 
-                        elif not _skip_buy and pos.build_phase == 1:
-                            # ── 逆势补仓: 跌超3%允许第二次买入 ──
+                        elif pos.build_phase == 1:
+                            # ── 逆势补仓: 跌超3%允许第二次买入（需检查仓位上限）──
+                            matched = False
                             if pos.build_first_price > 0 and pos.add_count < 5:
                                 dip_pct = (price - pos.build_first_price) / pos.build_first_price
                                 if dip_pct < -0.03 and pos.can_buy_today(today_str, atr_pct) and t["macd_status"] not in ["死叉", "绿柱放大"] and (t["rsi"] is None or t["rsi"] < 40):
-                                    pos.record_buy(today_str)
-                                    pos.add_count += 1
-                                    action = "买入"
-                                    position_ratio = "15%(补仓)"
-                                    reason = f"逆势补仓:跌{dip_pct*100:.0f}%加仓15%(MACD{t['macd_status']})"
-                                    trade_type = "buy"
-                            # ── 确认加仓: 突破首笔价或回踩MA5站稳 ──
-                            elif price > pos.build_first_price or pos.ma5_touch_count >= 2:
+                                    if _position_capped:
+                                        action = "持有(仓位已满)"
+                                        position_ratio = f"{_position_ratio_val*100:.0f}%"
+                                        reason = f"补仓信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                                        trade_type = None
+                                    else:
+                                        pos.record_buy(today_str)
+                                        pos.add_count += 1
+                                        action = "买入"
+                                        position_ratio = "15%(补仓)"
+                                        reason = f"逆势补仓:跌{dip_pct*100:.0f}%加仓15%(MACD{t['macd_status']})"
+                                        trade_type = "buy"
+                                    matched = True
+                            # ── 确认加仓: 突破首笔价或回踩MA5站稳（需检查仓位上限）──
+                            if not matched and (price > pos.build_first_price or pos.ma5_touch_count >= 2):
                                 # AO动量过滤: 加仓确认需要AO上升
                                 ao_now = t.get("ao_now")
                                 ao_5ago = t.get("ao_5ago")
@@ -1241,6 +1258,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 if not ao_rising:
                                     action = "持有(等确认)"
                                     reason = f"分批建仓1已入场,AO未回升(now={ao_now:.4f},5ago={ao_5ago:.4f}),跳过加仓"
+                                elif _position_capped:
+                                    action = "持有(仓位已满)"
+                                    position_ratio = f"{_position_ratio_val*100:.0f}%"
+                                    reason = f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达20%上限,跳过"
+                                    trade_type = None
                                 elif pos.can_buy_today(today_str, atr_pct):
                                     pos.record_buy(today_str)
                                     pos.build_phase = 2
@@ -1266,16 +1288,23 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                     pos.ma5_touch_count = 0
                                 action = "持有(等确认)"
                                 reason = f"分批建仓1已入场,等回踩MA5站稳(站{pos.ma5_touch_count}根)或突破首笔价{pos.build_first_price:.3f}"
+                            # 如果 action 仍然为 "持有"（即补仓/确认加仓都没匹配到），重置 build_phase
+                            # 这覆盖了 stale build_phase=1 但实际无持仓且无有效信号的情况
+                            if action == "持有":
+                                pos.build_phase = 0
+                                pos.build_first_price = 0.0
+                                pos.add_count = 0
+                                pos.ma5_touch_count = 0
+                                reason = "建仓信号不匹配,重置建仓状态"
 
             elif pos.has_position:
-                # 仓位管理检查
-                _ratio = pos.shares * price / TOTAL_FUND
+                # 持有逻辑（无止损/做T/网格信号时的 fallback）
                 if pos.grid_frozen:
                     reason = "网格冻结(跌破第5档),等站上MA5解冻"
-                elif _ratio >= 0.20:
+                elif _position_capped:
                     action = "持有(仓位已满)"
-                    reason = f"当前仓位{_ratio*100:.0f}%已达目标20%"
-                elif price > t["ma5"] and t["rsi"] > 50:
+                    reason = f"当前仓位{_position_ratio_val*100:.0f}%已达目标20%"
+                elif price > t["ma5"] and t["rsi"] and t["rsi"] > 50:
                     reason = "趋势偏强,继续持有"
                 elif price < t["ma5"]:
                     reason = "破MA5但未触发分级止损,继续持有"
