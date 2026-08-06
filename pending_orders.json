@@ -1,51 +1,36 @@
 {
-  "generated_at": "2026-08-05 13:30:36",
-  "status": "PENDING_EXECUTION",
-  "note": "同花顺在cron环境中无GUI窗口(macOS 26.6)，EvolvingSim AppleScript完全无法执行。需手动执行或interactive session中操作同花顺。",
+  "generated_at": "2026-08-06 10:03:00",
+  "status": "EXECUTED",
   "orders": [
     {
       "code": "515050",
-      "name": "中证全指ETF",
-      "action": "买入(试探建仓)",
+      "name": "通信ETF华",
+      "action": "买入(RSI抄底补仓)",
       "direction": "buy",
-      "signal_price": 1.014,
-      "current_price": 1.014,
-      "limit_price": 1.014,
-      "rule": "min(信号价,现价)=1.014",
-      "shares": 30300,
-      "fund": 30724.0,
-      "position_pct": "15%",
-      "reason": "试探建仓:15%底仓(MACD绿柱缩短+RSI44.51+站上MA5)",
-      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 515050 30300 1.014"
-    },
-    {
-      "code": "512170",
-      "name": "医疗ETF华",
-      "action": "买入(分批建仓1)",
-      "direction": "buy",
-      "signal_price": 0.337,
-      "current_price": 0.337,
-      "limit_price": 0.337,
-      "rule": "min(信号价,现价)=0.337",
-      "note": "⚠ 已有持仓156800股@0.336，今日已执行1次买入(daily_trade_count.buy_count=1)。信号仍显示买入但需确认未重复下单。",
-      "shares": 39100,
-      "fund": 13177.0,
-      "position_pct": "30%(分批1)",
-      "reason": "分批建仓1:首笔30%试探(MACD健康+RSI63.78+站上MA5)",
-      "execute_cmd": "cd /Users/lujie/Documents/code/quant && source .venv/bin/activate && python3 ths_client.py buy 512170 39100 0.337"
+      "signal_price": 1.002,
+      "current_price": 0.999,
+      "limit_price": 0.999,
+      "rule": "min(信号价,现价)=0.999",
+      "shares": 56900,
+      "fund": 56843.1,
+      "contract": "6185773250",
+      "position_pct": "补至30%",
+      "reason": "RSI抄底:MACD金叉(RSI=43.68)，已有6600股@0.994",
+      "status": "委托中"
     }
   ],
   "hold": [
-    {"code": "159516", "status": "持有(观望)无持仓，EMA空头", "price": 0.702},
-    {"code": "515880", "status": "持有(观望)无持仓，金叉但EMA空头", "price": 0.649},
-    {"code": "588170", "status": "持有(观望)无持仓，EMA空头", "price": 0.950},
-    {"code": "159532", "status": "震荡区间,继续持有(23500股@1.382)", "price": 1.571},
-    {"code": "512170", "status": "已有持仓156800股@0.336，信号为分批建仓1", "price": 0.337}
+    {"code": "159516", "status": "持有(无持仓)", "price": 0.713},
+    {"code": "515880", "status": "持有(无持仓)", "price": 0.641},
+    {"code": "588170", "status": "持有(无持仓)", "price": 0.962},
+    {"code": "159532", "status": "持有(23500股@1.382,浮盈+14.81%)", "price": 1.587},
+    {"code": "159611", "status": "持有(观望)", "price": 1.055},
+    {"code": "512170", "status": "持有(观望,156800股@0.336)", "price": 0.335}
   ],
   "portfolio": {
-    "total_asset": 205101.86,
-    "cash": 115184.96,
-    "market_value": 89916.90,
-    "last_sync": "2026-08-05 13:30"
+    "total_asset": 211589.56,
+    "cash": 115186.86,
+    "market_value": 96402.70,
+    "last_sync": "2026-08-06 10:02"
   }
 }
