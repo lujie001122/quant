@@ -797,10 +797,14 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     pos_pf = pf_data["positions"].get(code, {})
                     if pos_pf.get("shares", 0) > 0:
                         p.shares = pos_pf["shares"]
-                        p.cost = pos_pf["total_cost"]
+                        p.cost = pos_pf.get("total_cost", pos_pf["shares"] * pos_pf.get("avg_cost", 0))
                         p.avg_cost = pos_pf["avg_cost"]
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
                         p.update_dead_active()
+                        # 持仓恢复后：如果 build_phase=0 但实际有持仓，修正为 build_phase=1
+                        if p.has_position and p.build_phase == 0:
+                            p.build_phase = 1
+                            p.add_count = 0
                     # last_grid_trigger跨天重置
                     if p.last_grid_trigger and p.last_grid_trigger != today_str:
                         p.last_grid_trigger = None
@@ -1171,7 +1175,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         rsi_ok = t["rsi"] is not None and t["rsi"] > 40
                         rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
 
-                        if pos.build_phase == 0:
+                        # 仓位管理：持仓超20%跳过买入通道
+                        _skip_buy = False
+                        if pos.has_position:
+                            _ratio = pos.shares * price / TOTAL_FUND
+                            if _ratio >= 0.20:
+                                action = "持有(仓位已满)"
+                                position_ratio = f"{_ratio*100:.0f}%"
+                                reason = f"当前仓位{_ratio*100:.0f}%已达目标20%"
+                                _skip_buy = True
+
+                        if not _skip_buy and pos.build_phase == 0:
                             # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%
                             if t["macd_status"] == "金叉" and (t["rsi"] is None or t["rsi"] <= 80) and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
@@ -1206,7 +1220,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 position_ratio = "0%"
                                 reason = f"建仓条件未满足(MACD{t['macd_status']},RSI{t['rsi']})"
 
-                        elif pos.build_phase == 1:
+                        elif not _skip_buy and pos.build_phase == 1:
                             # ── 逆势补仓: 跌超3%允许第二次买入 ──
                             if pos.build_first_price > 0 and pos.add_count < 5:
                                 dip_pct = (price - pos.build_first_price) / pos.build_first_price
@@ -1253,8 +1267,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 reason = f"分批建仓1已入场,等回踩MA5站稳(站{pos.ma5_touch_count}根)或突破首笔价{pos.build_first_price:.3f}"
 
             elif pos.has_position:
+                # 仓位管理检查
+                _ratio = pos.shares * price / TOTAL_FUND
                 if pos.grid_frozen:
                     reason = "网格冻结(跌破第5档),等站上MA5解冻"
+                elif _ratio >= 0.20:
+                    action = "持有(仓位已满)"
+                    reason = f"当前仓位{_ratio*100:.0f}%已达目标20%"
                 elif price > t["ma5"] and t["rsi"] > 50:
                     reason = "趋势偏强,继续持有"
                 elif price < t["ma5"]:
