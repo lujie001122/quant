@@ -20,6 +20,24 @@ POS = {"利好": 3, "涨停": 3, "突破": 2, "大增": 2, "预增": 2, "回购"
        "增持": 2, "分红": 1, "扶持": 2, "超预期": 2, "新高": 2, "反弹": 1,
        "领涨": 2, "走强": 1}
 
+# 全局关键词 — 不绑定任何 ETF，覆盖美股/外盘/宏观
+GLOBAL_KW = [
+    # 美股指数
+    "美股", "纳指", "纳斯达克", "标普", "道指", "道琼斯",
+    # 外盘/海外
+    "外盘", "海外市场", "全球市场", "欧股", "日经", "恒生",
+    "港股", "A股", "沪深", "创业板", "科创板",
+    # 极端行情
+    "大跌", "暴跌", "崩盘", "熔断", "狂泻", "重挫", "跳水",
+    "暴涨", "狂飙", "井喷",
+    # 宏观政策
+    "加息", "降息", "美联储", "通胀", "非农", "CPI", "PPI",
+    "GDP", "PMI", "央行", "货币政策", "财政政策",
+    # 汇率/地缘
+    "汇率", "人民币", "美元", "中美", "关税", "贸易战",
+    "地缘", "制裁", "冲突",
+]
+
 NEG_THRESHOLD_WARN = 3   # 关注阈值
 NEG_THRESHOLD_BLOCK = 6  # 利空阈值
 
@@ -163,3 +181,26 @@ if __name__ == "__main__":
         print(f"\n⚠️ 预警: {', '.join(alerts)} 建议手动确认")
     else:
         print("\n✅ 无利空，正常交易")
+
+    # ── 全局板块：美股/外盘/宏观关键词匹配 ──
+    print(f"\n🌍 全局 | 美股/外盘/宏观")
+    global_matched = []
+    for n in news:
+        try:
+            title = n.get("title", "")
+            if any(kw in title for kw in GLOBAL_KW):
+                global_matched.append(title)
+        except (KeyError, TypeError):
+            continue
+    s, neg, pos = score(global_matched)
+    if s >= NEG_THRESHOLD_BLOCK:
+        print(f"  🛑 利空 (负{neg}/正{pos})")
+    elif s >= NEG_THRESHOLD_WARN:
+        print(f"  ⚠️ 关注 (负{neg}/正{pos})")
+    else:
+        print(f"  ✅ 正常 (负{neg}/正{pos})")
+    if global_matched:
+        for title in global_matched[:10]:
+            print(f"    · {title[:60]}")
+        if len(global_matched) > 10:
+            print(f"    ... 共{len(global_matched)}条")
