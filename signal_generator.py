@@ -37,7 +37,7 @@ ACTIVE_RATIO = 0.4
 GRID_BUY_LEVELS = 5
 GRID_SELL_LEVELS = 3
 MAX_DAILY_BUYS = 1   # 每天最多1次买入(正常)
-MAX_DAILY_T0 = 1     # 每天最多1次做T(正常)
+MAX_DAILY_T0 = 2     # 每天最多2次做T(正常)
 DEFENSE_CODE = None   # 无防御盾
 COOLDOWN_DAYS = 2
 
@@ -498,7 +498,7 @@ class PositionInfo:
         return MAX_DAILY_BUYS
 
     def max_daily_t0(self, atr_pct):
-        if atr_pct > 0.05: return 2
+        if atr_pct > 0.05: return 3
         return MAX_DAILY_T0
 
     def _get_daily_log(self, date_str):
@@ -654,17 +654,25 @@ class PositionInfo:
         self.empty_days_date = data.get("empty_days_date")
 
 
+def is_auction_time(now=None):
+    """集合竞价时段: 9:15-9:25, 14:57-15:00"""
+    if now is None:
+        now = datetime.now()
+    t = now.hour * 60 + now.minute
+    return (555 <= t <= 565) or (897 <= t <= 900)  # 9:15=555, 9:25=565, 14:57=897, 15:00=900
+
+
 def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """做T买入评分(基于5分钟分时): RSI超卖+MACD多头确认+量能温和
-    - RSI_5min < 30 必须满足(超卖才摊低)
+    - RSI_5min < 40 必须满足(超卖才摊低)
     - MACD_5min 金叉或红柱(趋势确认)
     - 量比 < 1.5(不放量砸盘)
     """
-    if rsi_5min is None or rsi_5min >= 30:
+    if rsi_5min is None or rsi_5min >= 40:
         return 0  # 5分钟RSI不超卖，不做T买入
     if macd_5min_status in ["死叉", "绿柱放大"]:
         return 0  # 趋势恶化，禁止做T买入
-    score = 1  # RSI_5min<30已满足
+    score = 1  # RSI_5min<40已满足
     if macd_5min_status in ["金叉", "红柱放大"]:
         score += 1
     if vol_ratio_5min is not None and vol_ratio_5min < 1.5:
@@ -674,15 +682,15 @@ def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
 
 def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """做T卖出评分(基于5分钟分时): RSI超买+MACD空头确认+量能放大
-    - RSI_5min > 70 必须满足(超买才卖)
+    - RSI_5min > 60 必须满足(超买才卖)
     - MACD_5min 死叉或绿柱(趋势结束)
     - 量比 > 1.2(放量拉升)
     """
-    if rsi_5min is None or rsi_5min <= 70:
+    if rsi_5min is None or rsi_5min <= 60:
         return 0  # 5分钟RSI不超买，不卖出
     if macd_5min_status in ["金叉", "红柱放大"]:
         return 0  # 趋势向好，禁止做T卖出
-    score = 1  # RSI_5min>70已满足
+    score = 1  # RSI_5min>60已满足
     if macd_5min_status in ["死叉", "绿柱放大"]:
         score += 1
     if vol_ratio_5min is not None and vol_ratio_5min > 1.2:
@@ -1015,18 +1023,19 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             stop_signal = "未触发(无持仓)"
 
         # Level 2: 做T弹性条件（基于5分钟分时数据）
-        # 非交易时段直接返回"无"
+        # 集合竞价时段不生成做T信号
         now = datetime.now()
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
         is_market_hours = market_open <= now <= market_close
+        in_auction = is_auction_time(now)
 
         # 5分钟指标
         rsi_5min = t.get("rsi_5min")
         macd_5min_status = t.get("macd_5min_status")
         vol_ratio_5min = t.get("vol_ratio_5min")
 
-        if not is_market_hours or rsi_5min is None:
+        if not is_market_hours or rsi_5min is None or in_auction:
             buy_score = 0
             sell_score = 0
         else:
@@ -1036,8 +1045,10 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         t0_signal = "无"
         if not is_market_hours:
             t0_signal = "无(非交易时段)"
+        elif in_auction:
+            t0_signal = "无(集合竞价时段)"
         elif pos.has_position:
-            # T入: 5分钟RSI超卖+5分钟MACD多头+量比温和, 价低于成本×1.02(允许2%溢价)
+            # T入: 5分钟RSI<40+5分钟MACD多头+量比温和, 价低于成本×1.02(允许2%溢价)
             if buy_score >= 2:
                 if pos.can_t0_today(today_str, atr_pct):
                     if pos.avg_cost > 0 and price < pos.avg_cost * 1.02:
@@ -1045,8 +1056,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     else:
                         t0_signal = f"买入做T5m信号但价高于成本×1.02({pos.avg_cost*1.02:.3f}),不执行"
                 else:
-                    t0_signal = f"买入做T5m({buy_score}项信号,今日已做T,等明日)"
-            # T出: 5分钟RSI超买+5分钟MACD空头+量比放大
+                    t0_signal = f"买入做T5m({buy_score}项信号,今日做T次数已用尽({pos._get_daily_log(today_str).get('t0_count', 0)}/{pos.max_daily_t0(atr_pct)}))"
+            # T出: 5分钟RSI>60+5分钟MACD空头+量比放大
             elif sell_score >= 2:
                 if pos.can_t0_today(today_str, atr_pct):
                     profit_ok = pos.avg_cost > 0 and price > pos.avg_cost
@@ -1055,7 +1066,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     else:
                         t0_signal = f"卖出做T5m信号但价低于成本({pos.avg_cost:.3f}),不执行"
                 else:
-                    t0_signal = f"卖出做T5m({sell_score}项信号,今日已做T,等明日)"
+                    t0_signal = f"卖出做T5m({sell_score}项信号,今日做T次数已用尽({pos._get_daily_log(today_str).get('t0_count', 0)}/{pos.max_daily_t0(atr_pct)}))"
         elif buy_score >= 2 or sell_score >= 2:
             t0_signal = "有做T5m信号但无底仓"
 
@@ -1132,18 +1143,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = f"{ratio*100:.0f}%"
                     reason = t0_signal + "(量比)"
                     trade_type = "t0"
-                    # 配对卖出挂单: 高位卖出
+                    # 配对卖出挂单: 高位卖出 (ATR×2)
                     if t["atr"] and price > 0:
-                        pair_price = round(price + t["atr"] * 1.5, 3)
+                        pair_price = round(price + t["atr"] * 2.0, 3)
                         pair_shares = int(pos.shares * ratio / 100) * 100
                         if pair_shares >= 100 and pair_price > 0:
-                            t0_pair = {
-                                "trade_type": "t0_pair",
-                                "action": "卖出(配对挂单)",
-                                "price": pair_price,
-                                "shares": pair_shares,
-                                "reason": f"做T买入后高位卖出: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
-                            }
+                            # 价差校验: (卖出价-买入价) * 数量 > 100元
+                            spread = (pair_price - price) * pair_shares
+                            if spread > 100:
+                                t0_pair = {
+                                    "trade_type": "t0_pair",
+                                    "action": "卖出(配对挂单)",
+                                    "price": pair_price,
+                                    "shares": pair_shares,
+                                    "spread": round(spread, 2),
+                                    "reason": f"做T买入后高位卖出: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
+                                }
+                            else:
+                                t0_signal += f"(价差{spread:.0f}元≤100,放弃配对)"
             elif "卖出" in t0_signal:
                 pos.record_t0(today_str)
                 action = "卖出"
@@ -1151,19 +1168,25 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 position_ratio = f"{ratio*100:.0f}%"
                 reason = t0_signal + "(量比)"
                 trade_type = "t0"
-                # 配对买入挂单: 低位吃回
+                # 配对买入挂单: 低位吃回 (ATR×2)
                 if t["atr"] and price > 0:
-                    pair_price = round(price - t["atr"] * 1.5, 3)
+                    pair_price = round(price - t["atr"] * 2.0, 3)
                     # 卖出数量 = shares * ratio
                     pair_shares = int(pos.shares * ratio / 100) * 100
                     if pair_shares >= 100 and pair_price > 0:
-                        t0_pair = {
-                            "trade_type": "t0_pair",
-                            "action": "买入(配对挂单)",
-                            "price": pair_price,
-                            "shares": pair_shares,
-                            "reason": f"做T卖出后低位接回: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
-                        }
+                        # 价差校验: (现价-买入价) * 数量 > 100元
+                        spread = (price - pair_price) * pair_shares
+                        if spread > 100:
+                            t0_pair = {
+                                "trade_type": "t0_pair",
+                                "action": "买入(配对挂单)",
+                                "price": pair_price,
+                                "shares": pair_shares,
+                                "spread": round(spread, 2),
+                                "reason": f"做T卖出后低位接回: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
+                            }
+                        else:
+                            t0_signal += f"(价差{spread:.0f}元≤100,放弃配对)"
 
         # 优先级3: 网格(仅持仓时生效，不触发建仓；仓位超限时禁止网格买入)
         elif grid_signal != "无" and "买入" in grid_signal and "等明日" not in grid_signal and not pos.grid_frozen and pos.has_position:
@@ -1413,9 +1436,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "strategy_policy": {
             "stop_loss": "均价止损10%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
             "profit_take": "移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈30%→清仓",
-            "t0_signal": "弹性做T(5分钟分时:RSI5m<30买入+MACD5m金叉/红柱+量比<1.5; RSI5m>70卖出+MACD5m死叉/绿柱+量比>1.2)",
+            "t0_signal": "弹性做T(5分钟分时:RSI5m<40买入+MACD5m金叉/红柱+量比<1.5; RSI5m>60卖出+MACD5m死叉/绿柱+量比>1.2,配对ATR×2,价差>100元)",
             "entry": "5通道(RSI抄底/分批建仓/Test抄底/试探/补仓)统一30%→确认70%→补仓15%",
-            "frequency": f"正常1买1T/天, ATR>5%时2买2T/天",
+            "frequency": f"正常1买2T/天, ATR>5%时2买3T/天",
         },
     }
 

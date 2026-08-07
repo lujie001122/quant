@@ -5,8 +5,8 @@
   python3 trade.py sync                          # 同步持仓到 portfolio.json
   python3 trade.py buy CODE SHARES PRICE         # 买入（持仓增量确认）
   python3 trade.py sell CODE SHARES PRICE        # 卖出（持仓增量确认）
-  python3 trade.py t0_buy CODE SHARES PRICE      # 做T买入配对：买入+高位卖出挂单
-  python3 trade.py t0_sell CODE SHARES PRICE     # 做T卖出配对：卖出+低位买入挂单
+  python3 trade.py t0_buy CODE SHARES PRICE [PAIR_PRICE]  # 做T买入配对：买入+高位卖出挂单
+  python3 trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE] # 做T卖出配对：卖出+低位买入挂单
   python3 trade.py revoke CODE 买入              # 撤同方向未成交委托
   python3 trade.py revoke CODE 卖出              # 撤同方向未成交委托
 
@@ -15,6 +15,10 @@
   2. 增量 = 目标 → 成功。增量 ≠ 目标 → 报错，不重试
   3. 每次新建 EvolvingSim 实例，不跨操作复用
   4. AI Agent 只能通过 python3 trade.py 执行买卖，不得直接调 EvolvingSim
+  5. 买入限价 ≤ 当前价，卖出限价 ≥ 当前价
+  6. 做T配对：先撤同方向未成交单，再挂主单+配对单
+  7. 仅在连续竞价时段(9:30-11:30,13:00-15:00)执行挂单
+  8. 调用 EvolvingSim 前自动清理 /tmp/lock.json
 """
 import sys, os, json, time
 
@@ -220,74 +224,129 @@ def do_sell(code, shares, price):
 
 # ─── T0 做T配对 ───────────────────────────────────────────────────────
 
+def _is_continuous_auction():
+    """连续竞价时段: 9:30-11:30, 13:00-15:00"""
+    now = time.localtime()
+    t = now.tm_hour * 60 + now.tm_min
+    return (570 <= t <= 690) or (780 <= t <= 900)  # 9:30=570, 11:30=690, 13:00=780, 15:00=900
+
+
 def _estimate_atr(code, price=None):
     """
     粗略估算 ATR（从最近的日波动推算）。
-    这里用当前价格的 1.5% 作为简易 ATR（实际应接入行情数据）。
+    这里用当前价格的 2.0% 作为简易 ATR（实际应接入行情数据）。
     """
     if price is None:
         price = _get_price(code) or 0
-    return round(price * 0.015, 3)
+    return round(price * 0.02, 3)
 
 
-def do_t0_buy(code, shares, price):
+def do_t0_buy(code, shares, price, pair_price=None):
     """
     做T买入配对：
-      主单：买入 shares@price
-      配对：挂卖出单 shares@(price + ATR × 1.5)
+      1. 检查连续竞价时段
+      2. 撤同方向(买入)未成交委托
+      3. 主单：买入 shares@price（限价≤当前价）
+      4. 配对：挂卖出单 shares@pair_price（限价≥当前价，ATR×2）
     配对失败不影响主单结果。
     """
-    atr = _estimate_atr(code, price)
-    pair_price = round(price + atr * 1.5, 3)
+    if not _is_continuous_auction():
+        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
+        return False
 
-    print(f"🔁 做T买入 {code} {shares}股@{price} | ATR≈{atr} | 配对卖出挂单@{pair_price}")
+    # 撤同方向未成交委托(买入方向)
+    do_revoke(code, '买入')
+
+    # 获取当前市价用于限价检查
+    cur_price = _get_price(code) or price
+
+    # 买入限价: ≤ 当前价
+    buy_limit = min(price, cur_price)
+    if buy_limit != price:
+        print(f"   ⚠️ 买入限价调整: {price} → {buy_limit} (≤当前价{cur_price})")
+
+    # 配对价格
+    if pair_price is None:
+        atr = _estimate_atr(code, price)
+        pair_price = round(price + atr * 2.0, 3)
+    else:
+        atr = None
+
+    print(f"🔁 做T买入 {code} {shares}股@{buy_limit} | ATR≈{atr or 'N/A'} | 配对卖出挂单@{pair_price}")
 
     # 主单
-    ok, before, after = _trade_with_confirmation('buy', code, shares, price)
+    ok, before, after = _trade_with_confirmation('buy', code, shares, buy_limit)
 
     if ok:
-        # 配对卖出挂单
+        # 配对卖出挂单: 限价 ≥ 当前价
+        sell_limit = max(pair_price, cur_price)
+        if sell_limit != pair_price:
+            print(f"   ⚠️ 卖出限价调整: {pair_price} → {sell_limit} (≥当前价{cur_price})")
         _clean_lock()
         e = EvolvingSim()
-        p_ok, p_contract = e.sell(code, shares, pair_price)
+        p_ok, p_contract = e.sell(code, shares, sell_limit)
         if p_ok:
-            print(f"   ✅ 配对卖出挂单 {code} {shares}股@{pair_price} 合同:{p_contract}")
+            print(f"   ✅ 配对卖出挂单 {code} {shares}股@{sell_limit} 合同:{p_contract}")
         else:
-            print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{pair_price}: {p_contract}")
+            print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}: {p_contract}")
 
-        print(f"✅ 做T买入 {code} {shares}股@{price} | 配对卖出挂单 {shares}股@{pair_price}")
+        print(f"✅ 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单 {shares}股@{sell_limit}")
     else:
         print(f"❌ 做T买入主单失败，不挂配对单")
 
     return ok
 
 
-def do_t0_sell(code, shares, price):
+def do_t0_sell(code, shares, price, pair_price=None):
     """
     做T卖出配对：
-      主单：卖出 shares@price
-      配对：挂买入单 shares@(price - ATR × 1.5)
+      1. 检查连续竞价时段
+      2. 撤同方向(卖出)未成交委托
+      3. 主单：卖出 shares@price（限价≥当前价）
+      4. 配对：挂买入单 shares@pair_price（限价≤当前价，ATR×2）
     配对失败不影响主单结果。
     """
-    atr = _estimate_atr(code, price)
-    pair_price = round(price - atr * 1.5, 3)
+    if not _is_continuous_auction():
+        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
+        return False
 
-    print(f"🔁 做T卖出 {code} {shares}股@{price} | ATR≈{atr} | 配对买入挂单@{pair_price}")
+    # 撤同方向未成交委托(卖出方向)
+    do_revoke(code, '卖出')
+
+    # 获取当前市价用于限价检查
+    cur_price = _get_price(code) or price
+
+    # 卖出限价: ≥ 当前价
+    sell_limit = max(price, cur_price)
+    if sell_limit != price:
+        print(f"   ⚠️ 卖出限价调整: {price} → {sell_limit} (≥当前价{cur_price})")
+
+    # 配对价格
+    if pair_price is None:
+        atr = _estimate_atr(code, price)
+        pair_price = round(price - atr * 2.0, 3)
+    else:
+        atr = None
+
+    print(f"🔁 做T卖出 {code} {shares}股@{sell_limit} | ATR≈{atr or 'N/A'} | 配对买入挂单@{pair_price}")
 
     # 主单
-    ok, before, after = _trade_with_confirmation('sell', code, shares, price)
+    ok, before, after = _trade_with_confirmation('sell', code, shares, sell_limit)
 
     if ok:
-        # 配对买入挂单
+        # 配对买入挂单: 限价 ≤ 当前价
+        buy_limit = min(pair_price, cur_price)
+        if buy_limit != pair_price:
+            print(f"   ⚠️ 买入限价调整: {pair_price} → {buy_limit} (≤当前价{cur_price})")
         _clean_lock()
         e = EvolvingSim()
-        p_ok, p_contract = e.buy(code, shares, pair_price)
+        p_ok, p_contract = e.buy(code, shares, buy_limit)
         if p_ok:
-            print(f"   ✅ 配对买入挂单 {code} {shares}股@{pair_price} 合同:{p_contract}")
+            print(f"   ✅ 配对买入挂单 {code} {shares}股@{buy_limit} 合同:{p_contract}")
         else:
-            print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{pair_price}: {p_contract}")
+            print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}: {p_contract}")
 
-        print(f"✅ 做T卖出 {code} {shares}股@{price} | 配对买入挂单 {shares}股@{pair_price}")
+        print(f"✅ 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单 {shares}股@{buy_limit}")
     else:
         print(f"❌ 做T卖出主单失败，不挂配对单")
 
@@ -373,16 +432,18 @@ if __name__ == '__main__':
         do_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
 
     elif cmd == 't0_buy':
-        if len(sys.argv) != 5:
-            print("用法: trade.py t0_buy CODE SHARES PRICE")
+        if len(sys.argv) < 5:
+            print("用法: trade.py t0_buy CODE SHARES PRICE [PAIR_PRICE]")
             sys.exit(1)
-        do_t0_buy(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
+        pair_p = float(sys.argv[5]) if len(sys.argv) >= 6 else None
+        do_t0_buy(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
 
     elif cmd == 't0_sell':
-        if len(sys.argv) != 5:
-            print("用法: trade.py t0_sell CODE SHARES PRICE")
+        if len(sys.argv) < 5:
+            print("用法: trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE]")
             sys.exit(1)
-        do_t0_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
+        pair_p = float(sys.argv[5]) if len(sys.argv) >= 6 else None
+        do_t0_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
 
     elif cmd == 'revoke':
         if len(sys.argv) != 4:
