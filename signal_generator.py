@@ -1080,6 +1080,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             position_ratio = "0%"
         reason = ""
         trade_type = None
+        t0_pair = None  # 做T配对挂单
 
         # 提前计算持仓占比（用于仓位上限检查，防重复计算）
         _position_ratio_val = pos.shares * price / TOTAL_FUND if pos.has_position else 0
@@ -1131,6 +1132,18 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = f"{ratio*100:.0f}%"
                     reason = t0_signal + "(量比)"
                     trade_type = "t0"
+                    # 配对卖出挂单: 高位卖出
+                    if t["atr"] and price > 0:
+                        pair_price = round(price + t["atr"] * 1.5, 3)
+                        pair_shares = int(pos.shares * ratio / 100) * 100
+                        if pair_shares >= 100 and pair_price > 0:
+                            t0_pair = {
+                                "trade_type": "t0_pair",
+                                "action": "卖出(配对挂单)",
+                                "price": pair_price,
+                                "shares": pair_shares,
+                                "reason": f"做T买入后高位卖出: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
+                            }
             elif "卖出" in t0_signal:
                 pos.record_t0(today_str)
                 action = "卖出"
@@ -1138,6 +1151,19 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 position_ratio = f"{ratio*100:.0f}%"
                 reason = t0_signal + "(量比)"
                 trade_type = "t0"
+                # 配对买入挂单: 低位吃回
+                if t["atr"] and price > 0:
+                    pair_price = round(price - t["atr"] * 1.5, 3)
+                    # 卖出数量 = shares * ratio
+                    pair_shares = int(pos.shares * ratio / 100) * 100
+                    if pair_shares >= 100 and pair_price > 0:
+                        t0_pair = {
+                            "trade_type": "t0_pair",
+                            "action": "买入(配对挂单)",
+                            "price": pair_price,
+                            "shares": pair_shares,
+                            "reason": f"做T卖出后低位接回: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
+                        }
 
         # 优先级3: 网格(仅持仓时生效，不触发建仓；仓位超限时禁止网格买入)
         elif grid_signal != "无" and "买入" in grid_signal and "等明日" not in grid_signal and not pos.grid_frozen and pos.has_position:
@@ -1354,6 +1380,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             "dead_active_split": f"底仓{DEAD_RATIO*100:.0f}%/活动仓{ACTIVE_RATIO*100:.0f}%",
             "daily_trade_count": pos.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0}),
             "market_weak": defense_weak if code != DEFENSE_CODE else False,
+            "t0_pair": t0_pair,
         }
 
     # 可读汇总(用trade_type精确匹配, 不依赖中文字符串)
@@ -1369,6 +1396,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     for c in sell_s: parts.append(f"卖出{c}({signals_output[c]['reason'][:30]})")
     for c in buy_s: parts.append(f"买入{c}({signals_output[c]['reason'][:30]})")
     for c in hold_s: parts.append(f"{c}{signals_output[c]['reason'][:20]}")
+    # 做T配对挂单
+    for c, s in signals_output.items():
+        if s.get("t0_pair"):
+            p = s["t0_pair"]
+            parts.append(f"配对挂单{c}:{p['action']}@{p['price']:.3f}({p['shares']}股)")
 
     human_readable = "。".join(parts) if parts else "所有标的均无操作信号,继续观望。"
 
