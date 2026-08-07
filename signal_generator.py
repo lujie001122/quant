@@ -1045,7 +1045,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     else:
                         t0_signal = f"买入做T5m信号但价高于成本×1.02({pos.avg_cost*1.02:.3f}),不执行"
                 else:
-                    t0_signal = f"买入做T5m({buy_score}项共振,今日已做T,等明日)"
+                    t0_signal = f"买入做T5m({buy_score}项信号,今日已做T,等明日)"
             # T出: 5分钟RSI超买+5分钟MACD空头+量比放大
             elif sell_score >= 2:
                 if pos.can_t0_today(today_str, atr_pct):
@@ -1055,7 +1055,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     else:
                         t0_signal = f"卖出做T5m信号但价低于成本({pos.avg_cost:.3f}),不执行"
                 else:
-                    t0_signal = f"卖出做T5m({sell_score}项共振,今日已做T,等明日)"
+                    t0_signal = f"卖出做T5m({sell_score}项信号,今日已做T,等明日)"
         elif buy_score >= 2 or sell_score >= 2:
             t0_signal = "有做T5m信号但无底仓"
 
@@ -1115,7 +1115,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     break
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）
-        elif t0_signal != "无" and "共振" in t0_signal and pos.has_position:
+        # 二次检查 can_t0_today，防止信号阶段通过后action阶段状态改变
+        elif (t0_signal != "无" and "共振" in t0_signal and pos.has_position
+              and pos.can_t0_today(today_str, atr_pct)):
             if "买入" in t0_signal:
                 if _position_capped:
                     action = "持有(仓位已满)"
