@@ -36,15 +36,32 @@ def _get_position(code):
     return 0, 0.0
 
 
+def _activate_tonghuashun():
+    """激活同花顺窗口，解决 AppleScript 底层间歇断连"""
+    os.system("osascript -e 'tell application \"同花顺\" to activate'")
+
+
+def _retry_get_holding_shares(max_retries=3, delay=2):
+    """带重试+窗口激活的 getHoldingShares，每次尝试前激活同花顺"""
+    for attempt in range(1, max_retries + 1):
+        _activate_tonghuashun()
+        time.sleep(0.5)
+        e = EvolvingSim()
+        h = e.getHoldingShares()
+        if isinstance(h, dict) and h.get('status'):
+            return h
+        if attempt < max_retries:
+            print(f"⚠️ EvolvingSim 连接失败，{delay}秒后重试 ({attempt}/{max_retries})")
+            time.sleep(delay)
+    raise RuntimeError("❌ 连接同花顺失败，请确认同花顺在模拟交易界面")
+
+
 def _get_holding_shares(code=None):
     """
-    查 EvolvingSim 持仓。
+    查 EvolvingSim 持仓（带重试+窗口激活）。
     返回 dict {code: shares} 或 (若 code 指定) 单只数量。
     """
-    e = EvolvingSim()
-    h = e.getHoldingShares()
-    if not (isinstance(h, dict) and h.get('status')):
-        raise RuntimeError("❌ 连接同花顺失败，请确认同花顺在模拟交易界面")
+    h = _retry_get_holding_shares()
     result = {}
     for row in h.get('data', []):
         if row and len(row) >= 7:
@@ -68,15 +85,26 @@ def _get_price(code):
 
 # ─── sync ──────────────────────────────────────────────────────────────
 
-def sync():
-    """同步持仓到 portfolio.json"""
-    e = EvolvingSim()
-    h = e.getHoldingShares()
-    if not (isinstance(h, dict) and h.get('status')):
-        print("❌ 连接同花顺失败")
-        return
+def _retry_get_account_info(max_retries=3, delay=2):
+    """带重试+窗口激活的 getAccountInfo"""
+    for attempt in range(1, max_retries + 1):
+        _activate_tonghuashun()
+        time.sleep(0.5)
+        e = EvolvingSim()
+        acct = e.getAccountInfo()
+        if isinstance(acct, dict) and acct.get('status'):
+            return acct
+        if attempt < max_retries:
+            print(f"⚠️ getAccountInfo 失败，{delay}秒后重试 ({attempt}/{max_retries})")
+            time.sleep(delay)
+    print("⚠️ 获取账户信息失败")
+    return None
 
-    acct = e.getAccountInfo()
+
+def sync():
+    """同步持仓到 portfolio.json（带重试+窗口激活）"""
+    h = _retry_get_holding_shares()
+    acct = _retry_get_account_info()
 
     if os.path.exists(PF_PATH):
         with open(PF_PATH) as f:
