@@ -42,10 +42,8 @@ def _activate_tonghuashun():
 
 
 def _retry_get_holding_shares(max_retries=3, delay=2):
-    """带重试+窗口激活的 getHoldingShares，每次尝试前激活同花顺"""
+    """带重试的 getHoldingShares"""
     for attempt in range(1, max_retries + 1):
-        _activate_tonghuashun()
-        time.sleep(0.5)
         e = EvolvingSim()
         h = e.getHoldingShares()
         if isinstance(h, dict) and h.get('status'):
