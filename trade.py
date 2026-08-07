@@ -26,6 +26,16 @@ from evolving.evolving import EvolvingSim
 
 # ─── 内部工具 ──────────────────────────────────────────────────────────
 
+LOCK_PATH = '/tmp/lock.json'
+
+def _clean_lock():
+    """清理 EvolvingSim 的锁文件，避免异常退出后残留导致 15s 阻塞"""
+    if os.path.exists(LOCK_PATH):
+        try:
+            os.remove(LOCK_PATH)
+        except OSError:
+            pass
+
 def _get_position(code):
     """返回 (shares, avg_cost) 或 (0, 0)"""
     if os.path.exists(PF_PATH):
@@ -44,6 +54,7 @@ def _activate_tonghuashun():
 def _retry_get_holding_shares(max_retries=3, delay=2):
     """带重试的 getHoldingShares"""
     for attempt in range(1, max_retries + 1):
+        _clean_lock()
         e = EvolvingSim()
         h = e.getHoldingShares()
         if isinstance(h, dict) and h.get('status'):
@@ -71,6 +82,7 @@ def _get_holding_shares(code=None):
 
 def _get_price(code):
     """获取当前市价（来自 EvolvingSim 持仓数据）"""
+    _clean_lock()
     e = EvolvingSim()
     h = e.getHoldingShares()
     if not (isinstance(h, dict) and h.get('status')):
@@ -88,6 +100,7 @@ def _retry_get_account_info(max_retries=3, delay=2):
     for attempt in range(1, max_retries + 1):
         _activate_tonghuashun()
         time.sleep(0.5)
+        _clean_lock()
         e = EvolvingSim()
         acct = e.getAccountInfo()
         if isinstance(acct, dict) and acct.get('status'):
@@ -157,6 +170,7 @@ def _trade_with_confirmation(action, code, shares, price):
     before = holding_map.get(code, 0)
 
     # 2. 下单（新实例）
+    _clean_lock()
     e = EvolvingSim()
     if action == 'buy':
         ok, contract = e.buy(code, shares, price)
@@ -233,6 +247,7 @@ def do_t0_buy(code, shares, price):
 
     if ok:
         # 配对卖出挂单
+        _clean_lock()
         e = EvolvingSim()
         p_ok, p_contract = e.sell(code, shares, pair_price)
         if p_ok:
@@ -264,6 +279,7 @@ def do_t0_sell(code, shares, price):
 
     if ok:
         # 配对买入挂单
+        _clean_lock()
         e = EvolvingSim()
         p_ok, p_contract = e.buy(code, shares, pair_price)
         if p_ok:
@@ -290,6 +306,7 @@ def do_revoke(code, direction):
       2. 逐一 revokeEntrust(contractNo)
       3. 撤完确认委托清空
     """
+    _clean_lock()
     e = EvolvingSim()
 
     # 1. 查委托
@@ -314,6 +331,7 @@ def do_revoke(code, direction):
     revoked = 0
     for contract in targets:
         # 每次撤单用新实例
+        _clean_lock()
         e2 = EvolvingSim()
         try:
             status, info = e2.revokeEntrust(contract)
