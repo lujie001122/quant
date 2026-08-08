@@ -1,7 +1,7 @@
 #!/bin/bash
 # ETF 盘前信号 — macOS
-source /Users/lujie/hermes-trading/.venv/bin/activate
-SCRIPTS=/Users/lujie/hermes/scripts
+source /Users/lujie/Documents/code/quant/.venv/bin/activate
+SCRIPTS=/Users/lujie/Documents/code/quant
 
 echo "📊 ETF 盘前信号 | $(date '+%m-%d %H:%M')"
 echo ""

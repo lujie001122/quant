@@ -1,7 +1,7 @@
 #!/bin/bash
 # ETF 盘中监控 — macOS，每30分钟，无信号静默
-source /Users/lujie/hermes-trading/.venv/bin/activate
-SCRIPTS=/Users/lujie/hermes/scripts
+source /Users/lujie/Documents/code/quant/.venv/bin/activate
+SCRIPTS=/Users/lujie/Documents/code/quant
 
 # 做T信号
 T_OUT=$(python3 "$SCRIPTS/intraday_t_once.py" 2>/dev/null)
