@@ -1175,7 +1175,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     atr_5m = t.get("atr_5min")
                     if atr_5m and price > 0:
                         pair_price = round(price + atr_5m * 1.0, 3)
-                        pair_shares = int(pos.shares * ratio / 100) * 100
+                        pair_shares = int(pos.shares * 0.20 / 100) * 100
                         if pair_shares >= 100 and pair_price > 0:
                             # 价差校验: (卖出价-买入价) * 数量 > 10元
                             spread = (pair_price - price) * pair_shares
@@ -1201,8 +1201,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 atr_5m = t.get("atr_5min")
                 if atr_5m and price > 0:
                     pair_price = round(price - atr_5m * 1.0, 3)
-                    # 卖出数量 = shares * ratio
-                    pair_shares = int(pos.shares * ratio / 100) * 100
+                    # 卖出数量 = shares * 0.20
+                    pair_shares = int(pos.shares * 0.20 / 100) * 100
                     if pair_shares >= 100 and pair_price > 0:
                         # 价差校验: (现价-买入价) * 数量 > 10元
                         spread = (price - pair_price) * pair_shares
