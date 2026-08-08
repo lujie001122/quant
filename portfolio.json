@@ -1,92 +1,5 @@
 {
   "_signal_state": {
-    "159516": {
-      "build_phase": 1,
-      "build_first_price": 0.669,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": null,
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 50.6,
-      "prev_macd_status": "绿柱缩短",
-      "liquidate_dates": [],
-      "empty_days": 0,
-      "empty_days_date": "2026-08-05",
-      "daily_trade_log": {
-        "2026-08-08": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      }
-    },
-    "515880": {
-      "build_phase": 2,
-      "build_first_price": 0.663,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": null,
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 0.663,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 1,
-      "ma5_touch_count": 0,
-      "prev_rsi": 46.55,
-      "prev_macd_status": "红柱放大",
-      "liquidate_dates": [],
-      "empty_days": 0,
-      "empty_days_date": null,
-      "daily_trade_log": {
-        "2026-08-08": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      }
-    },
-    "588170": {
-      "build_phase": 1,
-      "build_first_price": 0.905,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": null,
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 50.41,
-      "prev_macd_status": "绿柱缩短",
-      "liquidate_dates": [],
-      "empty_days": 0,
-      "empty_days_date": "2026-08-05",
-      "daily_trade_log": {
-        "2026-08-08": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      }
-    },
     "159532": {
       "build_phase": 1,
       "build_first_price": 0.0,
@@ -114,7 +27,10 @@
           "buy_count": 0,
           "t0_count": 0
         }
-      }
+      },
+      "shares": 23500,
+      "avg_cost": 1.382,
+      "current_price": 1.615
     },
     "515050": {
       "build_phase": 1,
@@ -143,36 +59,10 @@
           "buy_count": 0,
           "t0_count": 0
         }
-      }
-    },
-    "159611": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": null,
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 47.76,
-      "prev_macd_status": "红柱缩短",
-      "liquidate_dates": [],
-      "empty_days": 3,
-      "empty_days_date": "2026-08-08",
-      "daily_trade_log": {
-        "2026-08-08": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      }
+      },
+      "shares": 52200,
+      "avg_cost": 0.977,
+      "current_price": 1.043
     },
     "512170": {
       "build_phase": 1,
@@ -201,7 +91,10 @@
           "buy_count": 0,
           "t0_count": 0
         }
-      }
+      },
+      "shares": 67000,
+      "avg_cost": 0.329,
+      "current_price": 0.346
     }
   },
   "positions": {
@@ -209,6 +102,7 @@
       "name": "医疗ETF华",
       "shares": 67000,
       "avg_cost": 0.329,
+      "current_price": 0.346,
       "market_price": 0.346,
       "market_value": 23182.0,
       "pnl": 1137.85,
@@ -218,6 +112,7 @@
       "name": "中证2000ET",
       "shares": 23500,
       "avg_cost": 1.382,
+      "current_price": 1.615,
       "market_price": 1.615,
       "market_value": 37952.5,
       "pnl": 5470.07,
@@ -227,6 +122,7 @@
       "name": "通信ETF华",
       "shares": 52200,
       "avg_cost": 0.977,
+      "current_price": 1.043,
       "market_price": 1.043,
       "market_value": 54444.6,
       "pnl": 3426.07,
@@ -234,9 +130,9 @@
     }
   },
   "account": {
-    "total_asset": 216498.71,
+    "total_asset": 216981.86,
     "cash": 100919.61,
     "market_value": 115579.1
   },
-  "last_updated": "2026-08-08 10:36"
+  "last_updated": "2026-08-08 16:10"
 }
