@@ -1566,8 +1566,138 @@ def _get_position_shares(code):
     return 0
 
 
+# ============================================================
+# 六、执行层 — 持久化 + 异常处理 + 告警推送
+# ============================================================
+
+LAST_EXECUTED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_executed.json")
+TRADE_ERRORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".trade_errors.json")
+
+
+def _load_last_executed():
+    """加载上次执行记录，返回 {code: {action, shares, price, time_window, timestamp}}"""
+    if os.path.exists(LAST_EXECUTED_PATH):
+        try:
+            with open(LAST_EXECUTED_PATH, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {}
+
+
+def _save_last_executed(code, action, shares, price, direction, before_shares, after_shares):
+    """保存执行成功记录到 .last_executed.json"""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    last = _load_last_executed()
+    last[code] = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "code": code,
+        "action": action,
+        "shares": shares,
+        "price": price,
+        "direction": direction,
+        "time_window": today_str,
+        "before_shares": before_shares,
+        "after_shares": after_shares,
+    }
+    try:
+        with open(LAST_EXECUTED_PATH, "w") as f:
+            json.dump(last, f, ensure_ascii=False, indent=2)
+    except IOError:
+        pass
+
+
+def _save_trade_error(code, action, price, shares, error_msg, retry_cmd):
+    """记录交易错误到 .trade_errors.json"""
+    errors = []
+    if os.path.exists(TRADE_ERRORS_PATH):
+        try:
+            with open(TRADE_ERRORS_PATH, "r") as f:
+                errors = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            errors = []
+    if not isinstance(errors, list):
+        errors = []
+
+    errors.append({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "code": code,
+        "action": action,
+        "price": price,
+        "shares": shares,
+        "error": error_msg,
+        "retry_cmd": retry_cmd,
+    })
+    try:
+        with open(TRADE_ERRORS_PATH, "w") as f:
+            json.dump(errors, f, ensure_ascii=False, indent=2)
+    except IOError:
+        pass
+
+
+def _is_duplicate_signal(code, direction, today_str):
+    """检查是否为重复信号：同代码+同方向+同时间窗口"""
+    last = _load_last_executed()
+    entry = last.get(code, {})
+    if not entry:
+        return False
+    return (entry.get("direction") == direction
+            and entry.get("time_window") == today_str)
+
+
+def _detect_error_type(stdout, stderr, returncode, exit_reason=None):
+    """从 subprocess 输出中检测错误类型。
+    返回 (error_type, detail)
+    error_type: 'tonghuashun_disconnect' | 'not_filled' | 'timeout' | 'other'
+    """
+    combined = (stdout or "") + "\n" + (stderr or "")
+
+    if exit_reason == "timeout":
+        return "timeout", "下单超时(120s)"
+
+    # 同花顺断连特征
+    if "连接同花顺失败" in combined or "EvolvingSim 连接失败" in combined or "同花顺" in combined:
+        return "tonghuashun_disconnect", "同花顺断连"
+
+    # 下单成功但持仓未变 → 未成交
+    if "下单成功但持仓未变" in combined or "期望增量" in combined:
+        return "not_filled", "下单未成交(增量确认失败)"
+
+    if returncode != 0:
+        return "other", f"退出码={returncode}"
+
+    return None, None
+
+
+def _signal_direction(sig):
+    """从信号判定交易方向：'买入' | '卖出'"""
+    trade_type = sig.get("trade_type", "")
+    action = sig.get("action", "")
+
+    if trade_type in ("buy", "t0"):
+        return "买入" if "买入" in action else "卖出"
+    if trade_type in ("sell", "liquidate", "reduce"):
+        return "卖出"
+    return None
+
+
+def _build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
+    """构建重试命令字符串"""
+    if trade_type in ("buy", "sell", "liquidate", "reduce"):
+        return f"python3 trade.py {trade_type if trade_type in ('buy','sell') else 'sell'} {code} {shares} {price:.3f}"
+    elif trade_type == "t0":
+        t0_pair = sig.get("t0_pair", {})
+        pair_price = t0_pair.get("pair_price", 0)
+        pair_shares = t0_pair.get("shares", 0)
+        if "买入" in sig.get("action", ""):
+            return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+        else:
+            return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+    return ""
+
+
 def execute_signals(result):
-    """遍历信号，调用 trade.py 执行交易"""
+    """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）"""
     import subprocess
 
     if result is None:
@@ -1581,6 +1711,7 @@ def execute_signals(result):
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     trade_script = os.path.join(script_dir, "trade.py")
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
     actionable = []
     for code, sig in signals.items():
@@ -1598,6 +1729,7 @@ def execute_signals(result):
 
     success_count = 0
     fail_count = 0
+    skip_count = 0
 
     for i, (code, sig) in enumerate(actionable):
         trade_type = sig["trade_type"]
@@ -1615,10 +1747,16 @@ def execute_signals(result):
 
         t0_pair = sig.get("t0_pair")
 
+        # ═══ 信号解析 + 构建命令 ═══
+        cmd = None
+        label = None
+        shares = 0
+
         # ── 做T信号 ──
         if trade_type == "t0" and t0_pair:
             pair_shares = t0_pair.get("shares", 0)
             pair_price = t0_pair.get("pair_price", 0)
+            shares = pair_shares
 
             if pair_shares < 100:
                 print(f"[EXECUTE] ⚠️ {code} 做T股数不足({pair_shares})，跳过")
@@ -1626,18 +1764,12 @@ def execute_signals(result):
                 continue
 
             if "买入" in action:
-                # 做T买入: t0_buy CODE SHARES PRICE PAIR_PRICE
-                cmd = [
-                    "python3", trade_script, "t0_buy",
-                    code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"
-                ]
+                cmd = ["python3", trade_script, "t0_buy",
+                       code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"]
                 label = f"做T买入 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
             elif "卖出" in action:
-                # 做T卖出: t0_sell CODE SHARES PRICE PAIR_PRICE
-                cmd = [
-                    "python3", trade_script, "t0_sell",
-                    code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"
-                ]
+                cmd = ["python3", trade_script, "t0_sell",
+                       code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"]
                 label = f"做T卖出 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
             else:
                 print(f"[EXECUTE] ⚠️ {code} 做T方向未知(action={action})，跳过")
@@ -1653,10 +1785,7 @@ def execute_signals(result):
                 print(f"[EXECUTE] ⚠️ {code} 买入股数不足(fund={fund}, ratio={ratio:.0%}, shares={shares})，跳过")
                 fail_count += 1
                 continue
-            cmd = [
-                "python3", trade_script, "buy",
-                code, str(shares), f"{price:.3f}"
-            ]
+            cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
             label = f"买入 {code} {shares}股 @{price:.3f}"
 
         # ── 普通卖出 ──
@@ -1673,23 +1802,18 @@ def execute_signals(result):
                 print(f"[EXECUTE] ⚠️ {code} 卖出股数不足(current={current_shares}, shares={shares})，跳过")
                 fail_count += 1
                 continue
-            cmd = [
-                "python3", trade_script, "sell",
-                code, str(shares), f"{price:.3f}"
-            ]
+            cmd = ["python3", trade_script, "sell", code, str(shares), f"{price:.3f}"]
             label = f"卖出 {code} {shares}股 @{price:.3f}"
 
         # ── 清仓 ──
         elif trade_type == "liquidate":
             current_shares = _get_position_shares(code)
+            shares = current_shares
             if current_shares < 100:
                 print(f"[EXECUTE] ⚠️ {code} 清仓但无持仓({current_shares}股)，跳过")
                 fail_count += 1
                 continue
-            cmd = [
-                "python3", trade_script, "sell",
-                code, str(current_shares), f"{price:.3f}"
-            ]
+            cmd = ["python3", trade_script, "sell", code, str(current_shares), f"{price:.3f}"]
             label = f"清仓 {code} {current_shares}股 @{price:.3f}"
 
         # ── 减仓 ──
@@ -1706,10 +1830,7 @@ def execute_signals(result):
                 print(f"[EXECUTE] ⚠️ {code} 减仓股数不足(current={current_shares}, shares={shares})，跳过")
                 fail_count += 1
                 continue
-            cmd = [
-                "python3", trade_script, "sell",
-                code, str(shares), f"{price:.3f}"
-            ]
+            cmd = ["python3", trade_script, "sell", code, str(shares), f"{price:.3f}"]
             label = f"减仓 {code} {shares}股 @{price:.3f}"
 
         else:
@@ -1717,37 +1838,129 @@ def execute_signals(result):
             fail_count += 1
             continue
 
-        # 执行命令
+        # ═══ 执行前检查：重复信号跳过 ═══
+        direction = _signal_direction(sig)
+        if direction and _is_duplicate_signal(code, direction, today_str):
+            print(f"\n[{i+1}/{len(actionable)}] ⏭️ {code} {label}信号已执行，跳过")
+            skip_count += 1
+            continue
+
+        # ═══ 执行命令（含重试） ═══
         print(f"\n[{i+1}/{len(actionable)}] {label}")
         print(f"  → {' '.join(cmd)}")
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=120, cwd=script_dir
-            )
-            if proc.stdout:
-                print(proc.stdout.strip())
-            if proc.stderr:
-                print(f"  [stderr] {proc.stderr.strip()}")
-            if proc.returncode == 0:
-                print(f"  ✅ 成功 (exit={proc.returncode})")
-                success_count += 1
-            else:
-                print(f"  ❌ 失败 (exit={proc.returncode})")
-                fail_count += 1
-        except subprocess.TimeoutExpired:
-            print(f"  ❌ 超时(120s)")
+
+        retry_cmd = _build_retry_cmd(trade_script, code, trade_type, sig, price, shares)
+        max_retries = 3
+        success = False
+        final_error = None
+        final_error_type = None
+        before_shares = 0
+        after_shares = 0
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=120, cwd=script_dir
+                )
+                stdout = proc.stdout or ""
+                stderr_out = proc.stderr or ""
+
+                # 检测错误类型
+                err_type, err_detail = _detect_error_type(stdout, stderr_out, proc.returncode)
+
+                if err_type is None and proc.returncode == 0:
+                    # 成功
+                    if stdout:
+                        # 解析持仓变化（从输出中提取 before→after）
+                        for line in stdout.strip().split("\n"):
+                            if "持仓从" in line and "→" in line:
+                                try:
+                                    parts = line.split("持仓从")[1].split("→")
+                                    before_shares = int(parts[0].strip())
+                                    after_shares = int(parts[1].split("股")[0].strip())
+                                except (ValueError, IndexError):
+                                    pass
+                                break
+                        print(stdout.strip())
+                    if stderr_out:
+                        print(f"  [stderr] {stderr_out.strip()}")
+                    print(f"  ✅ {code} {direction} {shares}股@{price:.3f} → 持仓{before_shares}→{after_shares}股")
+                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares)
+                    success_count += 1
+                    success = True
+                    break
+
+                elif err_type == "tonghuashun_disconnect":
+                    # 同花顺断连 → 重试+窗口激活
+                    if attempt < max_retries:
+                        print(f"  ⚠️ 同花顺断连，激活窗口后重试 ({attempt}/{max_retries})...")
+                        os.system("osascript -e 'tell application \"同花顺\" to activate'")
+                        time.sleep(2)
+                    else:
+                        # 3次重试全失败 → 告警
+                        if stdout:
+                            print(stdout.strip())
+                        if stderr_out:
+                            print(f"  [stderr] {stderr_out.strip()}")
+                        alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连(3次重试全失败)。重试: {retry_cmd}"
+                        print(alert_msg, file=sys.stderr)
+                        _save_trade_error(code, trade_type, price, shares, "同花顺断连(3次重试全失败)", retry_cmd)
+                        final_error = err_detail
+                        final_error_type = err_type
+
+                elif err_type == "not_filled":
+                    # 下单未成交 → 不重试，直接告警
+                    if stdout:
+                        print(stdout.strip())
+                    if stderr_out:
+                        print(f"  [stderr] {stderr_out.strip()}")
+                    alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单未成交(增量确认失败)。重试: {retry_cmd}"
+                    print(alert_msg, file=sys.stderr)
+                    _save_trade_error(code, trade_type, price, shares, "下单未成交(增量确认失败)", retry_cmd)
+                    final_error = err_detail
+                    final_error_type = err_type
+                    break
+
+                else:
+                    # 其他错误
+                    if stdout:
+                        print(stdout.strip())
+                    if stderr_out:
+                        print(f"  [stderr] {stderr_out.strip()}")
+                    print(f"  ❌ 失败 (exit={proc.returncode})")
+                    final_error = err_detail or f"退出码={proc.returncode}"
+                    final_error_type = err_type or "other"
+                    break
+
+            except subprocess.TimeoutExpired:
+                if attempt < max_retries:
+                    print(f"  ⚠️ 超时，重试 ({attempt}/{max_retries})...")
+                else:
+                    alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单超时(120s×3)。重试: {retry_cmd}"
+                    print(alert_msg, file=sys.stderr)
+                    _save_trade_error(code, trade_type, price, shares, "下单超时(120s×3)", retry_cmd)
+                    final_error = "超时"
+                    final_error_type = "timeout"
+
+            except Exception as e:
+                print(f"  ❌ 异常: {e}")
+                final_error = str(e)
+                final_error_type = "exception"
+                break
+
+        if not success:
             fail_count += 1
-        except Exception as e:
-            print(f"  ❌ 异常: {e}")
-            fail_count += 1
+            # 非重试类错误也记录
+            if final_error_type and final_error_type not in ("tonghuashun_disconnect", "not_filled", "timeout"):
+                _save_trade_error(code, trade_type, price, shares, final_error or "未知错误", retry_cmd)
 
         # 每次操作间隔3秒（最后一个不等待）
         if i < len(actionable) - 1:
             time.sleep(3)
 
     print("\n" + "=" * 60)
-    print(f"[EXECUTE] 执行完成: 成功 {success_count}, 失败 {fail_count}")
+    print(f"[EXECUTE] 执行完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skip_count}")
 
 
 def main():
