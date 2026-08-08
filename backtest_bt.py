@@ -597,6 +597,15 @@ def main():
     run_000725 = "--000725" in sys.argv
     run_515880 = "--515880" in sys.argv
 
+    # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
+    custom_start = None
+    custom_end = None
+    for arg in sys.argv:
+        if arg.startswith("--start="):
+            custom_start = arg.split("=", 1)[1]
+        elif arg.startswith("--end="):
+            custom_end = arg.split("=", 1)[1]
+
     # --period X 支持: 5y/3y/2y/1y/6m/3m
     period_map = {
         "5y": ("2021-08-01", "2026-07-27"),
@@ -618,12 +627,12 @@ def main():
     elif run_515880:
         active_codes = {"515880": CODES["515880"]}
         trade_start, trade_end = "2024-08-01", "2026-07-27"
+    elif custom_start and custom_end:
+        active_codes = {k: v for k, v in CODES.items() if k != "000725"}
+        trade_start, trade_end = custom_start, custom_end
     elif period and period in period_map:
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = period_map[period]
-    elif run_515880:
-        active_codes = {"515880": CODES["515880"]}
-        trade_start, trade_end = "2024-08-01", "2026-07-27"
     else:
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = TRADE_START, TRADE_END
