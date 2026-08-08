@@ -417,6 +417,9 @@ def calc_5min_indicators(klines_5min):
         day_close = closes[-1] if closes else 0
         day_pct = 0
 
+    # 5分钟 ATR(14) — 基于5分钟K线，用于做T配对挂单
+    atr_5min = calc_atr(klines_5min, 14)
+
     return {
         "rsi_5min": rsi_5min,
         "macd_5min_status": status5,
@@ -424,6 +427,7 @@ def calc_5min_indicators(klines_5min):
         "macd_5min_dea": dea5,
         "macd_5min_bar": bar5,
         "vol_ratio_5min": vol_ratio_5min,
+        "atr_5min": atr_5min,
         "day_high": day_high,
         "day_low": day_low,
         "day_pct": day_pct,
@@ -890,6 +894,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 "macd_status": macd_status, "vol_ratio_120": vol_ratio_120,
                 "atr": atr, "spacing": spacing,
                 "vol_ratio_5min": indicators_5min["vol_ratio_5min"] if indicators_5min else None,
+                "atr_5min": indicators_5min["atr_5min"] if indicators_5min else None,
                 "rsi_5min": indicators_5min["rsi_5min"] if indicators_5min else None,
                 "macd_5min_status": indicators_5min["macd_5min_status"] if indicators_5min else None,
                 "macd_5min_dif": indicators_5min["macd_5min_dif"] if indicators_5min else None,
@@ -1166,24 +1171,25 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = f"{ratio*100:.0f}%"
                     reason = t0_signal + "(量比)"
                     trade_type = "t0"
-                    # 配对卖出挂单: 高位卖出 (ATR×2)
-                    if t["atr"] and price > 0:
-                        pair_price = round(price + t["atr"] * 2.0, 3)
+                    # 配对卖出挂单: 高位卖出 (5min ATR×1.0)
+                    atr_5m = t.get("atr_5min")
+                    if atr_5m and price > 0:
+                        pair_price = round(price + atr_5m * 1.0, 3)
                         pair_shares = int(pos.shares * ratio / 100) * 100
                         if pair_shares >= 100 and pair_price > 0:
-                            # 价差校验: (卖出价-买入价) * 数量 > 100元
+                            # 价差校验: (卖出价-买入价) * 数量 > 10元
                             spread = (pair_price - price) * pair_shares
-                            if spread > 100:
+                            if spread > 10:
                                 t0_pair = {
                                     "trade_type": "t0_pair",
                                     "action": "卖出(配对挂单)",
                                     "price": pair_price,
                                     "shares": pair_shares,
                                     "spread": round(spread, 2),
-                                    "reason": f"做T买入后高位卖出: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
+                                    "reason": f"做T买入后高位卖出: ATR_5min={atr_5m:.4f}, 挂单价={pair_price:.3f}",
                                 }
                             else:
-                                t0_signal += f"(价差{spread:.0f}元≤100,放弃配对)"
+                                t0_signal += f"(价差{spread:.0f}元≤10,放弃配对)"
             elif "卖出" in t0_signal:
                 pos.record_t0(today_str)
                 action = "卖出"
@@ -1191,25 +1197,26 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 position_ratio = f"{ratio*100:.0f}%"
                 reason = t0_signal + "(量比)"
                 trade_type = "t0"
-                # 配对买入挂单: 低位吃回 (ATR×2)
-                if t["atr"] and price > 0:
-                    pair_price = round(price - t["atr"] * 2.0, 3)
+                # 配对买入挂单: 低位吃回 (5min ATR×1.0)
+                atr_5m = t.get("atr_5min")
+                if atr_5m and price > 0:
+                    pair_price = round(price - atr_5m * 1.0, 3)
                     # 卖出数量 = shares * ratio
                     pair_shares = int(pos.shares * ratio / 100) * 100
                     if pair_shares >= 100 and pair_price > 0:
-                        # 价差校验: (现价-买入价) * 数量 > 100元
+                        # 价差校验: (现价-买入价) * 数量 > 10元
                         spread = (price - pair_price) * pair_shares
-                        if spread > 100:
+                        if spread > 10:
                             t0_pair = {
                                 "trade_type": "t0_pair",
                                 "action": "买入(配对挂单)",
                                 "price": pair_price,
                                 "shares": pair_shares,
                                 "spread": round(spread, 2),
-                                "reason": f"做T卖出后低位接回: ATR={t['atr']:.4f}, 挂单价={pair_price:.3f}",
+                                "reason": f"做T卖出后低位接回: ATR_5min={atr_5m:.4f}, 挂单价={pair_price:.3f}",
                             }
                         else:
-                            t0_signal += f"(价差{spread:.0f}元≤100,放弃配对)"
+                            t0_signal += f"(价差{spread:.0f}元≤10,放弃配对)"
 
         # 优先级3: 网格(仅持仓时生效，不触发建仓；仓位超限时禁止网格买入)
         elif grid_signal != "无" and "买入" in grid_signal and "等明日" not in grid_signal and not pos.grid_frozen and pos.has_position:
