@@ -12,6 +12,7 @@
       "last_grid_trigger": null,
       "last_reset_date": null,
       "peak_price": 0.0,
+      "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
@@ -40,6 +41,7 @@
       "last_grid_trigger": null,
       "last_reset_date": null,
       "peak_price": 0.663,
+      "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 1,
@@ -68,6 +70,7 @@
       "last_grid_trigger": null,
       "last_reset_date": null,
       "peak_price": 0.0,
+      "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
@@ -96,6 +99,7 @@
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-08",
       "peak_price": 1.615,
+      "breakeven_activated": true,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
@@ -124,6 +128,7 @@
       "last_grid_trigger": null,
       "last_reset_date": null,
       "peak_price": 1.062,
+      "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
@@ -152,6 +157,7 @@
       "last_grid_trigger": null,
       "last_reset_date": null,
       "peak_price": 0.0,
+      "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
@@ -180,6 +186,7 @@
       "last_grid_trigger": null,
       "last_reset_date": null,
       "peak_price": 0.346,
+      "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
@@ -227,9 +234,9 @@
     }
   },
   "account": {
-    "total_asset": 216981.86,
+    "total_asset": 216498.71,
     "cash": 100919.61,
     "market_value": 115579.1
   },
-  "last_updated": "2026-08-08 10:07"
+  "last_updated": "2026-08-08 10:36"
 }
