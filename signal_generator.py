@@ -1168,11 +1168,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = f"{ratio*100:.0f}%"
                     reason = t0_signal + "(量比)"
                     trade_type = "t0"
-                    # 配对卖出挂单: 高位卖出 (5min ATR×1.0)
+                    # 配对卖出挂单: 高位卖出 (5min ATR×1.1)
                     atr_5m = t.get("atr_5min")
                     if atr_5m and price > 0:
-                        pair_price = round(price + atr_5m * 1.0, 3)
-                        pair_shares = int(pos.shares * 0.20 / 100) * 100
+                        pair_price = round(price + atr_5m * 1.1, 3)
+                        pair_shares = int(pos.shares * 0.30 / 100) * 100
                         if pair_shares >= 100 and pair_price > 0:
                             # 价差校验: (卖出价-买入价) * 数量 > 10元
                             spread = (pair_price - price) * pair_shares
@@ -1194,12 +1194,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 position_ratio = f"{ratio*100:.0f}%"
                 reason = t0_signal + "(量比)"
                 trade_type = "t0"
-                # 配对买入挂单: 低位吃回 (5min ATR×1.0)
+                # 配对买入挂单: 低位吃回 (5min ATR×1.1)
                 atr_5m = t.get("atr_5min")
                 if atr_5m and price > 0:
-                    pair_price = round(price - atr_5m * 1.0, 3)
-                    # 卖出数量 = shares * 0.20
-                    pair_shares = int(pos.shares * 0.20 / 100) * 100
+                    pair_price = round(price - atr_5m * 1.1, 3)
+                    # 卖出数量 = shares * 0.30
+                    pair_shares = int(pos.shares * 0.30 / 100) * 100
                     if pair_shares >= 100 and pair_price > 0:
                         # 价差校验: (现价-买入价) * 数量 > 10元
                         spread = (price - pair_price) * pair_shares
