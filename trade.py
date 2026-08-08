@@ -137,11 +137,13 @@ def sync():
         shares_val = int(row[6])
         cost = float(row[10])
         if shares_val > 0:
+            cur_price = float(row[2])
             pf['positions'][code] = {
                 'name': row[1],
                 'shares': shares_val,
                 'avg_cost': cost,
-                'market_price': float(row[2]),
+                'current_price': cur_price,
+                'market_price': cur_price,
                 'market_value': float(row[11]),
                 'pnl': float(row[3]),
                 'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,
