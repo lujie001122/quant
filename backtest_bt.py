@@ -648,8 +648,21 @@ def main():
             print(f"  ✗ {code} {cfg['name']:10s}  拉取失败: {e}"); sys.exit(1)
 
     start = pd.Timestamp(trade_start); end = pd.Timestamp(trade_end)
-    for code in dataframes:
-        dataframes[code] = dataframes[code][start:end]
+    # 切片并移除回测区间内无数据的ETF
+    empty_codes = []
+    for code in list(dataframes.keys()):
+        sliced = dataframes[code][start:end]
+        if len(sliced) == 0:
+            print(f"  ⚠ {code} {active_codes[code]['name']:10s}  回测区间内无数据, 跳过")
+            empty_codes.append(code)
+        else:
+            dataframes[code] = sliced
+    for code in empty_codes:
+        del dataframes[code]
+        del active_codes[code]
+    if not dataframes:
+        print("✗ 所有ETF在回测区间内均无数据, 退出")
+        sys.exit(1)
 
     # ── 对齐数据: 晚上市ETF补前置行, 使backtrader多数据同步不卡住 ──
     # backtrader要求所有数据都就绪才触发next(), 如果588170从2025年才有数据,
