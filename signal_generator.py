@@ -1696,8 +1696,11 @@ def _build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
     return ""
 
 
-def execute_signals(result):
-    """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）"""
+def execute_signals(result, mode=None):
+    """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
+
+    mode: None=全部, 'buy_sell'=只执行买入/卖出/止盈止损/网格, 't0'=只执行做T
+    """
     import subprocess
 
     if result is None:
@@ -1709,14 +1712,26 @@ def execute_signals(result):
         print("[EXECUTE] 无信号数据，跳过执行")
         return
 
+    if mode:
+        print(f"[EXECUTE] 模式过滤: {mode}")
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     trade_script = os.path.join(script_dir, "trade.py")
     today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # 按模式过滤信号
+    BUY_SELL_TYPES = {"buy", "sell", "liquidate", "reduce"}  # 买入/卖出/止盈止损/网格
+    T0_TYPES = {"t0"}  # 做T
 
     actionable = []
     for code, sig in signals.items():
         trade_type = sig.get("trade_type")
         if not trade_type:
+            continue
+        # 模式过滤
+        if mode == "buy_sell" and trade_type not in BUY_SELL_TYPES:
+            continue
+        if mode == "t0" and trade_type not in T0_TYPES:
             continue
         actionable.append((code, sig))
 
@@ -1964,7 +1979,23 @@ def execute_signals(result):
 
 
 def main():
-    execute_mode = "--execute" in sys.argv
+    # 解析 --execute 参数
+    # --execute          → mode=None (全部)
+    # --execute=buy_sell → mode='buy_sell' (买入/卖出/止盈止损/网格)
+    # --execute=t0       → mode='t0' (只执行做T)
+    execute_mode = None
+    for arg in sys.argv:
+        if arg == "--execute":
+            execute_mode = None  # 全部
+            break
+        if arg.startswith("--execute="):
+            val = arg.split("=", 1)[1].strip().lower()
+            if val in ("buy_sell", "t0"):
+                execute_mode = val
+            else:
+                print(f"[WARN] 无效的 --execute 值: {val}, 使用默认模式(全部)")
+                execute_mode = None
+            break
 
     try:
         result = generate_signals()
@@ -1973,8 +2004,8 @@ def main():
             sys.stdout.reconfigure(encoding="utf-8")
         print(json_str)
 
-        if execute_mode and result is not None:
-            execute_signals(result)
+        if execute_mode is not None:  # --execute 或 --execute=xxx
+            execute_signals(result, mode=execute_mode)
 
         return result
     except Exception as e:
