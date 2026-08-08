@@ -1212,7 +1212,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                 t0_pair = {
                                     "trade_type": "t0_pair",
                                     "action": "卖出(配对挂单)",
-                                    "price": pair_price,
+                                    "price": price,
+                                    "pair_price": pair_price,
                                     "shares": pair_shares,
                                     "spread": round(spread, 2),
                                     "reason": f"做T买入后高位卖出: ATR_5min={atr_5m:.4f}, 挂单价={pair_price:.3f}",
@@ -1239,7 +1240,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                             t0_pair = {
                                 "trade_type": "t0_pair",
                                 "action": "买入(配对挂单)",
-                                "price": pair_price,
+                                "price": price,
+                                "pair_price": pair_price,
                                 "shares": pair_shares,
                                 "spread": round(spread, 2),
                                 "reason": f"做T卖出后低位接回: ATR_5min={atr_5m:.4f}, 挂单价={pair_price:.3f}",
