@@ -669,8 +669,8 @@ def is_auction_time(now=None):
 def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """做T买入评分(基于5分钟分时): RSI超卖+MACD多头确认+量能温和
     ★ RSI极端兜底通道: RSI < 25 直接返回3分(跳过MACD/量比检查)
-    - RSI_5min 25-40: 原有3项共振评分逻辑
-    - RSI_5min < 40 必须满足(超卖才摊低)
+    - RSI_5min 25-45: 原有3项共振评分逻辑
+    - RSI_5min < 45 必须满足(超卖才摊低)
     - MACD_5min 金叉或红柱(趋势确认)
     - 量比 < 1.5(不放量砸盘)
     """
@@ -683,11 +683,11 @@ def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     if rsi_5min < 25:
         return 3
     # RSI 25-75: 原有3项共振评分逻辑
-    if rsi_5min >= 40:
+    if rsi_5min >= 45:
         return 0  # 5分钟RSI不超卖，不做T买入
     if macd_5min_status in ["死叉", "绿柱放大"]:
         return 0  # 趋势恶化，禁止做T买入
-    score = 1  # RSI_5min<40已满足
+    score = 1  # RSI_5min<45已满足
     if macd_5min_status in ["金叉", "红柱放大"]:
         score += 1
     if vol_ratio_5min is not None and vol_ratio_5min < 1.5:
@@ -699,8 +699,8 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """做T卖出评分(基于5分钟分时): RSI超买+MACD空头确认+量能放大
     ★ RSI极端互斥: RSI < 25 时只允许买入，卖出强制归零
     - RSI > 75: 极端兜底直接满分
-    - RSI_5min 60-75: 原有3项共振评分逻辑
-    - RSI_5min > 60 必须满足(超买才卖)
+    - RSI_5min 55-75: 原有3项共振评分逻辑
+    - RSI_5min > 55 必须满足(超买才卖)
     - MACD_5min 死叉或绿柱(趋势结束)
     - 量比 > 1.2(放量拉升)
     """
@@ -713,11 +713,11 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     if rsi_5min > 75:
         return 3
     # RSI 25-75: 原有3项共振评分逻辑
-    if rsi_5min <= 60:
+    if rsi_5min <= 55:
         return 0  # 5分钟RSI不超买，不卖出
     if macd_5min_status in ["金叉", "红柱放大"]:
         return 0  # 趋势向好，禁止做T卖出
-    score = 1  # RSI_5min>60已满足
+    score = 1  # RSI_5min>55已满足
     if macd_5min_status in ["死叉", "绿柱放大"]:
         score += 1
     if vol_ratio_5min is not None and vol_ratio_5min > 1.2:
@@ -1076,13 +1076,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         elif in_auction:
             t0_signal = "无(集合竞价时段)"
         elif pos.has_position:
-            # T入: 5分钟RSI<40+5分钟MACD多头+量比温和
+            # T入: 5分钟RSI<45+5分钟MACD多头+量比温和
             if buy_score >= 2:
                 if pos.can_t0_today(today_str, atr_pct):
                     t0_signal = f"买入做T5m({buy_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
                 else:
                     t0_signal = f"买入做T5m({buy_score}项信号,今日做T次数已用尽({pos._get_daily_log(today_str).get('t0_count', 0)}/{pos.max_daily_t0(atr_pct)}))"
-            # T出: 5分钟RSI>60+5分钟MACD空头+量比放大
+            # T出: 5分钟RSI>55+5分钟MACD空头+量比放大
             elif sell_score >= 2:
                 if pos.can_t0_today(today_str, atr_pct):
                     profit_ok = pos.avg_cost > 0 and price > pos.avg_cost
@@ -1463,7 +1463,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "strategy_policy": {
             "stop_loss": "均价止损10%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
             "profit_take": "移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈30%→清仓",
-            "t0_signal": "弹性做T(5分钟分时:RSI5m<40买入+MACD5m金叉/红柱+量比<1.5; RSI5m>60卖出+MACD5m死叉/绿柱+量比>1.2,配对ATR×2,价差>100元)",
+            "t0_signal": "弹性做T(5分钟分时:RSI5m<45买入+MACD5m金叉/红柱+量比<1.5; RSI5m>55卖出+MACD5m死叉/绿柱+量比>1.2,配对ATR×2,价差>100元)",
             "entry": "5通道(RSI抄底/分批建仓/Test抄底/试探/补仓)统一30%→确认70%→补仓15%",
             "frequency": f"正常1买2T/天, ATR>5%时2买3T/天",
         },
