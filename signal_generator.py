@@ -493,6 +493,8 @@ class PositionInfo:
         self.empty_days_date = None  # 空仓天数去重标记
         # 前一日MACD状态(Test抄底需要)
         self.prev_macd_status = None
+        # 保本止盈状态
+        self.breakeven_activated = False
 
     @property
     def has_position(self):
@@ -581,6 +583,7 @@ class PositionInfo:
         self.grid_frozen = False
         self.last_grid_trigger = None
         self.peak_price = 0.0
+        self.breakeven_activated = False
         self.liquidate_dates.append(date_str)
         self.empty_days = 0
         # 设置冷静期
@@ -631,6 +634,7 @@ class PositionInfo:
             "last_grid_trigger": self.last_grid_trigger,
             "last_reset_date": self.last_reset_date,
             "peak_price": self.peak_price,
+            "breakeven_activated": self.breakeven_activated,
             "below_ma20_count": self.below_ma20_count,
             "below_ma20_date": self.below_ma20_date,
             "add_count": self.add_count,
@@ -656,6 +660,7 @@ class PositionInfo:
         self.cooldown_until = data.get("cooldown_until")
         self.grid_frozen = data.get("grid_frozen", False)
         self.peak_price = data.get("peak_price", 0.0)
+        self.breakeven_activated = data.get("breakeven_activated", False)
         self.add_count = data.get("add_count", 0)
         self.ma5_touch_count = data.get("ma5_touch_count", 0)
         self.prev_rsi = data.get("prev_rsi")
@@ -979,9 +984,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         stop_actions = []
 
         if pos.has_position:
-            # ── 均价止损10%: 从买入均价跌10%无条件清仓 ──
-            if pos.avg_cost > 0 and price <= pos.avg_cost * 0.90:
-                stop_actions.append((f"均价止损10%(avg={pos.avg_cost:.3f}→现价{price:.3f})", "avg_stop_10pct"))
+            # ── 保本止盈: 浮盈≥10%激活, 回落到成本+2%清仓 ──
+            if pos.avg_cost > 0:
+                profit_pct = (price - pos.avg_cost) / pos.avg_cost
+                if profit_pct >= 0.10 - 0.0001:
+                    pos.breakeven_activated = True
+                if pos.breakeven_activated and price <= pos.avg_cost * 1.02:
+                    stop_actions.append((f"保本止盈(avg={pos.avg_cost:.3f}→现价{price:.3f})", "breakeven_stop"))
+
+            # ── 均价止损12%: 从买入均价跌12%无条件清仓 ──
+            if pos.avg_cost > 0 and price <= pos.avg_cost * 0.88:
+                stop_actions.append((f"均价止损12%(avg={pos.avg_cost:.3f}→现价{price:.3f})", "avg_stop_12pct"))
 
             # ── 硬止盈30%: base_price*1.30 ──
             if pos.base_price and price >= pos.base_price * 1.30:
@@ -1034,18 +1047,18 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # P1: 趋势止盈(MACD红柱缩短+破MA5)
         if pos.has_position and t["macd_status"] == "红柱缩短" and price < t["ma5"]:
-            stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖20%活动仓", "trend_profit_sell"))
+            stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
 
-        # 破MA5卖活动仓10%(P0: active=0时不触发)
+        # 破MA5卖活动仓5%(P0: active=0时不触发)
         if pos.has_position and price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
             if pos.active_shares > 0:
-                stop_actions.append(("破MA5卖活动仓10%", "sell_active_10pct"))
+                stop_actions.append(("破MA5卖活动仓5%", "sell_active_5pct"))
 
         # 止盈止损优先级处理
         if stop_actions:
             # 优先级: 清仓 > 减仓 > 卖活动仓
             for sig_name, sig_type in stop_actions:
-                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct", "avg_stop_10pct", "hard_stop_20pct"):
+                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct", "avg_stop_12pct", "hard_stop_20pct", "breakeven_stop"):
                     stop_signal = sig_name
                     break
             if stop_signal == "未触发":
@@ -1144,7 +1157,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         if stop_actions:
             for sig_name, sig_type in stop_actions:
-                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct", "avg_stop_10pct", "hard_stop_20pct"):
+                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct", "avg_stop_12pct", "hard_stop_20pct", "breakeven_stop"):
                     action = "清仓"
                     position_ratio = "100%"
                     reason = sig_name
@@ -1159,13 +1172,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     break
                 elif sig_type == "trend_profit_sell":
                     action = "卖出"
-                    position_ratio = "20%(活动仓)"
+                    position_ratio = "10%(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
                     break
-                elif sig_type == "sell_active_10pct":
+                elif sig_type == "sell_active_5pct":
                     action = "卖出"
-                    position_ratio = "10%(活动仓)"
+                    position_ratio = "5%(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
                     break
@@ -1260,7 +1273,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         elif grid_signal != "无" and "卖出" in grid_signal:
             if pos.active_shares > 0:
                 action = "卖出"
-                position_ratio = "20%(活动仓)"
+                position_ratio = "5%(活动仓)"
                 reason = grid_signal
                 trade_type = "sell"
             else:
@@ -1293,16 +1306,16 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
 
                         if pos.build_phase == 0:
-                            # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%
-                            if t["macd_status"] == "金叉" and (t["rsi"] is None or t["rsi"] <= 80) and pos.can_buy_today(today_str, atr_pct):
+                            # 通道1: RSI抄底 (MACD金叉+RSI≤80+价>MA20) → 30%
+                            if t["macd_status"] == "金叉" and (t["rsi"] is None or t["rsi"] <= 80) and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
                                 reason = f"RSI抄底:MACD金叉(RSI={t['rsi']})"
                             # 通道2: 趋势跟踪 (空仓>10天+价>MA20+MACD红柱) → 30%
                             elif pos.empty_days > 10 and t["macd_status"] in ["红柱放大", "红柱缩短"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(趋势跟踪)")
                                 reason = f"趋势跟踪:价>MA20+{t['macd_status']}"
-                            # 通道3: 突破入场 (20日新高+MACD金叉) → 30%
-                            elif t["macd_status"] == "金叉" and pos.can_buy_today(today_str, atr_pct):
+                            # 通道3: 突破入场 (20日新高+MACD金叉+价>MA20) → 30%
+                            elif t["macd_status"] == "金叉" and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                                 # 检查20日新高(不含当日)
                                 if len(all_klines.get(code, [])) >= 21:
                                     # 不含当日: 用倒数第2到第22根(排除最后一根=当日)
@@ -1310,16 +1323,16 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                                     if closes_20 and price > max(closes_20):
                                         action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(突破入场)")
                                         reason = f"突破入场:20日新高+金叉"
-                            # 通道4: 分批建仓 (金叉/红柱放大+RSI>40+站MA5) → 30%
-                            if action == "持有" and t["macd_status"] in ["金叉", "红柱放大"] and rsi_ok and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
+                            # 通道4: 分批建仓 (金叉/红柱放大+RSI>40+站MA5+价>MA20) → 30%
+                            if action == "持有" and t["macd_status"] in ["金叉", "红柱放大"] and rsi_ok and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(分批1)")
                                 reason = "分批建仓1:首笔30%试探(MACD健康+RSI满足+站上MA5)"
-                            # 通道5: Test抄底 (RSI<35+绿柱缩短+站MA5+前一日也是绿柱缩短) → 30%
-                            if action == "持有" and t["rsi"] is not None and t["rsi"] < 35 and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
+                            # 通道5: Test抄底 (RSI<35+绿柱缩短+站MA5+价>MA20+前一日也是绿柱缩短) → 30%
+                            if action == "持有" and t["rsi"] is not None and t["rsi"] < 35 and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(Test抄底)")
                                 reason = f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5"
-                            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5) → 15%
-                            if action == "持有" and t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_minimal and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
+                            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5+价>MA20) → 15%
+                            if action == "持有" and t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_minimal and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "15%(试探)")
                                 reason = f"试探建仓:15%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站上MA5)"
                             if action == "持有":
