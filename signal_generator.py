@@ -1540,13 +1540,229 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 # 六、输出
 # ============================================================
 
+def _parse_position_ratio(ratio_str):
+    """从 position_ratio 字符串中提取比例(0-1浮点数)
+    例: "30%(RSI抄底)" → 0.30, "5%(活动仓)" → 0.05, "15%(补仓)" → 0.15
+    """
+    if not ratio_str:
+        return 0.0
+    try:
+        pct_str = ratio_str.split("%")[0]
+        return float(pct_str) / 100.0
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _get_position_shares(code):
+    """从 portfolio.json 读取当前持仓股数"""
+    pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+    try:
+        if os.path.exists(pf_path):
+            with open(pf_path, "r") as f:
+                pf = json.load(f)
+            return pf.get("positions", {}).get(code, {}).get("shares", 0)
+    except Exception:
+        pass
+    return 0
+
+
+def execute_signals(result):
+    """遍历信号，调用 trade.py 执行交易"""
+    import subprocess
+
+    if result is None:
+        print("[EXECUTE] 无信号结果，跳过执行")
+        return
+
+    signals = result.get("signals", {})
+    if not signals:
+        print("[EXECUTE] 无信号数据，跳过执行")
+        return
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    trade_script = os.path.join(script_dir, "trade.py")
+
+    actionable = []
+    for code, sig in signals.items():
+        trade_type = sig.get("trade_type")
+        if not trade_type:
+            continue
+        actionable.append((code, sig))
+
+    if not actionable:
+        print("[EXECUTE] 无交易信号，跳过执行")
+        return
+
+    print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
+    print("=" * 60)
+
+    success_count = 0
+    fail_count = 0
+
+    for i, (code, sig) in enumerate(actionable):
+        trade_type = sig["trade_type"]
+        action = sig.get("action", "")
+        price_str = sig.get("price", "0")
+        try:
+            price = float(price_str)
+        except (ValueError, TypeError):
+            price = 0.0
+
+        if price <= 0:
+            print(f"[EXECUTE] ⚠️ {code} 价格无效({price_str})，跳过")
+            fail_count += 1
+            continue
+
+        t0_pair = sig.get("t0_pair")
+
+        # ── 做T信号 ──
+        if trade_type == "t0" and t0_pair:
+            pair_shares = t0_pair.get("shares", 0)
+            pair_price = t0_pair.get("pair_price", 0)
+
+            if pair_shares < 100:
+                print(f"[EXECUTE] ⚠️ {code} 做T股数不足({pair_shares})，跳过")
+                fail_count += 1
+                continue
+
+            if "买入" in action:
+                # 做T买入: t0_buy CODE SHARES PRICE PAIR_PRICE
+                cmd = [
+                    "python3", trade_script, "t0_buy",
+                    code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"
+                ]
+                label = f"做T买入 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
+            elif "卖出" in action:
+                # 做T卖出: t0_sell CODE SHARES PRICE PAIR_PRICE
+                cmd = [
+                    "python3", trade_script, "t0_sell",
+                    code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"
+                ]
+                label = f"做T卖出 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
+            else:
+                print(f"[EXECUTE] ⚠️ {code} 做T方向未知(action={action})，跳过")
+                fail_count += 1
+                continue
+
+        # ── 普通买入 ──
+        elif trade_type == "buy":
+            ratio = _parse_position_ratio(sig.get("position_ratio", ""))
+            fund = ETFS.get(code, {}).get("fund", 44000)
+            shares = int(fund * ratio / price / 100) * 100
+            if shares < 100:
+                print(f"[EXECUTE] ⚠️ {code} 买入股数不足(fund={fund}, ratio={ratio:.0%}, shares={shares})，跳过")
+                fail_count += 1
+                continue
+            cmd = [
+                "python3", trade_script, "buy",
+                code, str(shares), f"{price:.3f}"
+            ]
+            label = f"买入 {code} {shares}股 @{price:.3f}"
+
+        # ── 普通卖出 ──
+        elif trade_type == "sell":
+            current_shares = _get_position_shares(code)
+            ratio = _parse_position_ratio(sig.get("position_ratio", ""))
+            if ratio > 0:
+                shares = int(current_shares * ratio / 100) * 100
+            else:
+                shares = current_shares
+            if shares < 100 or shares > current_shares:
+                shares = current_shares
+            if shares < 100:
+                print(f"[EXECUTE] ⚠️ {code} 卖出股数不足(current={current_shares}, shares={shares})，跳过")
+                fail_count += 1
+                continue
+            cmd = [
+                "python3", trade_script, "sell",
+                code, str(shares), f"{price:.3f}"
+            ]
+            label = f"卖出 {code} {shares}股 @{price:.3f}"
+
+        # ── 清仓 ──
+        elif trade_type == "liquidate":
+            current_shares = _get_position_shares(code)
+            if current_shares < 100:
+                print(f"[EXECUTE] ⚠️ {code} 清仓但无持仓({current_shares}股)，跳过")
+                fail_count += 1
+                continue
+            cmd = [
+                "python3", trade_script, "sell",
+                code, str(current_shares), f"{price:.3f}"
+            ]
+            label = f"清仓 {code} {current_shares}股 @{price:.3f}"
+
+        # ── 减仓 ──
+        elif trade_type == "reduce":
+            current_shares = _get_position_shares(code)
+            ratio = _parse_position_ratio(sig.get("position_ratio", ""))
+            if ratio > 0:
+                shares = int(current_shares * ratio / 100) * 100
+            else:
+                shares = int(current_shares * 0.30 / 100) * 100
+            if shares < 100 or shares > current_shares:
+                shares = min(current_shares, max(shares, 100))
+            if shares < 100 or current_shares < 100:
+                print(f"[EXECUTE] ⚠️ {code} 减仓股数不足(current={current_shares}, shares={shares})，跳过")
+                fail_count += 1
+                continue
+            cmd = [
+                "python3", trade_script, "sell",
+                code, str(shares), f"{price:.3f}"
+            ]
+            label = f"减仓 {code} {shares}股 @{price:.3f}"
+
+        else:
+            print(f"[EXECUTE] ⚠️ {code} 未知交易类型({trade_type})，跳过")
+            fail_count += 1
+            continue
+
+        # 执行命令
+        print(f"\n[{i+1}/{len(actionable)}] {label}")
+        print(f"  → {' '.join(cmd)}")
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=120, cwd=script_dir
+            )
+            if proc.stdout:
+                print(proc.stdout.strip())
+            if proc.stderr:
+                print(f"  [stderr] {proc.stderr.strip()}")
+            if proc.returncode == 0:
+                print(f"  ✅ 成功 (exit={proc.returncode})")
+                success_count += 1
+            else:
+                print(f"  ❌ 失败 (exit={proc.returncode})")
+                fail_count += 1
+        except subprocess.TimeoutExpired:
+            print(f"  ❌ 超时(120s)")
+            fail_count += 1
+        except Exception as e:
+            print(f"  ❌ 异常: {e}")
+            fail_count += 1
+
+        # 每次操作间隔3秒（最后一个不等待）
+        if i < len(actionable) - 1:
+            time.sleep(3)
+
+    print("\n" + "=" * 60)
+    print(f"[EXECUTE] 执行完成: 成功 {success_count}, 失败 {fail_count}")
+
+
 def main():
+    execute_mode = "--execute" in sys.argv
+
     try:
         result = generate_signals()
         json_str = json.dumps(result, indent=2, ensure_ascii=False)
         if sys.stdout.encoding != "utf-8":
             sys.stdout.reconfigure(encoding="utf-8")
         print(json_str)
+
+        if execute_mode and result is not None:
+            execute_signals(result)
+
         return result
     except Exception as e:
         error_msg = {"error": str(e), "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
