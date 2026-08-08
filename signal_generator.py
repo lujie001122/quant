@@ -420,6 +420,14 @@ def calc_5min_indicators(klines_5min):
     # 5分钟 ATR(14) — 基于5分钟K线，用于做T配对挂单
     atr_5min = calc_atr(klines_5min, 14)
 
+    # 5分钟 MA20 斜率 — 用于做T趋势过滤
+    ma20_5min_slope = None
+    if len(closes) >= 20:
+        ma20_now = sum(closes[-20:]) / 20
+        ma20_5ago = sum(closes[-25:-5]) / 20 if len(closes) >= 25 else None
+        if ma20_5ago and ma20_5ago > 0:
+            ma20_5min_slope = round((ma20_now - ma20_5ago) / ma20_5ago, 6)
+
     return {
         "rsi_5min": rsi_5min,
         "macd_5min_status": status5,
@@ -428,6 +436,7 @@ def calc_5min_indicators(klines_5min):
         "macd_5min_bar": bar5,
         "vol_ratio_5min": vol_ratio_5min,
         "atr_5min": atr_5min,
+        "ma20_5min_slope": ma20_5min_slope,
         "day_high": day_high,
         "day_low": day_low,
         "day_pct": day_pct,
@@ -903,6 +912,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 "day_high": indicators_5min["day_high"] if indicators_5min else None,
                 "day_low": indicators_5min["day_low"] if indicators_5min else None,
                 "day_pct": indicators_5min["day_pct"] if indicators_5min else None,
+                "ma20_5min_slope": indicators_5min["ma20_5min_slope"] if indicators_5min else None,
                 "ao_now": ao_now, "ao_5ago": ao_5ago,
             }
 
@@ -1062,13 +1072,22 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         rsi_5min = t.get("rsi_5min")
         macd_5min_status = t.get("macd_5min_status")
         vol_ratio_5min = t.get("vol_ratio_5min")
+        ma20_5min_slope = t.get("ma20_5min_slope")
 
-        if not is_market_hours or rsi_5min is None or in_auction:
+        # 11点前不做T（5分钟K线不够48根，MA20斜率不可靠）
+        if not is_market_hours or rsi_5min is None or in_auction or now.hour < 11:
             buy_score = 0
             sell_score = 0
         else:
             buy_score = t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min)
             sell_score = t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min)
+
+            # MA20斜率趋势过滤: 强趋势禁止反向做T
+            if ma20_5min_slope is not None:
+                if ma20_5min_slope > 0.001:   # 上升趋势(斜率>0.1%) → 禁止T卖出
+                    sell_score = 0
+                elif ma20_5min_slope < -0.001:  # 下降趋势(斜率<-0.1%) → 禁止T买入
+                    buy_score = 0
 
         t0_signal = "无"
         if not is_market_hours:
@@ -1164,7 +1183,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 else:
                     pos.record_t0(today_str)
                     action = "买入"
-                    ratio = 0.2
+                    ratio = 0.30
                     position_ratio = f"{ratio*100:.0f}%"
                     reason = t0_signal + "(量比)"
                     trade_type = "t0"
