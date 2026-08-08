@@ -312,6 +312,81 @@ def calc_max_drawdown(closes):
     return max_dd
 
 
+def calc_entry_precheck(r):
+    """
+    策略入场预检：MACD / RSI / MA20 三项检查
+    返回 {macd_check, macd_ok, rsi_check, rsi_ok, ma20_check, ma20_ok, ok_count, mark}
+    """
+    ok_count = 0
+
+    # 1. MACD 状态：红柱/金叉 为可入场条件
+    macd_status = r.get("macd_status", "")
+    macd_good = macd_status in ("红柱放大", "红柱缩小", "金叉")
+    macd_bad = macd_status in ("死叉", "绿柱放大", "绿柱缩短")
+    if macd_good:
+        macd_check = macd_status
+        macd_ok = True
+        ok_count += 1
+    elif macd_bad:
+        macd_check = macd_status
+        macd_ok = False
+    else:
+        macd_check = macd_status if macd_status else "N/A"
+        macd_ok = False
+
+    # 2. RSI：30-70 为正常（可入场条件）
+    rsi = r.get("rsi")
+    if rsi is not None:
+        if rsi > 70:
+            rsi_check = f"超买({rsi:.1f})"
+            rsi_ok = False
+        elif rsi < 30:
+            rsi_check = f"超卖({rsi:.1f})"
+            rsi_ok = False
+        else:
+            rsi_check = f"正常({rsi:.1f})"
+            rsi_ok = True
+            ok_count += 1
+    else:
+        rsi_check = "N/A"
+        rsi_ok = False
+
+    # 3. 价格 vs MA20：价格在 MA20 上方为可入场条件
+    close = r.get("close")
+    ma20 = r.get("ma20")
+    if close is not None and ma20 is not None:
+        pct = r.get("ma20_pct", 0)
+        if close >= ma20:
+            ma20_check = f"上方({pct:+.1f}%)"
+            ma20_ok = True
+            ok_count += 1
+        else:
+            ma20_check = f"下方({pct:+.1f}%)"
+            ma20_ok = False
+    else:
+        ma20_check = "N/A"
+        ma20_ok = False
+
+    # 综合标记
+    if ok_count >= 3:
+        mark = "✅ 可入场"
+    elif ok_count == 2:
+        mark = "⚠️ 观察"
+    else:
+        mark = "❌ 不适合"
+
+    return {
+        "macd_check": macd_check,
+        "macd_ok": macd_ok,
+        "rsi_check": rsi_check,
+        "rsi_ok": rsi_ok,
+        "ma20_check": ma20_check,
+        "ma20_ok": ma20_ok,
+        "ok_count": ok_count,
+        "mark": mark,
+    }
+
+
 # ═══════════════════════════════════════════════════════
 #  舆情抓取 (复用 sentiment_check 的逻辑)
 # ═══════════════════════════════════════════════════════
@@ -547,11 +622,17 @@ def run_rotation(force_write=False):
         if r["sentiment_score"] <= -6:
             reasons.append("舆情利好")
 
+        # 策略入场预检
+        precheck = calc_entry_precheck(r)
+        r["precheck"] = precheck
+
         r["advice"] = advice
         r["reasons"] = reasons
 
         icon = {"调入": "🟢", "调出": "🔴", "保持": "⚪"}.get(advice, "⚪")
+        pk = precheck
         print(f"  {icon} {advice}  {code} {r['name']:12s}  |  {'; '.join(reasons)}")
+        print(f"    📋 入场预检: MACD={pk['macd_check']} | RSI={pk['rsi_check']} | MA20={pk['ma20_check']} → {pk['mark']}")
 
     # 6. 输出到 /tmp/rotation_advice.json
     output = {
@@ -594,6 +675,16 @@ def run_rotation(force_write=False):
             },
             "advice": r["advice"],
             "reasons": r["reasons"],
+            "precheck": {
+                "macd_check": r["precheck"]["macd_check"],
+                "macd_ok": r["precheck"]["macd_ok"],
+                "rsi_check": r["precheck"]["rsi_check"],
+                "rsi_ok": r["precheck"]["rsi_ok"],
+                "ma20_check": r["precheck"]["ma20_check"],
+                "ma20_ok": r["precheck"]["ma20_ok"],
+                "ok_count": r["precheck"]["ok_count"],
+                "mark": r["precheck"]["mark"],
+            },
         }
         output["etfs"][code] = entry
 
