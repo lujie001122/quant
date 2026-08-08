@@ -16,13 +16,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 50.8,
+      "prev_rsi": 50.6,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": "2026-08-05",
       "daily_trade_log": {
-        "2026-08-07": {
+        "2026-08-08": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -50,8 +50,8 @@
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-08-07": {
-          "buy_count": 1,
+        "2026-08-08": {
+          "buy_count": 0,
           "t0_count": 0
         }
       }
@@ -72,13 +72,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 50.08,
+      "prev_rsi": 50.41,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": "2026-08-05",
       "daily_trade_log": {
-        "2026-08-07": {
+        "2026-08-08": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -94,7 +94,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
-      "last_reset_date": "2026-08-07",
+      "last_reset_date": "2026-08-08",
       "peak_price": 1.615,
       "below_ma20_count": 0,
       "below_ma20_date": null,
@@ -106,7 +106,7 @@
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-08-07": {
+        "2026-08-08": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -128,13 +128,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 47.34,
+      "prev_rsi": 47.61,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-08-07": {
+        "2026-08-08": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -156,13 +156,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 46.93,
+      "prev_rsi": 47.76,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
-      "empty_days": 2,
-      "empty_days_date": "2026-08-07",
+      "empty_days": 3,
+      "empty_days_date": "2026-08-08",
       "daily_trade_log": {
-        "2026-08-07": {
+        "2026-08-08": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -184,15 +184,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 66.67,
+      "prev_rsi": 64.98,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 1,
       "empty_days_date": "2026-08-06",
       "daily_trade_log": {
-        "2026-08-07": {
+        "2026-08-08": {
           "buy_count": 0,
-          "t0_count": 1
+          "t0_count": 0
         }
       }
     }
@@ -227,9 +227,9 @@
     }
   },
   "account": {
-    "total_asset": 216981.86,
+    "total_asset": 216659.76,
     "cash": 101080.66,
     "market_value": 115579.1
   },
-  "last_updated": "2026-08-08 00:40"
+  "last_updated": "2026-08-08 09:43"
 }
