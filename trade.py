@@ -160,6 +160,29 @@ def sync():
         }
     pf['last_updated'] = time.strftime('%Y-%m-%d %H:%M')
 
+    # 4. 同步 _signal_state
+    ss = pf.get('_signal_state', {})
+    active_codes = set()
+    for row in h.get('data', []):
+        if not row or len(row) < 12:
+            continue
+        code = row[0]
+        shares_val = int(row[6])
+        if shares_val > 0:
+            active_codes.add(code)
+            if code in ss:
+                ss[code]['shares'] = shares_val
+                ss[code]['avg_cost'] = float(row[10])
+                ss[code]['current_price'] = float(row[2])
+            # code 不在 _signal_state 中的情况不处理（signal_generator 负责管理）
+
+    # 清除已清仓的 code（同花顺里没有了但 _signal_state 里还有）
+    for code in list(ss.keys()):
+        if code not in active_codes:
+            del ss[code]
+
+    pf['_signal_state'] = ss
+
     with open(PF_PATH, 'w') as f:
         json.dump(pf, f, ensure_ascii=False, indent=2)
 

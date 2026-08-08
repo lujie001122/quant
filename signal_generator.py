@@ -460,6 +460,7 @@ class PositionInfo:
         self.shares = shares
         self.cost = cost
         self.avg_cost = cost / shares if shares > 0 else 0.0
+        self.current_price = 0.0
         self.peak_price = peak_price
         self.dead_shares = 0   # 底仓(P0真正分离)
         self.active_shares = 0  # 活动仓(P0真正分离)
@@ -645,6 +646,9 @@ class PositionInfo:
             "empty_days": self.empty_days,
             "empty_days_date": self.empty_days_date,
             "daily_trade_log": {today_str: self.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
+            "shares": self.shares,
+            "avg_cost": self.avg_cost,
+            "current_price": self.current_price,
         }
 
     def from_dict(self, data):
@@ -670,6 +674,9 @@ class PositionInfo:
         self.last_reset_date = data.get("last_reset_date")
         self.empty_days = data.get("empty_days", 0)
         self.empty_days_date = data.get("empty_days_date")
+        self.shares = data.get("shares", self.shares)
+        self.avg_cost = data.get("avg_cost", self.avg_cost)
+        self.current_price = data.get("current_price", self.current_price)
 
 
 def is_auction_time(now=None):
@@ -850,6 +857,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         p.shares = pos_pf["shares"]
                         p.cost = pos_pf.get("total_cost", pos_pf["shares"] * pos_pf.get("avg_cost", 0))
                         p.avg_cost = pos_pf["avg_cost"]
+                        p.current_price = pos_pf.get("current_price", 0.0)
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
                         p.update_dead_active()
                         # 持仓恢复后：如果 build_phase=0 但实际有持仓，修正为 build_phase=1
