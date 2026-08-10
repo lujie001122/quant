@@ -284,6 +284,9 @@ def sync():
     else:
         pf = {'positions': {}, 'account': {}}
 
+    # 用 tracker 标准名称覆盖 EvolvingSim 返回的截断名
+    code_map = get_code_map()
+
     for row in h.get('data', []):
         if not row or len(row) < 12:
             continue
@@ -292,8 +295,9 @@ def sync():
         cost = float(row[10])
         if shares_val > 0:
             cur_price = float(row[2])
+            name = code_map.get(code, {}).get('name') or row[1]
             pf['positions'][code] = {
-                'name': row[1],
+                'name': name,
                 'shares': shares_val,
                 'avg_cost': cost,
                 'current_price': cur_price,
