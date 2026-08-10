@@ -1644,7 +1644,8 @@ def _save_trade_error(code, action, price, shares, error_msg, retry_cmd):
 
 
 def _is_duplicate_signal(code, direction, today_str):
-    """检查是否为重复信号：同代码+同方向+同时间窗口"""
+    """检查是否为同方向重复信号：同代码+同方向+同时间窗口。
+    返回 True 表示同方向旧单仍在，需要先撤旧单再挂新单（不再直接跳过）。"""
     last = _load_last_executed()
     entry = last.get(code, {})
     if not entry:
@@ -1708,6 +1709,11 @@ def execute_signals(result, mode=None):
     """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
 
     mode: None=全部, 'buy_sell'=只执行买入/卖出/止盈止损/网格, 't0'=只执行做T
+
+    --execute 下单逻辑（v3.1.2）：
+    - 买入限价 = min(信号价, 当前实时价)，确保 ≤ 卖一价能挂进去
+    - 卖出限价 = max(信号价, 当前实时价)，确保 ≥ 买一价能挂进去
+    - 做T配对价 = 当前实时价 ± ATR×1.1（重新计算，不跟信号价比较）
     """
     import subprocess
 
@@ -1726,6 +1732,14 @@ def execute_signals(result, mode=None):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     trade_script = os.path.join(script_dir, "trade.py")
     today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # ═══ 获取当前实时价（用于 --execute 下单） ═══
+    live_quotes = {}
+    try:
+        live_quotes = fetch_realtime_quotes()
+        print(f"[EXECUTE] 获取实时行情: {len(live_quotes)} 只ETF")
+    except Exception as e:
+        print(f"[EXECUTE] ⚠️ 获取实时行情失败: {e}，将使用信号价作为兜底")
 
     # 按模式过滤信号
     BUY_SELL_TYPES = {"buy", "sell", "liquidate", "reduce"}  # 买入/卖出/止盈止损/网格
@@ -1757,14 +1771,57 @@ def execute_signals(result, mode=None):
     for i, (code, sig) in enumerate(actionable):
         trade_type = sig["trade_type"]
         action = sig.get("action", "")
-        price_str = sig.get("price", "0")
+
+        # ═══ 获取当前实时价 ═══
+        signal_price_str = sig.get("price", "0")
         try:
-            price = float(price_str)
+            signal_price = float(signal_price_str)
         except (ValueError, TypeError):
-            price = 0.0
+            signal_price = 0.0
+
+        live = live_quotes.get(code, {})
+        live_price = live.get("price", 0.0) if live else 0.0
+
+        # ═══ 下单限价方向修正 ═══
+        # 买入方向（buy/t0买入）：限价 = min(信号价, 当前价)，确保 ≤ 卖一价能挂进去
+        # 卖出方向（sell/liquidate/reduce/t0卖出）：限价 = max(信号价, 当前价)，确保 ≥ 买一价能挂进去
+        is_buy_direction = (
+            trade_type == "buy"
+            or (trade_type == "t0" and "买入" in action)
+        )
+        is_sell_direction = (
+            trade_type in ("sell", "liquidate", "reduce")
+            or (trade_type == "t0" and "卖出" in action)
+        )
+
+        if live_price > 0:
+            if is_buy_direction:
+                # 买入限价 = min(信号价, 当前价)，如果信号价高于当前价说明行情涨了，用当前价挂
+                if signal_price > 0 and live_price < signal_price:
+                    price = live_price
+                    print(f"[EXECUTE] {code} 买入限价修正: 信号价={signal_price:.3f} > 当前价={live_price:.3f}, 使用当前价={price:.3f}")
+                else:
+                    price = signal_price if signal_price > 0 else live_price
+                    print(f"[EXECUTE] {code} 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 买入限价={price:.3f}")
+            elif is_sell_direction:
+                # 卖出限价 = max(信号价, 当前价)，如果信号价低于当前价说明行情跌了，用当前价挂
+                if signal_price > 0 and live_price > signal_price:
+                    price = live_price
+                    print(f"[EXECUTE] {code} 卖出限价修正: 信号价={signal_price:.3f} < 当前价={live_price:.3f}, 使用当前价={price:.3f}")
+                else:
+                    price = signal_price if signal_price > 0 else live_price
+                    print(f"[EXECUTE] {code} 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 卖出限价={price:.3f}")
+            else:
+                # 未知方向，保守用信号价
+                price = signal_price if signal_price > 0 else live_price
+                print(f"[EXECUTE] {code} 未知方向(trade_type={trade_type}), 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 兜底限价={price:.3f}")
+        else:
+            # 兜底：实时价获取失败，用信号价
+            price = signal_price
+            print(f"[EXECUTE] {code} 实时价获取失败，兜底用信号价={signal_price:.3f}")
 
         if price <= 0:
-            print(f"[EXECUTE] ⚠️ {code} 价格无效({price_str})，跳过")
+            print(f"[EXECUTE] ⚠️ {code} 价格无效(信号={signal_price_str}, 实时={live_price})，跳过")
             fail_count += 1
             continue
 
@@ -1778,7 +1835,25 @@ def execute_signals(result, mode=None):
         # ── 做T信号 ──
         if trade_type == "t0" and t0_pair:
             pair_shares = t0_pair.get("shares", 0)
-            pair_price = t0_pair.get("pair_price", 0)
+            # 配对价重新计算: 当前实时价 ± ATR×1.1（不跟信号价比较）
+            sig_atr = sig.get("atr", 0)
+            try:
+                sig_atr = float(sig_atr)
+            except (ValueError, TypeError):
+                sig_atr = 0.0
+            old_pair_price = t0_pair.get("pair_price", 0)
+
+            if "买入" in action:
+                # 做T买入: 配对卖出挂单 = 当前价 + ATR×1.1
+                pair_price = round(price + sig_atr * 1.1, 3) if sig_atr > 0 else old_pair_price
+            elif "卖出" in action:
+                # 做T卖出: 配对买入挂单 = 当前价 - ATR×1.1
+                pair_price = round(price - sig_atr * 1.1, 3) if sig_atr > 0 else old_pair_price
+            else:
+                pair_price = old_pair_price
+
+            if sig_atr > 0:
+                print(f"[EXECUTE] {code} 做T配对价重算: 信号价={old_pair_price}, 当前价={price:.3f}, ATR={sig_atr:.4f}, 新配对价={pair_price:.3f}")
             shares = pair_shares
 
             if pair_shares < 100:
@@ -1861,12 +1936,31 @@ def execute_signals(result, mode=None):
             fail_count += 1
             continue
 
-        # ═══ 执行前检查：重复信号跳过 ═══
+        # ═══ 执行前检查：同方向重复信号 → 先撤旧单再挂新单 ═══
         direction = _signal_direction(sig)
         if direction and _is_duplicate_signal(code, direction, today_str):
-            print(f"\n[{i+1}/{len(actionable)}] ⏭️ {code} {label}信号已执行，跳过")
-            skip_count += 1
-            continue
+            # 同方向新信号来了但旧单未成交 → 先撤旧单，再挂新单
+            print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 同方向重复信号，先撤旧单再挂新单...")
+            revoke_cmd = ["python3", trade_script, "revoke", code, direction]
+            print(f"  → 撤单: {' '.join(revoke_cmd)}")
+            try:
+                revoke_proc = subprocess.run(
+                    revoke_cmd, capture_output=True, text=True,
+                    timeout=60, cwd=script_dir
+                )
+                if revoke_proc.stdout:
+                    print(revoke_proc.stdout.strip())
+                if revoke_proc.returncode == 0:
+                    print(f"  ✅ {code} 同方向旧单已撤，准备挂新单")
+                else:
+                    print(f"  ⚠️ 撤单返回非0 (exit={revoke_proc.returncode})，继续尝试挂新单")
+                    if revoke_proc.stderr:
+                        print(f"  [stderr] {revoke_proc.stderr.strip()}")
+            except subprocess.TimeoutExpired:
+                print(f"  ⚠️ 撤单超时(60s)，继续尝试挂新单")
+            except Exception as e:
+                print(f"  ⚠️ 撤单异常: {e}，继续尝试挂新单")
+            # 不 continue，继续往下走到执行命令，挂新单
 
         # ═══ 执行命令（含重试） ═══
         print(f"\n[{i+1}/{len(actionable)}] {label}")

@@ -1,0 +1,24 @@
+{
+  "515050": {
+    "timestamp": "2026-08-10 15:40:28",
+    "code": "515050",
+    "action": "sell",
+    "shares": 2400,
+    "price": 1.019,
+    "direction": "卖出",
+    "time_window": "2026-08-10",
+    "before_shares": 0,
+    "after_shares": 0
+  },
+  "588170": {
+    "timestamp": "2026-08-10 10:00:18",
+    "code": "588170",
+    "action": "buy",
+    "shares": 12700,
+    "price": 1.036,
+    "direction": "买入",
+    "time_window": "2026-08-10",
+    "before_shares": 0,
+    "after_shares": 0
+  }
+}

@@ -1,0 +1,92 @@
+[
+  {
+    "timestamp": "2026-08-10 09:44:17",
+    "code": "515050",
+    "action": "sell",
+    "price": 1.018,
+    "shares": 2600,
+    "error": "同花顺断连(3次重试全失败)",
+    "retry_cmd": "python3 trade.py sell 515050 2600 1.018"
+  },
+  {
+    "timestamp": "2026-08-10 09:46:10",
+    "code": "159516",
+    "action": "buy",
+    "price": 0.752,
+    "shares": 17500,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 159516 17500 0.752"
+  },
+  {
+    "timestamp": "2026-08-10 09:46:23",
+    "code": "588170",
+    "action": "buy",
+    "price": 1.032,
+    "shares": 12700,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 588170 12700 1.032"
+  },
+  {
+    "timestamp": "2026-08-10 10:20:01",
+    "code": "515050",
+    "action": "sell",
+    "price": 1.012,
+    "shares": 2400,
+    "error": "同花顺断连(3次重试全失败)",
+    "retry_cmd": "python3 trade.py sell 515050 2400 1.012"
+  },
+  {
+    "timestamp": "2026-08-10 11:20:59",
+    "code": "512170",
+    "action": "sell",
+    "price": 0.354,
+    "shares": 2800,
+    "error": "同花顺断连(3次重试全失败)",
+    "retry_cmd": "python3 trade.py sell 512170 2800 0.354"
+  },
+  {
+    "timestamp": "2026-08-10 11:22:50",
+    "code": "512170",
+    "action": "sell",
+    "price": 0.354,
+    "shares": 2800,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py sell 512170 2800 0.354"
+  },
+  {
+    "timestamp": "2026-08-10 11:35:54",
+    "code": "588170",
+    "action": "buy",
+    "price": 1.033,
+    "shares": 12700,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 588170 12700 1.033"
+  },
+  {
+    "timestamp": "2026-08-10 13:21:01",
+    "code": "512170",
+    "action": "sell",
+    "price": 0.351,
+    "shares": 2700,
+    "error": "同花顺断连(3次重试全失败)",
+    "retry_cmd": "python3 trade.py sell 512170 2700 0.351"
+  },
+  {
+    "timestamp": "2026-08-10 14:41:05",
+    "code": "515050",
+    "action": "sell",
+    "price": 1.013,
+    "shares": 2400,
+    "error": "同花顺断连(3次重试全失败)",
+    "retry_cmd": "python3 trade.py sell 515050 2400 1.013"
+  },
+  {
+    "timestamp": "2026-08-10 15:21:25",
+    "code": "515050",
+    "action": "sell",
+    "price": 1.019,
+    "shares": 2400,
+    "error": "同花顺断连(3次重试全失败)",
+    "retry_cmd": "python3 trade.py sell 515050 2400 1.019"
+  }
+]
