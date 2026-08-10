@@ -38,22 +38,53 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 LOCK_PATH = '/tmp/lock.json'
 EVOLVING_TIMEOUT = 8  # EvolvingSim 单次调用超时秒数
 
+DEBUG = os.environ.get('TRADE_DEBUG', '') == '1'
+
+
+def _dbg(msg):
+    """调试日志前缀 [DBG]"""
+    ts = time.strftime('%H:%M:%S')
+    print(f"[DBG {ts}] {msg}")
+
+
+def _osascript_count():
+    """返回当前 osascript 进程数"""
+    try:
+        # macOS pgrep 不支持 -c，改用 ps + wc
+        r = subprocess.run(['ps', 'aux'], capture_output=True, text=True, timeout=2)
+        count = r.stdout.count('osascript') - 1  # 减掉 pgrep 自身的那行
+        return max(0, count)
+    except Exception:
+        return -1
+
+
+def _lock_exists():
+    """检查锁文件是否存在"""
+    return os.path.exists(LOCK_PATH)
+
 
 def _kill_osascript_zombies():
     """强制杀死所有残留的 osascript 进程，防止僵尸进程占用锁"""
+    pre_count = _osascript_count()
     try:
         subprocess.run(['pkill', '-9', '-f', 'osascript'], capture_output=True, timeout=3)
     except Exception:
         pass
+    if DEBUG:
+        post_count = _osascript_count()
+        _dbg(f"_kill_osascript_zombies: osascript {pre_count}→{post_count}")
 
 
 def _clean_lock():
     """清理 EvolvingSim 的锁文件，避免异常退出后残留导致 15s 阻塞"""
-    if os.path.exists(LOCK_PATH):
+    existed = os.path.exists(LOCK_PATH)
+    if existed:
         try:
             os.remove(LOCK_PATH)
         except OSError:
             pass
+    if DEBUG and existed:
+        _dbg(f"_clean_lock: removed /tmp/lock.json")
 
 
 def _call_evolving(method_name, *args, timeout=None):
@@ -87,30 +118,67 @@ def _call_evolving(method_name, *args, timeout=None):
         f"print(json.dumps(result, ensure_ascii=False, default=str))"
     )
 
+    if DEBUG:
+        _dbg(f"_call_evolving({method_name}, {args_repr}) timeout={timeout}s "
+             f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
+
+    start = time.time()
+    proc = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, '-c', code],
-            capture_output=True, text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=SCRIPT_DIR,
         )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return json.loads(proc.stdout.strip())
+        stdout, stderr = proc.communicate(timeout=timeout)
+        elapsed = time.time() - start
+        returncode = proc.returncode
+        if returncode == 0 and stdout.strip():
+            if DEBUG:
+                _dbg(f"_call_evolving({method_name}) OK ({elapsed:.2f}s) "
+                     f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
+            return json.loads(stdout.strip())
         else:
-            stderr_preview = (proc.stderr or '').strip()[:200]
+            stderr_preview = (stderr or '').strip()[:200]
+            if DEBUG:
+                _dbg(f"_call_evolving({method_name}) FAIL ({elapsed:.2f}s) rc={returncode} "
+                     f"stderr={stderr_preview[:100]}")
             print(f"  ⚠️ EvolvingSim.{method_name} 执行失败: {stderr_preview}")
             return None
     except subprocess.TimeoutExpired:
+        elapsed = time.time() - start
+        if DEBUG:
+            _dbg(f"_call_evolving({method_name}) TIMEOUT ({elapsed:.2f}s) "
+                 f"osascript_before_kill={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
         print(f"  ⚠️ EvolvingSim.{method_name} 超时 ({timeout}s)，强制清理...")
+        # 显式杀掉子进程，确保残留的 osascript 也被清理
+        if proc is not None and proc.pid:
+            try:
+                proc.kill()
+                proc.wait(timeout=3)
+                if DEBUG:
+                    _dbg(f"_call_evolving({method_name}) killed pid={proc.pid}")
+            except Exception as ex:
+                if DEBUG:
+                    _dbg(f"_call_evolving({method_name}) kill error: {ex}")
         _clean_lock()
         _kill_osascript_zombies()
         time.sleep(1)
+        if DEBUG:
+            _dbg(f"_call_evolving({method_name}) after_cleanup "
+                 f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
         return None
     except json.JSONDecodeError:
+        elapsed = time.time() - start
+        if DEBUG:
+            _dbg(f"_call_evolving({method_name}) JSON_DECODE_ERROR ({elapsed:.2f}s)")
         print(f"  ⚠️ EvolvingSim.{method_name} 返回数据解析失败")
         _clean_lock()
         return None
     except Exception as e:
+        elapsed = time.time() - start
+        if DEBUG:
+            _dbg(f"_call_evolving({method_name}) EXCEPTION ({elapsed:.2f}s): {e}")
         print(f"  ⚠️ EvolvingSim.{method_name} 异常: {e}")
         _clean_lock()
         return None
@@ -133,19 +201,30 @@ def _activate_tonghuashun():
 
 def _retry_get_holding_shares(max_retries=3, delay=2):
     """带重试+超时保护+僵尸清理的 getHoldingShares"""
+    if DEBUG:
+        _dbg(f"_retry_get_holding_shares START (max_retries={max_retries}) "
+             f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
     for attempt in range(1, max_retries + 1):
         # 每次重试前先清理僵尸 osascript 进程，确保无残留进程占用锁
         _kill_osascript_zombies()
         _clean_lock()
 
+        if DEBUG:
+            _dbg(f"_retry_get_holding_shares attempt={attempt}/{max_retries} "
+                 f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
+
         h = _call_evolving('getHoldingShares')
         if isinstance(h, dict) and h.get('status'):
+            if DEBUG:
+                _dbg(f"_retry_get_holding_shares SUCCESS attempt={attempt}")
             return h
 
         if attempt < max_retries:
             print(f"⚠️ EvolvingSim 连接失败，{delay}秒后重试 ({attempt}/{max_retries})")
             time.sleep(delay)
 
+    if DEBUG:
+        _dbg(f"_retry_get_holding_shares ALL_FAILED osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
     raise RuntimeError("❌ 连接同花顺失败，请确认同花顺在模拟交易界面")
 
 
@@ -272,27 +351,40 @@ def _trade_with_confirmation(action, code, shares, price):
     action: 'buy' | 'sell'
     返回 (success, before_shares, after_shares)
     """
+    if DEBUG:
+        _dbg(f"_trade_with_confirmation START action={action} code={code} shares={shares} price={price} "
+             f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
+
     # 1. 查当前持仓
     holding_map = _get_holding_shares()
     before = holding_map.get(code, 0)
+
+    if DEBUG:
+        _dbg(f"_trade_with_confirmation before={before} code={code}")
 
     # 2. 下单（新实例，带超时保护）
     _clean_lock()
     result = _call_evolving(action, code, shares, price)
     if result is None:
         print(f"❌ {action} {code} {shares}股@{price} → 下单超时/失败")
+        if DEBUG:
+            _dbg(f"_trade_with_confirmation RESULT=None osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
         return False, before, before
 
     ok, contract = result
 
     if not ok:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
+        if DEBUG:
+            _dbg(f"_trade_with_confirmation result NOT OK: ({ok}, {contract})")
         return False, before, before
 
     # 3. 等一等让成交生效
     time.sleep(1.5)
 
     # 4. 持仓增量确认
+    if DEBUG:
+        _dbg(f"_trade_with_confirmation confirming position change...")
     holding_map2 = _get_holding_shares()
     after = holding_map2.get(code, 0)
 
@@ -302,6 +394,9 @@ def _trade_with_confirmation(action, code, shares, price):
     else:
         delta = before - after
         expected = shares
+
+    if DEBUG:
+        _dbg(f"_trade_with_confirmation after={after} delta={delta} expected={expected}")
 
     if delta == expected:
         # 5. 成交确认 → 同步 portfolio
