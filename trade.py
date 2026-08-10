@@ -195,8 +195,9 @@ def _get_position(code):
 
 
 def _activate_tonghuashun():
-    """激活同花顺窗口，解决 AppleScript 底层间歇断连"""
-    os.system("osascript -e 'tell application \"同花顺\" to activate'")
+    """激活同花顺窗口，用 open -a 替代 osascript activate"""
+    import subprocess
+    subprocess.run(['open', '-a', '同花顺'], capture_output=True, timeout=3)
 
 
 def _retry_get_holding_shares(max_retries=3, delay=2):
