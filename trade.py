@@ -205,7 +205,8 @@ def _retry_get_holding_shares(max_retries=3, delay=2):
         _dbg(f"_retry_get_holding_shares START (max_retries={max_retries}) "
              f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
     for attempt in range(1, max_retries + 1):
-        # 每次重试前先清理僵尸 osascript 进程，确保无残留进程占用锁
+        # 每次重试前先激活窗口 + 清理僵尸 osascript 进程，确保无残留进程占用锁
+        _activate_tonghuashun()
         _kill_osascript_zombies()
         _clean_lock()
 
