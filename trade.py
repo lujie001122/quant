@@ -19,8 +19,10 @@
   6. 做T配对：先撤同方向未成交单，再挂主单+配对单
   7. 仅在连续竞价时段(9:30-11:30,13:00-15:00)执行挂单
   8. 调用 EvolvingSim 前自动清理 /tmp/lock.json
+  9. EvolvingSim 调用有 8 秒超时保护，超时后自动清理锁+僵尸进程+重建实例
 """
 import sys, os, json, time, urllib.request
+import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
@@ -34,6 +36,16 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 # ─── 内部工具 ──────────────────────────────────────────────────────────
 
 LOCK_PATH = '/tmp/lock.json'
+EVOLVING_TIMEOUT = 8  # EvolvingSim 单次调用超时秒数
+
+
+def _kill_osascript_zombies():
+    """强制杀死所有残留的 osascript 进程，防止僵尸进程占用锁"""
+    try:
+        subprocess.run(['pkill', '-9', '-f', 'osascript'], capture_output=True, timeout=3)
+    except Exception:
+        pass
+
 
 def _clean_lock():
     """清理 EvolvingSim 的锁文件，避免异常退出后残留导致 15s 阻塞"""
@@ -42,6 +54,67 @@ def _clean_lock():
             os.remove(LOCK_PATH)
         except OSError:
             pass
+
+
+def _call_evolving(method_name, *args, timeout=None):
+    """
+    在子进程中调用 EvolvingSim 方法，带超时保护。
+
+    原理：EvolvingSim 底层通过 os.popen 调用 AppleScript 操作同花顺。
+    如果 AppleScript 卡住（弹窗/焦点丢失），os.popen 会同步阻塞不返回。
+    本函数将 EvolvingSim 调用放进子进程，超时后杀掉子进程并清理残留。
+
+    Args:
+        method_name: EvolvingSim 方法名（如 'getHoldingShares', 'buy', 'sell'）
+        *args: 传递给方法的参数
+        timeout: 超时秒数，默认 EVOLVING_TIMEOUT (8s)
+
+    Returns:
+        EvolvingSim 方法的返回值（dict/tuple），失败返回 None
+    """
+    if timeout is None:
+        timeout = EVOLVING_TIMEOUT
+
+    # 构建在子进程中执行的 Python 脚本
+    # 注意：使用 sys.executable 确保使用 venv 中的 Python
+    args_repr = ", ".join(repr(a) for a in args)
+    code = (
+        f"import sys, json; "
+        f"sys.path.insert(0, {SCRIPT_DIR!r}); "
+        f"from evolving.evolving import EvolvingSim; "
+        f"e = EvolvingSim(); "
+        f"result = e.{method_name}({args_repr}); "
+        f"print(json.dumps(result, ensure_ascii=False, default=str))"
+    )
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, '-c', code],
+            capture_output=True, text=True,
+            timeout=timeout,
+            cwd=SCRIPT_DIR,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return json.loads(proc.stdout.strip())
+        else:
+            stderr_preview = (proc.stderr or '').strip()[:200]
+            print(f"  ⚠️ EvolvingSim.{method_name} 执行失败: {stderr_preview}")
+            return None
+    except subprocess.TimeoutExpired:
+        print(f"  ⚠️ EvolvingSim.{method_name} 超时 ({timeout}s)，强制清理...")
+        _clean_lock()
+        _kill_osascript_zombies()
+        time.sleep(1)
+        return None
+    except json.JSONDecodeError:
+        print(f"  ⚠️ EvolvingSim.{method_name} 返回数据解析失败")
+        _clean_lock()
+        return None
+    except Exception as e:
+        print(f"  ⚠️ EvolvingSim.{method_name} 异常: {e}")
+        _clean_lock()
+        return None
+
 
 def _get_position(code):
     """返回 (shares, avg_cost) 或 (0, 0)"""
@@ -59,16 +132,20 @@ def _activate_tonghuashun():
 
 
 def _retry_get_holding_shares(max_retries=3, delay=2):
-    """带重试的 getHoldingShares"""
+    """带重试+超时保护+僵尸清理的 getHoldingShares"""
     for attempt in range(1, max_retries + 1):
+        # 每次重试前先清理僵尸 osascript 进程，确保无残留进程占用锁
+        _kill_osascript_zombies()
         _clean_lock()
-        e = EvolvingSim()
-        h = e.getHoldingShares()
+
+        h = _call_evolving('getHoldingShares')
         if isinstance(h, dict) and h.get('status'):
             return h
+
         if attempt < max_retries:
             print(f"⚠️ EvolvingSim 连接失败，{delay}秒后重试 ({attempt}/{max_retries})")
             time.sleep(delay)
+
     raise RuntimeError("❌ 连接同花顺失败，请确认同花顺在模拟交易界面")
 
 
@@ -90,8 +167,7 @@ def _get_holding_shares(code=None):
 def _get_price(code):
     """获取当前市价（来自 EvolvingSim 持仓数据）"""
     _clean_lock()
-    e = EvolvingSim()
-    h = e.getHoldingShares()
+    h = _call_evolving('getHoldingShares')
     if not (isinstance(h, dict) and h.get('status')):
         return None
     for row in h.get('data', []):
@@ -108,8 +184,7 @@ def _retry_get_account_info(max_retries=3, delay=2):
         _activate_tonghuashun()
         time.sleep(0.5)
         _clean_lock()
-        e = EvolvingSim()
-        acct = e.getAccountInfo()
+        acct = _call_evolving('getAccountInfo')
         if isinstance(acct, dict) and acct.get('status'):
             return acct
         if attempt < max_retries:
@@ -201,13 +276,14 @@ def _trade_with_confirmation(action, code, shares, price):
     holding_map = _get_holding_shares()
     before = holding_map.get(code, 0)
 
-    # 2. 下单（新实例）
+    # 2. 下单（新实例，带超时保护）
     _clean_lock()
-    e = EvolvingSim()
-    if action == 'buy':
-        ok, contract = e.buy(code, shares, price)
-    else:
-        ok, contract = e.sell(code, shares, price)
+    result = _call_evolving(action, code, shares, price)
+    if result is None:
+        print(f"❌ {action} {code} {shares}股@{price} → 下单超时/失败")
+        return False, before, before
+
+    ok, contract = result
 
     if not ok:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
@@ -390,12 +466,15 @@ def do_t0_buy(code, shares, price, pair_price=None):
         if sell_limit != pair_price:
             print(f"   ⚠️ 卖出限价调整: {pair_price} → {sell_limit} (≥当前价{cur_price})")
         _clean_lock()
-        e = EvolvingSim()
-        p_ok, p_contract = e.sell(code, shares, sell_limit)
-        if p_ok:
-            print(f"   ✅ 配对卖出挂单 {code} {shares}股@{sell_limit} 合同:{p_contract}")
+        result = _call_evolving('sell', code, shares, sell_limit)
+        if result is not None:
+            p_ok, p_contract = result
+            if p_ok:
+                print(f"   ✅ 配对卖出挂单 {code} {shares}股@{sell_limit} 合同:{p_contract}")
+            else:
+                print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}: {p_contract}")
         else:
-            print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}: {p_contract}")
+            print(f"   ⚠️ 配对卖出挂单超时 {code} {shares}股@{sell_limit}")
 
         print(f"✅ 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单 {shares}股@{sell_limit}")
     else:
@@ -446,12 +525,15 @@ def do_t0_sell(code, shares, price, pair_price=None):
         if buy_limit != pair_price:
             print(f"   ⚠️ 买入限价调整: {pair_price} → {buy_limit} (≤当前价{cur_price})")
         _clean_lock()
-        e = EvolvingSim()
-        p_ok, p_contract = e.buy(code, shares, buy_limit)
-        if p_ok:
-            print(f"   ✅ 配对买入挂单 {code} {shares}股@{buy_limit} 合同:{p_contract}")
+        result = _call_evolving('buy', code, shares, buy_limit)
+        if result is not None:
+            p_ok, p_contract = result
+            if p_ok:
+                print(f"   ✅ 配对买入挂单 {code} {shares}股@{buy_limit} 合同:{p_contract}")
+            else:
+                print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}: {p_contract}")
         else:
-            print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}: {p_contract}")
+            print(f"   ⚠️ 配对买入挂单超时 {code} {shares}股@{buy_limit}")
 
         print(f"✅ 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单 {shares}股@{buy_limit}")
     else:
@@ -473,10 +555,9 @@ def do_revoke(code, direction):
       3. 撤完确认委托清空
     """
     _clean_lock()
-    e = EvolvingSim()
 
-    # 1. 查委托
-    ent = e.getEntrust('today', True)
+    # 1. 查委托（带超时保护）
+    ent = _call_evolving('getEntrust', 'today', True)
     if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
         print(f"⚠️ 无待撤委托 {code} {direction}")
         return True
@@ -493,21 +574,20 @@ def do_revoke(code, direction):
         print(f"⚠️ 无待撤委托 {code} {direction}")
         return True
 
-    # 3. 逐一撤单
+    # 3. 逐一撤单（带超时保护）
     revoked = 0
     for contract in targets:
-        # 每次撤单用新实例
         _clean_lock()
-        e2 = EvolvingSim()
-        try:
-            status, info = e2.revokeEntrust(contract)
+        result = _call_evolving('revokeEntrust', contract)
+        if result is not None:
+            status, info = result
             if status:
                 print(f"   ✅ 撤: {contract}")
                 revoked += 1
             else:
                 print(f"   ❌ 撤单失败 {contract}: {info}")
-        except Exception as ex:
-            print(f"   ❌ 撤单异常 {contract}: {ex}")
+        else:
+            print(f"   ❌ 撤单超时 {contract}")
         time.sleep(0.3)
 
     print(f"✅ 撤单 {code} {direction}：{revoked}笔已撤")
@@ -561,4 +641,3 @@ if __name__ == '__main__':
     else:
         print(f"未知命令: {cmd}")
         print(__doc__)
-        sys.exit(1)
