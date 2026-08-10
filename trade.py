@@ -19,13 +19,10 @@
   6. 做T配对：先撤同方向未成交单，再挂主单+配对单
   7. 仅在连续竞价时段(9:30-11:30,13:00-15:00)执行挂单
   8. 调用 EvolvingSim 前自动清理 /tmp/lock.json
-  9. EvolvingSim 调用有 15 秒超时保护，超时后自动清理锁+僵尸进程+重建实例
- 10. 进程级 fcntl.flock 互斥锁（/tmp/evolvingsim_trade.lock）防止并发调EvolvingSim
- 11. pkill 只杀孤儿/僵尸 osascript（ppid=1 或 Z 状态），不影响正常运行的 osascript
+  9. EvolvingSim 调用有 8 秒超时保护，超时后自动清理锁+僵尸进程+重建实例
 """
 import sys, os, json, time, urllib.request
 import subprocess
-import fcntl
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
@@ -39,8 +36,7 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 # ─── 内部工具 ──────────────────────────────────────────────────────────
 
 LOCK_PATH = '/tmp/lock.json'
-TRADE_LOCK_PATH = '/tmp/evolvingsim_trade.lock'  # 进程级互斥锁，防止并发调EvolvingSim
-EVOLVING_TIMEOUT = 15  # EvolvingSim 单次调用超时秒数（buy/sell 需 3-8s，给足余量）
+EVOLVING_TIMEOUT = 8  # EvolvingSim 单次调用超时秒数
 
 DEBUG = os.environ.get('TRADE_DEBUG', '') == '1'
 
@@ -68,32 +64,15 @@ def _lock_exists():
 
 
 def _kill_osascript_zombies():
-    """只杀死僵尸/孤儿 osascript 进程（ppid=1 或状态 Z），不影响正在运行的正常 osascript"""
+    """强制杀死所有残留的 osascript 进程，防止僵尸进程占用锁"""
     pre_count = _osascript_count()
-    zombie_pids = []
     try:
-        # 用 ps 找出所有 osascript 进程的 PID/PPID/状态
-        result = subprocess.run(
-            ['ps', '-eo', 'pid,ppid,state,command'],
-            capture_output=True, text=True, timeout=3
-        )
-        for line in result.stdout.split('\n'):
-            if 'osascript' in line:
-                parts = line.split()
-                if len(parts) >= 3:
-                    pid = parts[0]
-                    ppid = parts[1]
-                    state = parts[2]
-                    # 孤儿进程（ppid=1，父进程已被 kill）或 僵尸状态（Z）
-                    if ppid == '1' or state.startswith('Z'):
-                        zombie_pids.append(pid)
-        if zombie_pids:
-            subprocess.run(['kill', '-9'] + zombie_pids, capture_output=True, timeout=3)
+        subprocess.run(['pkill', '-9', '-f', 'osascript'], capture_output=True, timeout=3)
     except Exception:
         pass
     if DEBUG:
         post_count = _osascript_count()
-        _dbg(f"_kill_osascript_zombies: osascript {pre_count}→{post_count} (zombies found: {len(zombie_pids)})")
+        _dbg(f"_kill_osascript_zombies: osascript {pre_count}→{post_count}")
 
 
 def _clean_lock():
@@ -106,43 +85,6 @@ def _clean_lock():
             pass
     if DEBUG and existed:
         _dbg(f"_clean_lock: removed /tmp/lock.json")
-
-
-_TRADE_LOCK_FD = None  # 进程级锁文件描述符（单例）
-
-
-def _acquire_trade_lock(timeout=20):
-    """
-    获取进程级互斥锁（fcntl.flock），确保同一时间只有一个进程调用 EvolvingSim。
-    解决 EvolvingSim Lock.requestLock 的 TOCTOU 竞态条件。
-    同时清理 EvolvingSim 的 lock.json，确保新实例 __init__ 的 unlock() 不会
-    意外释放其他进程的锁。
-    """
-    global _TRADE_LOCK_FD
-    try:
-        fd = os.open(TRADE_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
-        fcntl.flock(fd, fcntl.LOCK_EX)  # 阻塞等待排他锁
-        _TRADE_LOCK_FD = fd
-        # 持有锁后清理 EvolvingSim 的 lock.json（此时没有其他进程用 EvolvingSim）
-        _clean_lock()
-        return True
-    except Exception as e:
-        if DEBUG:
-            _dbg(f"_acquire_trade_lock FAILED: {e}")
-        return False
-
-
-def _release_trade_lock():
-    """释放进程级互斥锁"""
-    global _TRADE_LOCK_FD
-    if _TRADE_LOCK_FD is not None:
-        try:
-            fcntl.flock(_TRADE_LOCK_FD, fcntl.LOCK_UN)
-            os.close(_TRADE_LOCK_FD)
-        except Exception:
-            pass
-        finally:
-            _TRADE_LOCK_FD = None
 
 
 def _call_evolving(method_name, *args, timeout=None):
@@ -163,11 +105,6 @@ def _call_evolving(method_name, *args, timeout=None):
     """
     if timeout is None:
         timeout = EVOLVING_TIMEOUT
-
-    # 获取进程级互斥锁（解决 EvolvingSim Lock TOCTOU 竞态 + __init__ unlock 问题）
-    if not _acquire_trade_lock():
-        print(f"  ⚠️ 无法获取进程锁，跳过 EvolvingSim.{method_name}")
-        return None
 
     # 构建在子进程中执行的 Python 脚本
     # 注意：使用 sys.executable 确保使用 venv 中的 Python
@@ -245,8 +182,6 @@ def _call_evolving(method_name, *args, timeout=None):
         print(f"  ⚠️ EvolvingSim.{method_name} 异常: {e}")
         _clean_lock()
         return None
-    finally:
-        _release_trade_lock()
 
 
 def _get_position(code):
