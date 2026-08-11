@@ -1593,10 +1593,20 @@ def _load_last_executed():
     return {}
 
 
-def _save_last_executed(code, action, shares, price, direction, before_shares, after_shares, pending=False):
+def _trade_type_to_mode(action):
+    """将 action 字段映射为 mode: 'buy_sell' | 't0'
+    action 是 trade_type 值: 'buy'/'sell'/'liquidate'/'reduce' → 'buy_sell'; 't0' → 't0'
+    """
+    if action == "t0":
+        return "t0"
+    return "buy_sell"
+
+
+def _save_last_executed(code, action, shares, price, direction, before_shares, after_shares, pending=False, mode=None):
     """保存执行记录到 .last_executed.json
     pending=True:  订单已挂但未成交（挂单中）
     pending=False: 订单已成交（默认）
+    mode: 'buy_sell' | 't0' — 区分建仓信号和做T信号，互不干扰过滤
     """
     today_str = datetime.now().strftime("%Y-%m-%d")
     last = _load_last_executed()
@@ -1611,6 +1621,7 @@ def _save_last_executed(code, action, shares, price, direction, before_shares, a
         "before_shares": before_shares,
         "after_shares": after_shares,
         "pending": pending,
+        "mode": mode or _trade_type_to_mode(action),
     }
     try:
         with open(LAST_EXECUTED_PATH, "w") as f:
@@ -1647,8 +1658,9 @@ def _save_trade_error(code, action, price, shares, error_msg, retry_cmd):
         pass
 
 
-def _check_pending_orders():
+def _check_pending_orders(mode=None):
     """检查 .last_executed.json 中今日的挂单状态
+    mode: 'buy_sell' | 't0' | None=全部 — 按模式过滤成交记录
     返回: (pending_map, filled_codes)
       pending_map: {code: direction} 今日未成交的挂单
       filled_codes: set of codes 今日已成交
@@ -1660,6 +1672,11 @@ def _check_pending_orders():
 
     for code, entry in last.items():
         if entry.get("time_window") != today_str:
+            continue
+        # 模式过滤：只看指定 mode 的成交记录
+        # 兼容旧记录（无 mode 字段）：从 action 推导 mode
+        entry_mode = entry.get("mode") or _trade_type_to_mode(entry.get("action", ""))
+        if mode and entry_mode != mode:
             continue
         if entry.get("pending", False):
             # 挂单中（未成交）
@@ -1683,12 +1700,18 @@ def _clear_pending_order(code):
             pass
 
 
-def _is_duplicate_signal(code, direction, today_str):
-    """检查是否为同方向重复信号：同代码+同方向+同时间窗口。
+def _is_duplicate_signal(code, direction, today_str, mode=None):
+    """检查是否为同方向重复信号：同代码+同方向+同时间窗口+同模式。
+    mode: 'buy_sell' | 't0' | None — 只检查同 mode 的记录
     返回 True 表示同方向旧单仍在，需要先撤旧单再挂新单（不再直接跳过）。"""
     last = _load_last_executed()
     entry = last.get(code, {})
     if not entry:
+        return False
+    # 模式过滤：旧单 mode 必须与当前 mode 一致
+    # 兼容旧记录（无 mode 字段）：从 action 推导 mode
+    entry_mode = entry.get("mode") or _trade_type_to_mode(entry.get("action", ""))
+    if mode and entry_mode != mode:
         return False
     return (entry.get("direction") == direction
             and entry.get("time_window") == today_str)
@@ -1774,7 +1797,7 @@ def execute_signals(result, mode=None):
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     # ═══ 挂单检查：检查 .last_executed.json 中今日未成交的挂单 ═══
-    pending_map, filled_codes = _check_pending_orders()
+    pending_map, filled_codes = _check_pending_orders(mode=mode)
     # 标记今日已成交的 code → 跳过不重复挂
     if pending_map:
         print(f"[EXECUTE] 发现 {len(pending_map)} 只ETF有未成交挂单: {dict(pending_map)}")
@@ -2008,7 +2031,7 @@ def execute_signals(result, mode=None):
                 need_revoke = True
 
         # 检查2: 同方向重复信号（已成交但同天又来信号）
-        if direction and _is_duplicate_signal(code, direction, today_str):
+        if direction and _is_duplicate_signal(code, direction, today_str, mode=mode):
             need_revoke = True
             print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 同方向重复信号，先撤旧单再挂新单...")
 
@@ -2080,7 +2103,7 @@ def execute_signals(result, mode=None):
                     if stderr_out:
                         print(f"  [stderr] {stderr_out.strip()}")
                     print(f"  ✅ {code} {direction} {shares}股@{price:.3f} → 持仓{before_shares}→{after_shares}股")
-                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares)
+                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares, mode=mode)
                     success_count += 1
                     success = True
                     break
@@ -2112,7 +2135,7 @@ def execute_signals(result, mode=None):
                     alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单未成交(增量确认失败)。重试: {retry_cmd}"
                     print(alert_msg, file=sys.stderr)
                     _save_trade_error(code, trade_type, price, shares, "下单未成交(增量确认失败)", retry_cmd)
-                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares, pending=True)
+                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares, pending=True, mode=mode)
                     final_error = err_detail
                     final_error_type = err_type
                     break
