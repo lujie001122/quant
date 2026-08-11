@@ -11,7 +11,10 @@
 """
 
 from datetime import datetime
-from market_data import ETFS, CODE_MAP
+
+# NOTE: ETFS/CODE_MAP 从 market_data 导入（仅在 signal_generator 实盘环境中使用）
+# backtest_bt 导入时不触发 akshare 依赖
+# 如需使用 ETFS/CODE_MAP，请使用 _get_etfs() / _get_code_map()
 
 # ============================================================
 # 常量(与 signal_generator 共享)

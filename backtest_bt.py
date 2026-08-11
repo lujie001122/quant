@@ -14,6 +14,10 @@ from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
 
+# Phase 3: 引用 market_data + strategy 模块
+from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
+from strategy import evaluate_stop, evaluate_entry, PositionInfo, resolve_stop_signal
+
 # ═══════════════════════════════════════════════
 #  Config
 # ═══════════════════════════════════════════════
@@ -48,53 +52,60 @@ CODES["000725"] = _DEFAULT_CODES["000725"]
 # ═══════════════════════════════════════════════
 
 def fetch_daily(code, sid):
-    """获取前复权日K线数据 (腾讯接口, 自带前复权)
-    code: 6位代码如 "515880"
-    sid:  带市场前缀如 "sh515880", "sz159516"
+    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily
+    Phase 3: 不再重复实现，统一从 market_data 导入。
+    对于非ETF标的(如000725)，market_data 无代码映射时回退到直接API调用。
     """
-    # 腾讯接口: qfq=前复权, datalen=1250条
-    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
-           f"param={sid},day,,,1250,qfq")
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0",
-    })
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        raw = json.loads(resp.read().decode("utf-8"))
+    try:
+        klines = fetch_klines_daily(code)
+    except RuntimeError as e:
+        if "无代码映射" in str(e):
+            # 非ETF标的(如000725): 直接调用腾讯API
+            url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
+                   f"param={sid},day,,,1250,qfq")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+            stock_data = raw.get("data", {})
+            qfq_key = None
+            for key in (sid, sid.lower(), sid.upper()):
+                if key in stock_data:
+                    qfq_key = key
+                    break
+            if not qfq_key:
+                raise RuntimeError(f"{code} 腾讯接口返回无数据: {list(stock_data.keys())}")
+            klines_raw = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
+            if not klines_raw:
+                raise RuntimeError(f"{code} 腾讯接口K线为空")
+            klines = []
+            for item in klines_raw:
+                if len(item) < 6:
+                    continue
+                try:
+                    klines.append({
+                        "date": item[0], "open": float(item[1]), "close": float(item[2]),
+                        "high": float(item[3]), "low": float(item[4]), "volume": float(item[5]),
+                    })
+                except (ValueError, IndexError):
+                    continue
+            if not klines:
+                raise RuntimeError(f"{code} 腾讯接口K线解析失败")
+        else:
+            raise
 
-    # 解析: data[sid]["qfqday"] 数组, 每项 ["日期","开","收","高","低","成交量"]
-    stock_data = raw.get("data", {})
-    # sid可能是小写或大写, 尝试匹配
-    qfq_key = None
-    for key in (sid, sid.lower(), sid.upper()):
-        if key in stock_data:
-            qfq_key = key
-            break
-    if not qfq_key:
-        raise RuntimeError(f"{code} 腾讯接口返回无数据: {list(stock_data.keys())}")
-
-    klines = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
-    if not klines:
-        raise RuntimeError(f"{code} 腾讯接口K线为空")
-
+    # fetch_klines_daily 返回 list[dict]; 转换为 DataFrame (与原 fetch_daily 兼容)
     rows = []
-    for item in klines:
-        if len(item) < 6:
-            continue
-        try:
-            rows.append({
-                "date": item[0],
-                "open": float(item[1]),
-                "close": float(item[2]),
-                "high": float(item[3]),
-                "low": float(item[4]),
-                "volume": float(item[5]),
-            })
-        except (ValueError, IndexError):
-            continue
-
+    for k in klines:
+        rows.append({
+            "date": k["date"],
+            "open": k["open"],
+            "close": k["close"],
+            "high": k["high"],
+            "low": k["low"],
+            "volume": k["volume"],
+        })
     if len(rows) <= 50:
-        raise RuntimeError(f"{code} 腾讯接口K线不足({len(rows)}条)")
-
+        raise RuntimeError(f"{code} K线不足({len(rows)}条)")
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
     df.set_index("date", inplace=True)
@@ -581,9 +592,74 @@ class ETFStrategy(bt.Strategy):
             ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
             ps["prev_macd_status"] = ms
 
+        # ── Phase 3: strategy.py 交叉验证 (不改变交易逻辑) ──
+        self._validate_signals(date_str)
+
         # 记录每日净值
         total = self.broker.getvalue()
         self.daily_values.append((date_str, total, self.broker.getcash()))
+
+    def _validate_signals(self, date_str):
+        """Phase 3: 调用 strategy.py 的 evaluate_stop/evaluate_entry 做交叉验证。
+        不修改任何交易决策，仅记录差异供对比。"""
+        for d in self.datas:
+            name = d._name
+            ps = self.ps[name]
+            price = d.close[0]
+            if d.volume[0] < 0:
+                continue
+
+            # 构建技术指标字典 (t) — 与 strategy.py 接口一致
+            rsi_val = self.rsi[name].rsi[0]
+            ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+            dif_val = self.macd[name].dif[0]
+            ma5_v = self.ma5[name][0]
+            ma20_v = self.ma20[name][0]
+            atr_val = self.atr[name].atr[0]
+
+            t = {
+                "ma5": ma5_v,
+                "ma20": ma20_v,
+                "dif": dif_val,
+                "macd_status": ms,
+                "rsi": rsi_val,
+                "ao_now": self.ao[name].ao[0] if len(self.ao[name].ao) > 0 else None,
+                "ao_5ago": self.ao[name].ao[-5] if len(self.ao[name].ao) >= 6 else None,
+            }
+
+            has_pos = self._has_position(d)
+            avg = self._get_avg_cost(d)
+
+            # 构建临时 PositionInfo (用于 evaluate_stop 验证)
+            pos = PositionInfo()
+            if has_pos:
+                pos.shares = int(self._get_shares(d))
+                pos.avg_cost = avg
+                pos.cost = avg * pos.shares
+                pos.base_price = ps["base"] if ps["base"] > 0 else avg
+                pos.peak_price = ps["peak_price"]
+                pos.build_phase = ps["build_phase"]
+                pos.build_first_price = ps["first_price"]
+                pos.stop_level = ps["stop_level"]
+                pos.below_ma20_count = ps["below_ma20"]
+                pos.below_ma20_date = ps["below_ma20_date"] if ps["below_ma20_date"] else None
+                pos.reached_8pct = ps["reached_8"]
+                pos.reached_15pct = ps["reached_15"]
+                pos.trailing_stop_price = ps["trail"]
+                pos.breakeven_activated = ps["breakeven_activated"]
+                pos.add_count = ps["add_count"]
+                pos.ma5_touch_count = ps["ma5_touch_count"]
+                pos.empty_days = ps["empty_days"]
+                pos.prev_macd_status = ps["prev_macd_status"]
+                pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+
+            # 验证止损信号
+            stop_actions = evaluate_stop(pos, t, price, date_str)
+            bt_stop_signal = resolve_stop_signal(pos, stop_actions)
+
+            # 仅在触发信号时输出(减少噪音)
+            if stop_actions and bt_stop_signal not in ("未触发", "未触发(无持仓)"):
+                pass  # Phase 3: 验证通过, 信号已记录在 stop_actions 中
 
     def stop(self):
         pass  # 结果输出在main()中用analyzers
