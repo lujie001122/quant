@@ -19,7 +19,6 @@ from datetime import datetime
 # ============================================================
 # 常量(与 signal_generator 共享)
 # ============================================================
-CASH_RESERVE = 0
 TOTAL_FUND = 220000
 DEAD_RATIO = 0.6
 ACTIVE_RATIO = 0.4

@@ -23,7 +23,7 @@ from market_data import (
     fetch_realtime_quotes, fetch_klines_daily, fetch_klines_5min,
     calc_ma, calc_rsi_wilder, calc_macd, calc_atr, calc_ao,
     calc_vol_ratio_120min, calc_5min_indicators, dynamic_spacing,
-    ETFS, CODE_MAP,
+    ETFS,
 )
 
 # ── 策略判定 ──
@@ -40,11 +40,8 @@ from strategy import (
 # 一、配置(仅 signal_generator 独有的常量)
 # ============================================================
 
-CASH_RESERVE = 0
-
-
 # ============================================================
-# 二、综合信号生成
+# 综合信号生成
 # ============================================================
 
 def generate_signals(positions=None, all_klines=None, all_tech=None):
@@ -60,11 +57,10 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     today_str = datetime.now().strftime("%Y-%m-%d")
 
     # 读取 portfolio.json 判断哪些标的今日已交易
-    import os as _os
-    pf_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "portfolio.json")
+    pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
     already_traded_today = set()
     pf_data = {}
-    if _os.path.exists(pf_path):
+    if os.path.exists(pf_path):
         try:
             with open(pf_path) as _f:
                 pf_data = json.load(_f)

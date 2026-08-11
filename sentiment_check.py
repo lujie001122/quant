@@ -4,7 +4,7 @@
 - 保留 v3.2 评分逻辑和输出格式
 - v4.0: 新增 fetch_eastmoney() / fetch_10jqka()
 """
-import json, urllib.request, re, logging, os
+import json, urllib.request, re, logging
 from datetime import datetime
 from tracker import get_tracked_with_keywords
 

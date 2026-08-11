@@ -9,7 +9,7 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 """
-import json, urllib.request, math, os, sys
+import json, urllib.request, sys
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd

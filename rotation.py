@@ -391,7 +391,7 @@ def calc_entry_precheck(r):
 #  舆情抓取 (复用 sentiment_check 的逻辑)
 # ═══════════════════════════════════════════════════════
 
-from sentiment_check import fetch_all as fetch_all_news, score as score_sentiment, build_keywords, NEG, POS
+from sentiment_check import fetch_all as fetch_all_news, score as score_sentiment, build_keywords
 
 
 # ═══════════════════════════════════════════════════════
