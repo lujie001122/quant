@@ -114,9 +114,10 @@ def fetch_realtime_quotes():
     return result
 
 
-def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
+def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq", sid=None):
     """获取日K线(腾讯前复权接口, 自带qfq无需手动复权)"""
-    sid = CODE_MAP.get(code, "")
+    if sid is None:
+        sid = CODE_MAP.get(code, "")
     if not sid:
         raise RuntimeError(f"{code} 无代码映射")
 

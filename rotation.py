@@ -8,7 +8,6 @@ ETF轮动扫描器 v2.0
 """
 
 import json
-import urllib.request
 import sys
 import os
 from datetime import datetime
@@ -123,49 +122,23 @@ def _auto_sid(code):
 
 
 # ═══════════════════════════════════════════════════════
-#  数据获取 (腾讯前复权接口)
+#  数据获取 (委托 market_data.fetch_klines_daily)
 # ═══════════════════════════════════════════════════════
 
-def fetch_klines(code, sid):
-    """获取日K线(腾讯前复权接口), 返回 {closes, highs, lows, volumes}"""
-    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
-           f"param={sid},day,,,120,qfq")
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
+def fetch_klines(code, sid=None):
+    """获取日K线, 委托 market_data.fetch_klines_daily(code, sid=sid)
+       返回 {closes, highs, lows, volumes} 四个数组"""
+    from market_data import fetch_klines_daily
 
-        stock_data = raw.get("data", {})
-        qfq_key = None
-        for key in (sid, sid.lower(), sid.upper()):
-            if key in stock_data:
-                qfq_key = key
-                break
-        if not qfq_key:
-            return None
-
-        klines = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
-        if not klines or len(klines) < 30:
-            return None
-
-        closes, highs, lows, volumes = [], [], [], []
-        for item in klines:
-            if len(item) >= 6:
-                try:
-                    closes.append(float(item[2]))   # 收盘
-                    highs.append(float(item[3]))    # 最高
-                    lows.append(float(item[4]))     # 最低
-                    volumes.append(float(item[5]))  # 成交量
-                except (ValueError, IndexError):
-                    continue
-        if len(closes) >= 30:
-            return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
+    klines = fetch_klines_daily(code, sid=sid)
+    if not klines or len(klines) < 30:
         return None
-    except Exception as e:
-        print(f"  [WARN] {code} 腾讯接口失败: {e}")
-        return None
+
+    closes = [d["close"] for d in klines]
+    highs = [d["high"] for d in klines]
+    lows = [d["low"] for d in klines]
+    volumes = [d["volume"] for d in klines]
+    return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
 
 
 # ═══════════════════════════════════════════════════════
