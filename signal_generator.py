@@ -1593,8 +1593,11 @@ def _load_last_executed():
     return {}
 
 
-def _save_last_executed(code, action, shares, price, direction, before_shares, after_shares):
-    """保存执行成功记录到 .last_executed.json"""
+def _save_last_executed(code, action, shares, price, direction, before_shares, after_shares, pending=False):
+    """保存执行记录到 .last_executed.json
+    pending=True:  订单已挂但未成交（挂单中）
+    pending=False: 订单已成交（默认）
+    """
     today_str = datetime.now().strftime("%Y-%m-%d")
     last = _load_last_executed()
     last[code] = {
@@ -1607,6 +1610,7 @@ def _save_last_executed(code, action, shares, price, direction, before_shares, a
         "time_window": today_str,
         "before_shares": before_shares,
         "after_shares": after_shares,
+        "pending": pending,
     }
     try:
         with open(LAST_EXECUTED_PATH, "w") as f:
@@ -1641,6 +1645,42 @@ def _save_trade_error(code, action, price, shares, error_msg, retry_cmd):
             json.dump(errors, f, ensure_ascii=False, indent=2)
     except IOError:
         pass
+
+
+def _check_pending_orders():
+    """检查 .last_executed.json 中今日的挂单状态
+    返回: (pending_map, filled_codes)
+      pending_map: {code: direction} 今日未成交的挂单
+      filled_codes: set of codes 今日已成交
+    """
+    last = _load_last_executed()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    pending_map = {}
+    filled_codes = set()
+
+    for code, entry in last.items():
+        if entry.get("time_window") != today_str:
+            continue
+        if entry.get("pending", False):
+            # 挂单中（未成交）
+            pending_map[code] = entry.get("direction", "")
+        else:
+            # 已成交
+            filled_codes.add(code)
+
+    return pending_map, filled_codes
+
+
+def _clear_pending_order(code):
+    """清除指定 code 的挂单记录（撤单后调用）"""
+    last = _load_last_executed()
+    if code in last:
+        del last[code]
+        try:
+            with open(LAST_EXECUTED_PATH, "w") as f:
+                json.dump(last, f, ensure_ascii=False, indent=2)
+        except IOError:
+            pass
 
 
 def _is_duplicate_signal(code, direction, today_str):
@@ -1733,6 +1773,14 @@ def execute_signals(result, mode=None):
     trade_script = os.path.join(script_dir, "trade.py")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
+    # ═══ 挂单检查：检查 .last_executed.json 中今日未成交的挂单 ═══
+    pending_map, filled_codes = _check_pending_orders()
+    # 标记今日已成交的 code → 跳过不重复挂
+    if pending_map:
+        print(f"[EXECUTE] 发现 {len(pending_map)} 只ETF有未成交挂单: {dict(pending_map)}")
+    if filled_codes:
+        print(f"[EXECUTE] 发现 {len(filled_codes)} 只ETF今日已成交: {filled_codes}")
+
     # ═══ 获取当前实时价（用于 --execute 下单） ═══
     live_quotes = {}
     try:
@@ -1771,6 +1819,13 @@ def execute_signals(result, mode=None):
     for i, (code, sig) in enumerate(actionable):
         trade_type = sig["trade_type"]
         action = sig.get("action", "")
+
+        # ═══ 挂单检查：旧单已成交 → 跳过不重复挂 ═══
+        if code in filled_codes:
+            direction = _signal_direction(sig)
+            print(f"\n[{i+1}/{len(actionable)}] ⏭️  {code} {direction} 今日已成交，跳过不重复挂")
+            skip_count += 1
+            continue
 
         # ═══ 获取当前实时价 ═══
         signal_price_str = sig.get("price", "0")
@@ -1936,12 +1991,32 @@ def execute_signals(result, mode=None):
             fail_count += 1
             continue
 
-        # ═══ 执行前检查：同方向重复信号 → 先撤旧单再挂新单 ═══
+        # ═══ 执行前检查：未成交挂单或同方向重复信号 → 先撤旧单再挂新单 ═══
         direction = _signal_direction(sig)
+
+        # 检查1: 来自上次执行未成交的挂单（pending_map）
+        need_revoke = False
+        if code in pending_map and direction:
+            pending_dir = pending_map[code]
+            if pending_dir == direction:
+                # 同方向有未成交挂单 → 撤旧挂新
+                print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 上次未成交挂单({pending_dir})，先撤旧单再挂新单...")
+                need_revoke = True
+            else:
+                # 不同方向有未成交挂单 → 也要撤（避免冲突），撤旧方向
+                print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 上次未成交挂单({pending_dir})方向与新信号({direction})不同，撤旧单后挂新单...")
+                need_revoke = True
+
+        # 检查2: 同方向重复信号（已成交但同天又来信号）
         if direction and _is_duplicate_signal(code, direction, today_str):
-            # 同方向新信号来了但旧单未成交 → 先撤旧单，再挂新单
+            need_revoke = True
             print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 同方向重复信号，先撤旧单再挂新单...")
-            revoke_cmd = ["python3", trade_script, "revoke", code, direction]
+
+        if need_revoke:
+            revoke_dir = direction
+            if code in pending_map and pending_map.get(code) != direction:
+                revoke_dir = pending_map[code]  # 撤旧方向
+            revoke_cmd = ["python3", trade_script, "revoke", code, revoke_dir]
             print(f"  → 撤单: {' '.join(revoke_cmd)}")
             try:
                 revoke_proc = subprocess.run(
@@ -1952,6 +2027,8 @@ def execute_signals(result, mode=None):
                     print(revoke_proc.stdout.strip())
                 if revoke_proc.returncode == 0:
                     print(f"  ✅ {code} 同方向旧单已撤，准备挂新单")
+                    # 清除挂单记录
+                    _clear_pending_order(code)
                 else:
                     print(f"  ⚠️ 撤单返回非0 (exit={revoke_proc.returncode})，继续尝试挂新单")
                     if revoke_proc.stderr:
@@ -2027,7 +2104,7 @@ def execute_signals(result, mode=None):
                         final_error_type = err_type
 
                 elif err_type == "not_filled":
-                    # 下单未成交 → 不重试，直接告警
+                    # 下单未成交 → 不重试，直接告警，记录挂单状态
                     if stdout:
                         print(stdout.strip())
                     if stderr_out:
@@ -2035,6 +2112,7 @@ def execute_signals(result, mode=None):
                     alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单未成交(增量确认失败)。重试: {retry_cmd}"
                     print(alert_msg, file=sys.stderr)
                     _save_trade_error(code, trade_type, price, shares, "下单未成交(增量确认失败)", retry_cmd)
+                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares, pending=True)
                     final_error = err_detail
                     final_error_type = err_type
                     break
