@@ -206,7 +206,7 @@ def _activate_tonghuashun():
 def _ensure_sim_trade_page():
     """
     确保同花顺在模拟交易→股票页面。
-    使用命名按钮导航（不依赖 by-index 的 button 1/button 6），
+    先用 button 6 导航到交易页，再用命名按钮切换到模拟股票。
     避免 macOS 26 上 EvolvingSim 的 click button 1 归位失败。
     """
     applescript = '''
@@ -215,8 +215,10 @@ def _ensure_sim_trade_page():
     tell application "System Events"
         tell process "同花顺"
             try
-                -- 确保在交易页面：先点 A股（交易页才有的按钮）
-                click button "A股" of window 1
+                -- 先在交易页：尝试直接点 A股（如果已在交易页）
+                try
+                    click button "A股" of window 1
+                end try
                 delay 0.2
                 -- 切换到模拟交易
                 click button "模拟" of window 1
@@ -226,7 +228,20 @@ def _ensure_sim_trade_page():
                 delay 0.1
                 return "ok"
             on error errMsg
-                return "failed: " & errMsg
+                -- 如果 A股 不存在，说明不在交易页，先点 button 6 导航到交易
+                try
+                    click button 6 of window 1
+                    delay 0.5
+                    click button "A股" of window 1
+                    delay 0.2
+                    click button "模拟" of window 1
+                    delay 0.2
+                    click button "股票" of window 1
+                    delay 0.1
+                    return "ok"
+                on error errMsg2
+                    return "failed: " & errMsg2
+                end try
             end try
         end tell
     end tell
