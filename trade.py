@@ -137,6 +137,7 @@ def _call_evolving(method_name, *args, timeout=None):
             if DEBUG:
                 _dbg(f"_call_evolving({method_name}) OK ({elapsed:.2f}s) "
                      f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
+            time.sleep(2)  # 每次与同花顺交互后休息2秒
             return json.loads(stdout.strip())
         else:
             stderr_preview = (stderr or '').strip()[:200]
