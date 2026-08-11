@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 做T信号回测：触发率 + 成交率分析
-基于新浪5分钟K线接口（每标的100根K线覆盖约3个完整交易日）
+基于腾讯5分钟K线接口（每标的1200根K线覆盖约20个交易日）
 回测 signal_generator 中的 t0_buy_score / t0_sell_score 逻辑：
 - RSI < 45 买入 / > 55 卖出 + 3项共振 ≥ 2分
 - RSI > 75 极端卖出 / < 25 极端买入
@@ -19,33 +19,30 @@ from collections import defaultdict
 
 # 从 market_data 和 strategy 导入共享函数
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from market_data import calc_rsi_wilder, calc_macd, calc_atr
+from market_data import calc_rsi_wilder, calc_macd, calc_atr, fetch_klines_5min
 from strategy import t0_buy_score, t0_sell_score
 
 
-def fetch_sina_5min(sid, datalen=1200):
-    """拉取新浪5分钟K线"""
-    url = f'https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={sid}&scale=5&ma=no&datalen={datalen}'
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        data = json.loads(urllib.request.urlopen(req, timeout=15).read())
-        klines = []
-        for d in data:
-            try:
-                klines.append({
-                    "time": d['day'],
-                    "open": float(d['open']),
-                    "close": float(d['close']),
-                    "high": float(d['high']),
-                    "low": float(d['low']),
-                    "volume": float(d['volume']),
-                })
-            except (ValueError, KeyError):
-                continue
-        return klines
-    except Exception as e:
-        print(f"  [ERR] {sid}: {e}")
-        return []
+def _extract_date(time_str):
+    """从时间字符串提取日期 'YYYY-MM-DD', 兼容腾讯 YYYYMMDDHHMM 和新浪 YYYY-MM-DD HH:MM:SS 格式"""
+    if " " in time_str:
+        return time_str.split(" ")[0]
+    # 腾讯格式: YYYYMMDDHHMM → 取前8位
+    clean = time_str.strip()
+    if len(clean) >= 8:
+        return f"{clean[0:4]}-{clean[4:6]}-{clean[6:8]}"
+    return clean
+
+
+def _extract_hour(time_str):
+    """从时间字符串提取小时, 兼容多种格式"""
+    if " " in time_str:
+        return int(time_str.split(" ")[1].split(":")[0])
+    # 腾讯格式: YYYYMMDDHHMM → 取第9-10位
+    clean = time_str.strip()
+    if len(clean) >= 10:
+        return int(clean[8:10])
+    return 0
 
 
 # 标的映射
@@ -78,7 +75,7 @@ def analyze_day(klines_day, day):
         
         # 11:00 之前跳过
         # 时间格式: "2026-08-07 09:35:00"
-        hour = int(t.split(" ")[1].split(":")[0]) if " " in t else 0
+        hour = _extract_hour(t)
         if hour < 11:
             continue
         
@@ -178,17 +175,17 @@ def main():
     print("=" * 80)
     print("做T信号回测: 触发率 + 成交率分析")
     print("回测逻辑: signal_generator.py t0_buy_score / t0_sell_score")
-    print(f"数据源: 新浪5分钟K线 (datalen=800, 覆盖约18个交易日)")
+    print(f"数据源: 腾讯5分钟K线 (datalen=1200, 覆盖约20个交易日)")
     print("=" * 80)
     
     # 拉取所有标的的5分钟K线
     all_klines = {}
     for code, sid in CODES.items():
         print(f"\n拉取 {code} ({NAMES.get(code, '')}) ...", end=" ", flush=True)
-        klines = fetch_sina_5min(sid, 800)
+        klines = fetch_klines_5min(code)
         all_klines[code] = klines
         if klines:
-            dates = sorted(set(k["time"].split(" ")[0] for k in klines))
+            dates = sorted(set(_extract_date(k["time"]) for k in klines))
             print(f"{len(klines)}根K线, 日期: {dates[0]} ~ {dates[-1]}")
         else:
             print("无数据")
@@ -197,7 +194,7 @@ def main():
     all_dates = set()
     for code, klines in all_klines.items():
         if klines:
-            dates = set(k["time"].split(" ")[0] for k in klines)
+            dates = set(_extract_date(k["time"]) for k in klines)
             if all_dates:
                 all_dates &= dates
             else:
@@ -236,7 +233,7 @@ def main():
                 continue
             
             # 筛选当天的K线
-            klines_day = [k for k in klines if k["time"].startswith(day)]
+            klines_day = [k for k in klines if _extract_date(k["time"]) == day]
             if len(klines_day) < 48:
                 continue
             
@@ -337,7 +334,10 @@ def main():
     
     print(f"\n交易日数: {len(target_days)}")
     print(f"总信号数: {total_signals} (买入: {total_buy}, 卖出: {total_sell})")
-    print(f"日均信号: {total_signals / len(target_days):.1f}")
+    if target_days:
+        print(f"日均信号: {total_signals / len(target_days):.1f}")
+    else:
+        print(f"日均信号: N/A")
     print(f"总可配对: {total_pair}")
     print(f"总成交: {total_filled}")
     if total_pair > 0:
@@ -370,13 +370,13 @@ def main():
         if not klines:
             continue
         for day in target_days:
-            klines_day = [k for k in klines if k["time"].startswith(day)]
+            klines_day = [k for k in klines if _extract_date(k["time"]) == day]
             if len(klines_day) < 39:
                 continue
             for i in range(39, len(klines_day)):
                 k = klines_day[i]
                 t = k["time"]
-                hour = int(t.split(" ")[1].split(":")[0]) if " " in t else 0
+                hour = _extract_hour(t)
                 if hour < 11:
                     continue
                 window = klines_day[:i + 1]
@@ -425,13 +425,13 @@ def main():
         if not klines:
             continue
         for day in target_days:
-            klines_day = [k for k in klines if k["time"].startswith(day)]
+            klines_day = [k for k in klines if _extract_date(k["time"]) == day]
             if len(klines_day) < 39:
                 continue
             for i in range(39, len(klines_day)):
                 k = klines_day[i]
                 t = k["time"]
-                hour = int(t.split(" ")[1].split(":")[0]) if " " in t else 0
+                hour = _extract_hour(t)
                 if hour < 11:
                     continue
                 window = klines_day[:i + 1]

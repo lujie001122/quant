@@ -11,7 +11,6 @@ import akshare as ak
 import json
 import time
 import urllib.request
-from datetime import datetime
 
 from tracker import get_etfs_config, get_code_map
 
@@ -188,22 +187,15 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq", sid
 
 
 def fetch_klines_5min(code, today=None):
-    """获取5分钟K线(腾讯接口, 48根覆盖4小时交易时段)
+    """获取5分钟K线(腾讯接口, 1200根覆盖约20天历史)
     返回: [{"time","open","close","high","low","volume","amount"}, ...]
-    非交易时段返回空列表
+    today参数预留，供回测传入日期使用
     """
     sid = CODE_MAP.get(code, "")
     if not sid:
         return []
 
-    # 非交易时段快速返回（9:30前或15:00后）
-    now = datetime.now()
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
-    if now < market_open or now > market_close:
-        return []
-
-    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={sid},m5,,48"
+    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={sid},m5,,1200"
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0",
