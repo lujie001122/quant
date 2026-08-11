@@ -17,7 +17,7 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 
 # tracker.py 提供标准ETF名称
 import tracker
-from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr
+from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr, fetch_klines_daily_arrays, calc_max_drawdown
 
 # ═══════════════════════════════════════════════════════
 #  20只ETF候选池 (原硬编码)
@@ -122,26 +122,6 @@ def _auto_sid(code):
 
 
 # ═══════════════════════════════════════════════════════
-#  数据获取 (委托 market_data.fetch_klines_daily)
-# ═══════════════════════════════════════════════════════
-
-def fetch_klines(code, sid=None):
-    """获取日K线, 委托 market_data.fetch_klines_daily(code, sid=sid)
-       返回 {closes, highs, lows, volumes} 四个数组"""
-    from market_data import fetch_klines_daily
-
-    klines = fetch_klines_daily(code, sid=sid)
-    if not klines or len(klines) < 30:
-        return None
-
-    closes = [d["close"] for d in klines]
-    highs = [d["high"] for d in klines]
-    lows = [d["low"] for d in klines]
-    volumes = [d["volume"] for d in klines]
-    return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes}
-
-
-# ═══════════════════════════════════════════════════════
 #  技术指标计算
 # ═══════════════════════════════════════════════════════
 
@@ -154,21 +134,6 @@ def calc_momentum_4w(closes):
     if price_4w_ago <= 0:
         return None
     return (current - price_4w_ago) / price_4w_ago
-
-
-def calc_max_drawdown(closes):
-    """计算历史最大回撤(%)"""
-    if len(closes) < 2:
-        return None
-    peak = closes[0]
-    max_dd = 0.0
-    for c in closes:
-        if c > peak:
-            peak = c
-        dd = (peak - c) / peak * 100
-        if dd > max_dd:
-            max_dd = dd
-    return max_dd
 
 
 def calc_entry_precheck(r):
@@ -287,7 +252,7 @@ def run_rotation(force_write=False):
     results = {}
     for code, cfg in targets.items():
         sid = cfg["sid"]
-        kline = fetch_klines(code, sid)
+        kline = fetch_klines_daily_arrays(code, sid)
         if kline is None:
             print(f"  ✗ {code} {cfg['name']:12s}  数据不足,跳过")
             continue

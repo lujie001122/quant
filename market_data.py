@@ -186,6 +186,63 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq", sid
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
 
 
+def fetch_klines_daily_arrays(code, sid=None):
+    """获取日K线并转换为 {closes, highs, lows, volumes} 四个数组
+    统一 rotation.py 和 backtest_bt 的格式转换。
+    """
+    klines = fetch_klines_daily(code, sid=sid)
+    if not klines or len(klines) < 30:
+        return None
+
+    closes = [d["close"] for d in klines]
+    highs = [d["high"] for d in klines]
+    lows = [d["low"] for d in klines]
+    volumes = [d["volume"] for d in klines]
+    return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes,
+            "_raw_klines": klines}
+
+
+def fetch_klines_daily_df(code, sid=None):
+    """获取日K线并转换为 pandas DataFrame (OHLCV)
+    统一 backtest_bt 的格式转换。
+    """
+    import pandas as pd
+    klines = fetch_klines_daily(code, sid=sid)
+    rows = []
+    for k in klines:
+        rows.append({
+            "date": k["date"],
+            "open": k["open"],
+            "close": k["close"],
+            "high": k["high"],
+            "low": k["low"],
+            "volume": k["volume"],
+        })
+    if len(rows) <= 50:
+        raise RuntimeError(f"{code} K线不足({len(rows)}条)")
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    return df[["open", "high", "low", "close", "volume"]]
+
+
+def calc_max_drawdown(closes):
+    """计算历史最大回撤(%)
+    从 rotation.py 移动到此统一管理。
+    """
+    if len(closes) < 2:
+        return None
+    peak = closes[0]
+    max_dd = 0.0
+    for c in closes:
+        if c > peak:
+            peak = c
+        dd = (peak - c) / peak * 100
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd
+
+
 def fetch_klines_5min(code, today=None):
     """获取5分钟K线(腾讯接口, 1200根覆盖约20天历史)
     返回: [{"time","open","close","high","low","volume","amount"}, ...]

@@ -15,7 +15,7 @@ import backtrader as bt
 import pandas as pd
 
 # Phase 3: 引用 market_data + strategy 模块
-from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
+from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr, fetch_klines_daily_df
 from strategy import evaluate_stop, evaluate_entry, PositionInfo, resolve_stop_signal
 
 # ═══════════════════════════════════════════════
@@ -52,28 +52,10 @@ CODES["000725"] = _DEFAULT_CODES["000725"]
 # ═══════════════════════════════════════════════
 
 def fetch_daily(code, sid):
-    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily
-    Phase 3: 不再重复实现，统一从 market_data 导入。
+    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily_df
+    统一格式转换到 market_data。
     """
-    klines = fetch_klines_daily(code)
-
-    # fetch_klines_daily 返回 list[dict]; 转换为 DataFrame
-    rows = []
-    for k in klines:
-        rows.append({
-            "date": k["date"],
-            "open": k["open"],
-            "close": k["close"],
-            "high": k["high"],
-            "low": k["low"],
-            "volume": k["volume"],
-        })
-    if len(rows) <= 50:
-        raise RuntimeError(f"{code} K线不足({len(rows)}条)")
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df.set_index("date", inplace=True)
-    return df[["open", "high", "low", "close", "volume"]]
+    return fetch_klines_daily_df(code, sid=sid)
 
 
 # ═══════════════════════════════════════════════
