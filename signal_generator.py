@@ -32,6 +32,7 @@ from strategy import (
     evaluate_stop, resolve_stop_signal,
     evaluate_entry, evaluate_t0, evaluate_t0_execute,
     evaluate_grid_signals, check_grid_reset, compute_grid_table,
+    _parse_position_ratio, _get_position_shares, check_defense,
     DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE,
 )
 
@@ -180,16 +181,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         else:
             base_prices[code] = realtime[code]["price"]
 
-    # P2: 市场环境过滤(检查515080防御标的是否也弱势)
-    defense_weak = False
-    if DEFENSE_CODE and DEFENSE_CODE in all_tech and DEFENSE_CODE in all_klines:
-        d_tech = all_tech[DEFENSE_CODE]
-        d_price = realtime[DEFENSE_CODE]["price"]
-        d_ma20 = d_tech["ma20"]
-        d_dif = d_tech["dif"]
-        d_macd = d_tech["macd_status"]
-        if d_ma20 and d_price < d_ma20 and d_dif is not None and d_dif < 0 and d_macd in ["死叉", "绿柱放大"]:
-            defense_weak = True
+    # P2: 市场环境过滤(检查防御标的是否也弱势)
+    defense_weak = check_defense(DEFENSE_CODE, all_tech, realtime)
 
     # 信号生成
     signals_output = {}
@@ -474,37 +467,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
 
 # ============================================================
-# 三、输出
-# ============================================================
-
-def _parse_position_ratio(ratio_str):
-    """从 position_ratio 字符串中提取比例(0-1浮点数)
-    例: "30%(RSI抄底)" → 0.30, "5%(活动仓)" → 0.05, "15%(补仓)" → 0.15
-    """
-    if not ratio_str:
-        return 0.0
-    try:
-        pct_str = ratio_str.split("%")[0]
-        return float(pct_str) / 100.0
-    except (ValueError, IndexError):
-        return 0.0
-
-
-def _get_position_shares(code):
-    """从 portfolio.json 读取当前持仓股数"""
-    pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
-    try:
-        if os.path.exists(pf_path):
-            with open(pf_path, "r") as f:
-                pf = json.load(f)
-            return pf.get("positions", {}).get(code, {}).get("shares", 0)
-    except Exception:
-        pass
-    return 0
-
-
-# ============================================================
-# 四、执行层 — 持久化 + 异常处理 + 告警推送
+# 三、执行层 — 持久化 + 异常处理 + 告警推送
 # ============================================================
 
 LAST_EXECUTED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_executed.json")

@@ -773,3 +773,78 @@ def compute_grid_table(base_price, spacing, fund):
         p = base_price * (1 + spacing * i)
         table["sell"].append({"grid": i, "price": round(p, 3)})
     return table
+
+
+# ============================================================
+# 纯函数：从 signal_generator.py 抽取
+# ============================================================
+
+def _compute_stop_loss_price(avg_cost, peak_price, avg_pct=0.12, hard_pct=0.20):
+    """计算止损价格
+    - avg_pct: 均价止损比例 (默认12%)
+    - hard_pct: 硬止损比例 (默认20%)
+    返回 (avg_stop, hard_stop)
+    """
+    avg_stop = avg_cost * (1 - avg_pct) if avg_cost > 0 else 0.0
+    hard_stop = peak_price * (1 - hard_pct) if peak_price > 0 else 0.0
+    return avg_stop, hard_stop
+
+
+def _compute_breakeven_price(avg_cost, margin=0.02):
+    """计算保本价格: 成本 + margin"""
+    return avg_cost * (1 + margin) if avg_cost > 0 else 0.0
+
+
+def _compute_trailing_stop(avg_cost, peak_price, reached_8pct, reached_15pct):
+    """计算移动止盈价格
+    - 8%后: 成本+5%
+    - 15%后: 峰值回撤5%
+    """
+    if reached_15pct and peak_price > 0:
+        return peak_price * 0.95
+    if reached_8pct:
+        return avg_cost * 1.05
+    return 0.0
+
+
+def _parse_position_ratio(ratio_str):
+    """从 position_ratio 字符串中提取比例(0-1浮点数)
+    例: "30%(RSI抄底)" → 0.30, "5%(活动仓)" → 0.05, "15%(补仓)" → 0.15
+    """
+    if not ratio_str:
+        return 0.0
+    try:
+        pct_str = ratio_str.split("%")[0]
+        return float(pct_str) / 100.0
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _get_position_shares(code):
+    """从 portfolio.json 读取当前持仓股数"""
+    import json as _json, os as _os
+    pf_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "portfolio.json")
+    try:
+        if _os.path.exists(pf_path):
+            with open(pf_path, "r") as f:
+                pf = _json.load(f)
+            return pf.get("positions", {}).get(code, {}).get("shares", 0)
+    except Exception:
+        pass
+    return 0
+
+
+def check_defense(DEFENSE_CODE, all_tech, realtime):
+    """检查防御标的(515080)是否弱势
+    返回 True 表示全市场弱势，应暂停建仓
+    """
+    if not DEFENSE_CODE or DEFENSE_CODE not in all_tech:
+        return False
+    d_tech = all_tech[DEFENSE_CODE]
+    d_price = realtime.get(DEFENSE_CODE, {}).get("price", 0)
+    d_ma20 = d_tech.get("ma20")
+    d_dif = d_tech.get("dif")
+    d_macd = d_tech.get("macd_status")
+    if d_ma20 and d_price < d_ma20 and d_dif is not None and d_dif < 0 and d_macd in ["死叉", "绿柱放大"]:
+        return True
+    return False

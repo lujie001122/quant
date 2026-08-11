@@ -3,9 +3,6 @@
 source /Users/lujie/Documents/code/quant/.venv/bin/activate
 SCRIPTS=/Users/lujie/Documents/code/quant
 
-# 做T信号
-T_OUT=$(python3 "$SCRIPTS/intraday_t_once.py" 2>/dev/null)
-
 # 主信号
 SIG_OUT=$(python3 "$SCRIPTS/signal_generator.py" 2>/dev/null)
 
@@ -36,8 +33,7 @@ if lines:
 fi
 
 # 合并输出
-if [ -n "$T_OUT" ] || $HAS_ACTION; then
+if $HAS_ACTION; then
     echo "🔄 盘中监控 | $(date '+%m-%d %H:%M')"
-    [ -n "$T_OUT" ] && echo "$T_OUT"
     [ -n "$FORMATTED" ] && echo "$FORMATTED"
 fi
