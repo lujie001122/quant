@@ -21,8 +21,10 @@
   8. 调用 EvolvingSim 前自动清理 /tmp/lock.json
   9. EvolvingSim 调用有 8 秒超时保护，超时后自动清理锁+僵尸进程+重建实例
 """
-import sys, os, json, time, urllib.request
+import sys, os, json, time
 import subprocess
+
+from market_data import calc_atr, fetch_klines_5min
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
@@ -436,96 +438,6 @@ def _is_continuous_auction():
     t = now.tm_hour * 60 + now.tm_min
     return (570 <= t <= 690) or (780 <= t <= 900)  # 9:30=570, 11:30=690, 13:00=780, 15:00=900
 
-
-# ─── 5分钟ATR获取（从腾讯接口拉取5分钟K线计算） ──────────────────────
-
-def _calc_atr(klines, period=14):
-    """计算ATR（基于K线列表），与 signal_generator 的 calc_atr 一致"""
-    if len(klines) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(klines)):
-        k_prev, k_curr = klines[i - 1], klines[i]
-        tr = max(k_curr["high"] - k_curr["low"],
-                 abs(k_curr["high"] - k_prev["close"]),
-                 abs(k_curr["low"] - k_prev["close"]))
-        trs.append(tr)
-    if len(trs) < period:
-        return None
-    atr = sum(trs[:period]) / period
-    for i in range(period, len(trs)):
-        atr = (atr * (period - 1) + trs[i]) / period
-    return round(atr, 4)
-
-
-def _fetch_klines_5min(code):
-    """从腾讯接口获取5分钟K线，返回 [{\"time\",\"open\",\"close\",\"high\",\"low\",\"volume\",\"amount\"}, ...]"""
-    sid = CODE_MAP.get(code, "")
-    if not sid:
-        return []
-
-    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={sid},m5,,48"
-    try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.sina.com.cn",
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-
-        stock_data = raw.get("data", {})
-        qfq_key = None
-        for key in (sid, sid.lower(), sid.upper()):
-            if key in stock_data:
-                qfq_key = key
-                break
-        if not qfq_key:
-            return []
-
-        kline_list = stock_data[qfq_key].get("m5") or stock_data[qfq_key].get("m5", [])
-        if not kline_list:
-            return []
-
-        klines = []
-        for item in kline_list:
-            if len(item) < 6:
-                continue
-            try:
-                o, c, h, l = float(item[1]), float(item[2]), float(item[3]), float(item[4])
-                v = float(item[5])
-                amt = float(item[7]) if len(item) > 7 else 0
-                klines.append({
-                    "time": item[0],
-                    "open": o, "close": c, "high": h, "low": l,
-                    "volume": v, "amount": amt,
-                })
-            except (ValueError, IndexError):
-                continue
-        return klines
-    except Exception as e:
-        print(f"[WARN] {code} 5分钟K线获取失败: {e}")
-        return []
-
-
-def _estimate_atr(code, price=None):
-    """
-    获取5分钟ATR（从腾讯接口拉取5分钟K线计算）。
-    如果5分钟数据不可用，降级为价格×2%的粗估。
-    """
-    if price is None:
-        price = _get_price(code) or 0
-
-    klines_5min = _fetch_klines_5min(code)
-    if klines_5min:
-        atr = _calc_atr(klines_5min, 14)
-        if atr is not None:
-            return atr
-
-    # 降级：价格×2%粗估
-    print(f"[WARN] {code} 5分钟ATR不可用，降级为价格×2%粗估")
-    return round(price * 0.02, 3)
-
-
 def do_t0_buy(code, shares, price, pair_price=None):
     """
     做T买入配对：
@@ -552,7 +464,11 @@ def do_t0_buy(code, shares, price, pair_price=None):
 
     # 配对价格
     if pair_price is None:
-        atr = _estimate_atr(code, price)
+        klines_5min = fetch_klines_5min(code)
+        atr = calc_atr(klines_5min, 14) if klines_5min else None
+        if atr is None:
+            print(f"[WARN] {code} 5分钟ATR不可用，降级为价格×2%粗估")
+            atr = round(price * 0.02, 3)
         pair_price = round(price + atr * 1.1, 3)
     else:
         atr = None
@@ -611,7 +527,11 @@ def do_t0_sell(code, shares, price, pair_price=None):
 
     # 配对价格
     if pair_price is None:
-        atr = _estimate_atr(code, price)
+        klines_5min = fetch_klines_5min(code)
+        atr = calc_atr(klines_5min, 14) if klines_5min else None
+        if atr is None:
+            print(f"[WARN] {code} 5分钟ATR不可用，降级为价格×2%粗估")
+            atr = round(price * 0.02, 3)
         pair_price = round(price - atr * 1.1, 3)
     else:
         atr = None
