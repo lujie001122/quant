@@ -38,7 +38,7 @@ GRID_BUY_LEVELS = 5
 GRID_SELL_LEVELS = 3
 MAX_DAILY_BUYS = 1   # 每天最多1次买入(正常)
 MAX_DAILY_T0 = 2     # 每天最多2次做T(正常)
-DEFENSE_CODE = None   # 无防御盾
+DEFENSE_CODE = "159611"  # 防御标的: 电力ETF
 COOLDOWN_DAYS = 2
 
 API_DELAY = 1  # akshare调用间隔(秒)
@@ -1503,7 +1503,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "market_environment": "全市场弱势(515080也破MA20)" if defense_weak else "正常",
         "human_readable": human_readable,
         "strategy_policy": {
-            "stop_loss": "均价止损10%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
+            "stop_loss": "均价止损12%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
             "profit_take": "移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈30%→清仓",
             "t0_signal": "弹性做T(5分钟分时:RSI5m<45买入+MACD5m金叉/红柱+量比<1.5; RSI5m>55卖出+MACD5m死叉/绿柱+量比>1.2,配对ATR×1.1,30%数量,11点后运行)",
             "entry": "5通道(RSI抄底/分批建仓/Test抄底/试探/补仓)统一30%→确认70%→补仓15%",

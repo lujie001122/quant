@@ -185,7 +185,7 @@ for code, sid in CODE_MAP.items():
 
         # 使用共享指标模块计算 RSI 和 MACD（基于已完成K线）
         rsi = calc_rsi_wilder(closes, 14)
-        dif, dea, macd_bar, macd_status = calc_macd(closes)
+        dif, dea, macd_bar, macd_status = calc_macd(closes, fast=5, slow=34, sig=5)
         if rsi is None or macd_status is None:
             continue
 
