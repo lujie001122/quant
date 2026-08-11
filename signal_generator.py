@@ -1105,9 +1105,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
             # MA20斜率趋势过滤: 强趋势禁止反向做T
             if ma20_5min_slope is not None:
-                if ma20_5min_slope > 0.001:   # 上升趋势(斜率>0.1%) → 禁止T卖出
+                if ma20_5min_slope > 0.003:   # 上升趋势(斜率>0.3%) → 禁止T卖出
                     sell_score = 0
-                elif ma20_5min_slope < -0.001:  # 下降趋势(斜率<-0.1%) → 禁止T买入
+                elif ma20_5min_slope < -0.003:  # 下降趋势(斜率<-0.3%) → 禁止T买入
                     buy_score = 0
 
         t0_signal = "无"
