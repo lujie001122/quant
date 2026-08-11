@@ -203,6 +203,44 @@ def _activate_tonghuashun():
     subprocess.run(['open', '-a', '同花顺'], capture_output=True, timeout=3)
 
 
+def _ensure_sim_trade_page():
+    """
+    确保同花顺在模拟交易→股票页面。
+    使用命名按钮导航（不依赖 by-index 的 button 1/button 6），
+    避免 macOS 26 上 EvolvingSim 的 click button 1 归位失败。
+    """
+    applescript = '''
+    tell application "同花顺" to activate
+    delay 0.5
+    tell application "System Events"
+        tell process "同花顺"
+            try
+                -- 确保在交易页面：先点 A股（交易页才有的按钮）
+                click button "A股" of window 1
+                delay 0.2
+                -- 切换到模拟交易
+                click button "模拟" of window 1
+                delay 0.2
+                -- 选择股票
+                click button "股票" of window 1
+                delay 0.1
+                return "ok"
+            on error errMsg
+                return "failed: " & errMsg
+            end try
+        end tell
+    end tell
+    '''
+    try:
+        r = subprocess.run(['osascript', '-e', applescript],
+                           capture_output=True, text=True, timeout=8)
+        if DEBUG and r.stdout.strip() != 'ok':
+            _dbg(f"_ensure_sim_trade_page: {r.stdout.strip()}")
+    except Exception as e:
+        if DEBUG:
+            _dbg(f"_ensure_sim_trade_page FAILED: {e}")
+
+
 def _retry_get_holding_shares(max_retries=3, delay=2):
     """带重试+超时保护+僵尸清理的 getHoldingShares"""
     if DEBUG:
@@ -371,7 +409,10 @@ def _trade_with_confirmation(action, code, shares, price):
     if DEBUG:
         _dbg(f"_trade_with_confirmation before={before} code={code}")
 
-    # 2. 下单（新实例，带超时保护）
+    # 2. 下单前确保同花顺在模拟交易→股票页面（修复 macOS 26 上 EvolvingSim 的 button 1 归位失败）
+    _ensure_sim_trade_page()
+
+    # 3. 下单（新实例，带超时保护）
     _clean_lock()
     result = _call_evolving(action, code, shares, price)
     if result is None:
@@ -388,10 +429,10 @@ def _trade_with_confirmation(action, code, shares, price):
             _dbg(f"_trade_with_confirmation result NOT OK: ({ok}, {contract})")
         return False, before, before
 
-    # 3. 等一等让成交生效
+    # 4. 等一等让成交生效
     time.sleep(1.5)
 
-    # 4. 持仓增量确认
+    # 5. 持仓增量确认
     if DEBUG:
         _dbg(f"_trade_with_confirmation confirming position change...")
     holding_map2 = _get_holding_shares()
@@ -408,7 +449,7 @@ def _trade_with_confirmation(action, code, shares, price):
         _dbg(f"_trade_with_confirmation after={after} delta={delta} expected={expected}")
 
     if delta == expected:
-        # 5. 成交确认 → 同步 portfolio
+        # 6. 成交确认 → 同步 portfolio
         sync()
         label = '买入' if action == 'buy' else '卖出'
         print(f"✅ {label} {code} {shares}股@{price} → 持仓从{before}→{after}股 合同:{contract}")
@@ -484,6 +525,7 @@ def do_t0_buy(code, shares, price, pair_price=None):
         if sell_limit != pair_price:
             print(f"   ⚠️ 卖出限价调整: {pair_price} → {sell_limit} (≥当前价{cur_price})")
         _clean_lock()
+        _ensure_sim_trade_page()
         result = _call_evolving('sell', code, shares, sell_limit)
         if result is not None:
             p_ok, p_contract = result
@@ -547,6 +589,7 @@ def do_t0_sell(code, shares, price, pair_price=None):
         if buy_limit != pair_price:
             print(f"   ⚠️ 买入限价调整: {pair_price} → {buy_limit} (≤当前价{cur_price})")
         _clean_lock()
+        _ensure_sim_trade_page()
         result = _call_evolving('buy', code, shares, buy_limit)
         if result is not None:
             p_ok, p_contract = result
