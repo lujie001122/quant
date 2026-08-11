@@ -2038,6 +2038,9 @@ def execute_signals(result, mode=None):
             print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 同方向重复信号，先撤旧单再挂新单...")
 
         if need_revoke:
+            # 激活同花顺窗口（子进程中同花顺可能不在前台）
+            os.system("open -a 同花顺")
+            os.system("cliclick c:960,50")
             revoke_dir = direction
             if code in pending_map and pending_map.get(code) != direction:
                 revoke_dir = pending_map[code]  # 撤旧方向
@@ -2075,6 +2078,10 @@ def execute_signals(result, mode=None):
         final_error_type = None
         before_shares = 0
         after_shares = 0
+
+        # 激活同花顺窗口（子进程中同花顺可能不在前台）
+        os.system("open -a 同花顺")
+        os.system("cliclick c:960,50")
 
         for attempt in range(1, max_retries + 1):
             try:
