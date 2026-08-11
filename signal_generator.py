@@ -1107,7 +1107,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             if ma20_5min_slope is not None:
                 if ma20_5min_slope > 0.003:   # 上升趋势(斜率>0.3%) → 禁止T卖出
                     sell_score = 0
-                elif ma20_5min_slope < -0.003:  # 下降趋势(斜率<-0.3%) → 禁止T买入
+                elif ma20_5min_slope < -0.005:  # 下降趋势(斜率<-0.5%) → 禁止T买入
                     buy_score = 0
 
         t0_signal = "无"
@@ -1671,6 +1671,8 @@ def _check_pending_orders(mode=None):
     filled_codes = set()
 
     for code, entry in last.items():
+        if not isinstance(entry, dict):
+            continue
         if entry.get("time_window") != today_str:
             continue
         # 模式过滤：只看指定 mode 的成交记录
@@ -1706,7 +1708,7 @@ def _is_duplicate_signal(code, direction, today_str, mode=None):
     返回 True 表示同方向旧单仍在，需要先撤旧单再挂新单（不再直接跳过）。"""
     last = _load_last_executed()
     entry = last.get(code, {})
-    if not entry:
+    if not entry or not isinstance(entry, dict):
         return False
     # 模式过滤：旧单 mode 必须与当前 mode 一致
     # 兼容旧记录（无 mode 字段）：从 action 推导 mode
