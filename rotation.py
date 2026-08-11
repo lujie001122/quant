@@ -18,6 +18,7 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 
 # tracker.py 提供标准ETF名称
 import tracker
+from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr
 
 # ═══════════════════════════════════════════════════════
 #  20只ETF候选池 (原硬编码)
@@ -171,121 +172,6 @@ def fetch_klines(code, sid):
 #  技术指标计算
 # ═══════════════════════════════════════════════════════
 
-def calc_rsi(closes, period=14):
-    """计算 RSI"""
-    if len(closes) < period + 1:
-        return None
-    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    gains = [d if d > 0 else 0 for d in deltas]
-    losses = [-d if d < 0 else 0 for d in deltas]
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    if avg_loss == 0:
-        return 100.0
-
-    for i in range(period, len(deltas)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-
-    rs = avg_gain / avg_loss if avg_loss > 0 else float('inf')
-    return round(100.0 - (100.0 / (1.0 + rs)), 2)
-
-
-def calc_macd(closes, fast=12, slow=26, signal=9):
-    """计算 MACD 状态，返回 (dif, dea, macd_bar, status)"""
-    if len(closes) < slow + signal:
-        return None, None, None, "数据不足"
-
-    def ema(data, period):
-        k = 2.0 / (period + 1)
-        result = [data[0]]
-        for i in range(1, len(data)):
-            result.append(data[i] * k + result[-1] * (1 - k))
-        return result
-
-    ema_fast = ema(closes, fast)
-    ema_slow = ema(closes, slow)
-
-    dif = [ema_fast[i] - ema_slow[i] for i in range(len(closes))]
-    dea = ema(dif[slow - 1:], signal)
-    # 对齐 dea 到 dif 的索引
-    dea_full = [None] * (slow - 1) + dea
-    macd_bar = []
-    for i in range(len(closes)):
-        if dea_full[i] is not None:
-            macd_bar.append((dif[i] - dea_full[i]) * 2)
-        else:
-            macd_bar.append(None)
-
-    # 取最近几个值判断状态
-    recent_bars = [b for b in macd_bar[-5:] if b is not None]
-    if len(recent_bars) < 3:
-        return None, None, None, "数据不足"
-
-    cur_dif = dif[-1]
-    cur_dea = dea[-1]
-    cur_bar = macd_bar[-1]
-    prev_bar = macd_bar[-2] if macd_bar[-2] is not None else 0
-
-    # 判断状态
-    if cur_bar is None:
-        return None, None, None, "数据不足"
-
-    if cur_dif > 0 and cur_dea > 0:
-        if cur_bar > 0:
-            if cur_bar > prev_bar:
-                status = "红柱放大"
-            else:
-                status = "红柱缩小"
-        else:
-            status = "死叉"
-    elif cur_dif < 0 and cur_dea < 0:
-        if cur_bar < 0:
-            if cur_bar < prev_bar:
-                status = "绿柱放大"
-            else:
-                status = "绿柱缩短"
-        else:
-            status = "金叉"
-    else:
-        # 零轴附近
-        if cur_bar > prev_bar:
-            status = "红柱放大"
-        elif cur_bar < prev_bar:
-            status = "绿柱放大"
-        else:
-            status = "震荡"
-
-    return round(cur_dif, 4), round(cur_dea, 4), round(cur_bar, 4), status
-
-
-def calc_ma(closes, period=20):
-    """计算 MA"""
-    if len(closes) < period:
-        return None
-    return round(sum(closes[-period:]) / period, 4)
-
-
-def calc_atr(highs, lows, closes, period=14):
-    """计算 ATR"""
-    if len(closes) < period + 1:
-        return None
-    tr_list = []
-    for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
-        )
-        tr_list.append(tr)
-    if len(tr_list) < period:
-        return None
-    atr = sum(tr_list[-period:]) / period
-    return round(atr, 4)
-
-
 def calc_momentum_4w(closes):
     """计算近4周(20个交易日)涨幅"""
     if len(closes) < 20:
@@ -438,10 +324,11 @@ def run_rotation(force_write=False):
         lows = kline["lows"]
 
         # 计算各项指标
-        rsi = calc_rsi(closes)
+        rsi = calc_rsi_wilder(closes)
         dif, dea, macd_bar, macd_status = calc_macd(closes)
         ma20 = calc_ma(closes, 20)
-        atr = calc_atr(highs, lows, closes)
+        _klines = [{"high": h, "low": l, "close": c} for h, l, c in zip(highs, lows, closes)]
+        atr = calc_atr(_klines)
         momentum = calc_momentum_4w(closes)
         max_dd = calc_max_drawdown(closes)
         close = closes[-1]

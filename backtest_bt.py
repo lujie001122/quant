@@ -9,7 +9,7 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 """
-import json, urllib.request, sys
+import sys
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
@@ -54,46 +54,10 @@ CODES["000725"] = _DEFAULT_CODES["000725"]
 def fetch_daily(code, sid):
     """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily
     Phase 3: 不再重复实现，统一从 market_data 导入。
-    对于非ETF标的(如000725)，market_data 无代码映射时回退到直接API调用。
     """
-    try:
-        klines = fetch_klines_daily(code)
-    except RuntimeError as e:
-        if "无代码映射" in str(e):
-            # 非ETF标的(如000725): 直接调用腾讯API
-            url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
-                   f"param={sid},day,,,1250,qfq")
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                raw = json.loads(resp.read().decode("utf-8"))
-            stock_data = raw.get("data", {})
-            qfq_key = None
-            for key in (sid, sid.lower(), sid.upper()):
-                if key in stock_data:
-                    qfq_key = key
-                    break
-            if not qfq_key:
-                raise RuntimeError(f"{code} 腾讯接口返回无数据: {list(stock_data.keys())}")
-            klines_raw = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
-            if not klines_raw:
-                raise RuntimeError(f"{code} 腾讯接口K线为空")
-            klines = []
-            for item in klines_raw:
-                if len(item) < 6:
-                    continue
-                try:
-                    klines.append({
-                        "date": item[0], "open": float(item[1]), "close": float(item[2]),
-                        "high": float(item[3]), "low": float(item[4]), "volume": float(item[5]),
-                    })
-                except (ValueError, IndexError):
-                    continue
-            if not klines:
-                raise RuntimeError(f"{code} 腾讯接口K线解析失败")
-        else:
-            raise
+    klines = fetch_klines_daily(code)
 
-    # fetch_klines_daily 返回 list[dict]; 转换为 DataFrame (与原 fetch_daily 兼容)
+    # fetch_klines_daily 返回 list[dict]; 转换为 DataFrame
     rows = []
     for k in klines:
         rows.append({
