@@ -195,11 +195,9 @@ def _get_position(code):
 
 
 def _activate_tonghuashun():
-    """激活同花顺窗口：open -a 前台化 + cliclick 点击标题栏"""
+    """激活同花顺窗口，用 open -a 前台化"""
     import subprocess
     subprocess.run(['open', '-a', '同花顺'], capture_output=True, timeout=3)
-    # 用 cliclick 点击屏幕上方（同花顺标题栏区域），模拟用户点击激活窗口
-    subprocess.run(['cliclick', 'c:960,50'], capture_output=True, timeout=3)
 
 
 def _retry_get_holding_shares(max_retries=3, delay=2):
