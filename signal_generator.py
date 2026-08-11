@@ -378,6 +378,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             "rsi": t["rsi"],
             "macd_status": t["macd_status"],
             "atr": t["atr"],
+            "atr_5min": t.get("atr_5min"),
             "atr_pct": round(atr_pct * 100, 2),
             "dynamic_spacing": t["spacing"],
             "vol_ratio_5min": t.get("vol_ratio_5min"),
@@ -804,7 +805,7 @@ def execute_signals(result, mode=None):
         # ── 做T信号 ──
         if trade_type == "t0" and t0_pair:
             pair_shares = t0_pair.get("shares", 0)
-            sig_atr = sig.get("atr", 0)
+            sig_atr = sig.get("atr_5min") or sig.get("atr", 0)
             try:
                 sig_atr = float(sig_atr)
             except (ValueError, TypeError):
@@ -819,7 +820,7 @@ def execute_signals(result, mode=None):
                 pair_price = old_pair_price
 
             if sig_atr > 0:
-                print(f"[EXECUTE] {code} 做T配对价重算: 信号价={old_pair_price}, 当前价={price:.3f}, ATR={sig_atr:.4f}, 新配对价={pair_price:.3f}")
+                print(f"[EXECUTE] {code} 做T配对价重算: 5minATR={sig_atr:.4f}, 当前价={price:.3f}, 配对价={pair_price:.3f}")
             shares = pair_shares
 
             if pair_shares < 100:

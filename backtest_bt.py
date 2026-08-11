@@ -555,8 +555,8 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.30, f"Test抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道6: 试探建仓
-                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                # 通道6: 试探建仓 (RSI>30, 与strategy.py evaluate_entry 的 rsi_minimal 对齐)
+                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 30 and price > ma5_v:
                     if self._buy(d, 0.15, f"试探建仓15% MACD{ms} RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
@@ -601,7 +601,41 @@ class ETFStrategy(bt.Strategy):
 
     def _validate_signals(self, date_str):
         """Phase 3: 调用 strategy.py 的 evaluate_stop/evaluate_entry 做交叉验证。
-        不修改任何交易决策，仅记录差异供对比。"""
+        每次 next() 调用，只在结果不一致时 print 差异。"""
+        # 构建 positions 字典 (strategy.py 格式)
+        strategy_positions = {}
+        for d in self.datas:
+            name = d._name
+            pos = PositionInfo()
+            ps = self.ps[name]
+            has_pos = self._has_position(d)
+            if has_pos:
+                avg = self._get_avg_cost(d)
+                pos.shares = int(self._get_shares(d))
+                pos.avg_cost = avg
+                pos.cost = avg * pos.shares
+                pos.base_price = ps["base"] if ps["base"] > 0 else avg
+                pos.peak_price = ps["peak_price"]
+                pos.build_phase = ps["build_phase"]
+                pos.build_first_price = ps["first_price"]
+                pos.stop_level = ps["stop_level"]
+                pos.below_ma20_count = ps["below_ma20"]
+                pos.below_ma20_date = ps["below_ma20_date"] if ps["below_ma20_date"] else None
+                pos.reached_8pct = ps["reached_8"]
+                pos.reached_15pct = ps["reached_15"]
+                pos.trailing_stop_price = ps["trail"]
+                pos.breakeven_activated = ps["breakeven_activated"]
+                pos.add_count = ps["add_count"]
+                pos.ma5_touch_count = ps["ma5_touch_count"]
+                pos.empty_days = ps["empty_days"]
+                pos.prev_macd_status = ps["prev_macd_status"]
+                pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+            else:
+                pos.empty_days = ps["empty_days"]
+                pos.prev_macd_status = ps["prev_macd_status"]
+                pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+            strategy_positions[name] = pos
+
         for d in self.datas:
             name = d._name
             ps = self.ps[name]
@@ -629,37 +663,36 @@ class ETFStrategy(bt.Strategy):
 
             has_pos = self._has_position(d)
             avg = self._get_avg_cost(d)
-
-            # 构建临时 PositionInfo (用于 evaluate_stop 验证)
-            pos = PositionInfo()
-            if has_pos:
-                pos.shares = int(self._get_shares(d))
-                pos.avg_cost = avg
-                pos.cost = avg * pos.shares
-                pos.base_price = ps["base"] if ps["base"] > 0 else avg
-                pos.peak_price = ps["peak_price"]
-                pos.build_phase = ps["build_phase"]
-                pos.build_first_price = ps["first_price"]
-                pos.stop_level = ps["stop_level"]
-                pos.below_ma20_count = ps["below_ma20"]
-                pos.below_ma20_date = ps["below_ma20_date"] if ps["below_ma20_date"] else None
-                pos.reached_8pct = ps["reached_8"]
-                pos.reached_15pct = ps["reached_15"]
-                pos.trailing_stop_price = ps["trail"]
-                pos.breakeven_activated = ps["breakeven_activated"]
-                pos.add_count = ps["add_count"]
-                pos.ma5_touch_count = ps["ma5_touch_count"]
-                pos.empty_days = ps["empty_days"]
-                pos.prev_macd_status = ps["prev_macd_status"]
-                pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+            pos = strategy_positions[name]
 
             # 验证止损信号
             stop_actions = evaluate_stop(pos, t, price, date_str)
             bt_stop_signal = resolve_stop_signal(pos, stop_actions)
 
-            # 仅在触发信号时输出(减少噪音)
+            # 验证入场信号: 无持仓时调用 evaluate_entry
+            atr_pct = atr_val / price if atr_val and price > 0 else 0
+            entry_result = None
+            if not has_pos and ps["build_phase"] == 0:
+                # 构建 realtime 字典 (只需当前价格)
+                realtime = {n: {"price": dd.close[0]} for n, dd in zip(
+                    [d._name for d in self.datas], self.datas)}
+                # 构建 all_klines (简化: 只用于20日新高检查)
+                all_klines_simple = {}
+                for dd in self.datas:
+                    n = dd._name
+                    closes = [float(dd.close[-i]) for i in range(min(21, len(dd.close)), 0, -1)]
+                    all_klines_simple[n] = [{"close": c} for c in closes]
+                entry_result = evaluate_entry(
+                    pos, t, price, realtime, strategy_positions,
+                    all_klines_simple, name, date_str, atr_pct, False
+                )
+
+            # 只在差异时打印
             if stop_actions and bt_stop_signal not in ("未触发", "未触发(无持仓)"):
-                pass  # Phase 3: 验证通过, 信号已记录在 stop_actions 中
+                print(f"[VALIDATE] {date_str} {name} strategy.py止损: {bt_stop_signal}")
+
+            if entry_result and entry_result[0] == "买入":
+                print(f"[VALIDATE] {date_str} {name} strategy.py入场: {entry_result[1]} {entry_result[3]}")
 
     def stop(self):
         pass  # 结果输出在main()中用analyzers
