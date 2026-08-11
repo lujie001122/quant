@@ -267,18 +267,21 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = "减30%总仓"
                     reason = sig_name
                     trade_type = "reduce"
+                    pos.reduce_shares(pct=30, price=price)
                     break
                 elif sig_type == "trend_profit_sell":
                     action = "卖出"
                     position_ratio = "10%(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
+                    pos.reduce_shares(pct=10, price=price)
                     break
                 elif sig_type == "sell_active_5pct":
                     action = "卖出"
                     position_ratio = "5%(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
+                    pos.reduce_shares(pct=5, price=price)
                     break
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）
