@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-固化的下单工具 — 所有买卖操作统一接口
+固化的下单工具 — 所有买卖操作统一接口（EvolvingSim 官方接口重构版）
+
 用法:
   python3 trade.py sync                          # 同步持仓到 portfolio.json
   python3 trade.py buy CODE SHARES PRICE         # 买入（持仓增量确认）
@@ -11,23 +12,22 @@
   python3 trade.py revoke CODE 卖出              # 撤同方向未成交委托
 
 铁律:
-  1. 下单前查持仓 → 下单 → 下单后查持仓确认增量（不查委托）
-  2. 增量 = 目标 → 成功。增量 ≠ 目标 → 报错，不重试
-  3. 每次新建 EvolvingSim 实例，不跨操作复用
-  4. AI Agent 只能通过 python3 trade.py 执行买卖，不得直接调 EvolvingSim
-  5. 买入限价 ≤ 当前价，卖出限价 ≥ 当前价
-  6. 做T配对：先撤同方向未成交单，再挂主单+配对单
-  7. 仅在连续竞价时段(9:30-11:30,13:00-15:00)执行挂单
-  8. 调用 EvolvingSim 前自动清理 /tmp/lock.json
-  9. EvolvingSim 调用有 8 秒超时保护，超时后自动清理锁+僵尸进程+重建实例
+  1. 只用 EvolvingSim 公开接口: getHoldingShares/getAccountInfo/buy/sell/getEntrust/revokeEntrust
+  2. 数量必须是 100 整数倍
+  3. 调 EvolvingSim 前先 open -a 同花顺 + sleep 1，调完后 sleep 2
+  4. 不用子进程 subprocess 包装 EvolvingSim
+  5. 不调底层私有函数（issuingEntrust 等）
+  6. AI Agent 只能通过 python3 trade.py 执行买卖，不得直接调 EvolvingSim
 """
-import sys, os, json, time
+import sys
+import os
+import json
+import time
 import subprocess
-
-from market_data import calc_atr, fetch_klines_5min
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
+LOCK_PATH = '/tmp/lock.json'
 
 from evolving.evolving import EvolvingSim
 from tracker import get_code_map
@@ -35,306 +35,66 @@ from tracker import get_code_map
 CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
 
-# ─── 内部工具 ──────────────────────────────────────────────────────────
-
-LOCK_PATH = '/tmp/lock.json'
-EVOLVING_TIMEOUT = 8  # EvolvingSim 单次调用超时秒数
-
-DEBUG = os.environ.get('TRADE_DEBUG', '') == '1'
-
-
-def _dbg(msg):
-    """调试日志前缀 [DBG]"""
-    ts = time.strftime('%H:%M:%S')
-    print(f"[DBG {ts}] {msg}")
-
-
-def _osascript_count():
-    """返回当前 osascript 进程数"""
-    try:
-        # macOS pgrep 不支持 -c，改用 ps + wc
-        r = subprocess.run(['ps', 'aux'], capture_output=True, text=True, timeout=2)
-        count = r.stdout.count('osascript') - 1  # 减掉 pgrep 自身的那行
-        return max(0, count)
-    except Exception:
-        return -1
-
-
-def _lock_exists():
-    """检查锁文件是否存在"""
-    return os.path.exists(LOCK_PATH)
-
-
-def _kill_osascript_zombies():
-    """强制杀死所有残留的 osascript 进程，防止僵尸进程占用锁"""
-    pre_count = _osascript_count()
-    try:
-        subprocess.run(['pkill', '-9', '-f', 'osascript'], capture_output=True, timeout=3)
-    except Exception:
-        pass
-    if DEBUG:
-        post_count = _osascript_count()
-        _dbg(f"_kill_osascript_zombies: osascript {pre_count}→{post_count}")
-
+# ─── EvolvingSim 调用辅助 ──────────────────────────────────────────────
 
 def _clean_lock():
-    """清理 EvolvingSim 的锁文件，避免异常退出后残留导致 15s 阻塞"""
-    existed = os.path.exists(LOCK_PATH)
-    if existed:
+    """清理 EvolvingSim 锁文件，避免异常退出后残留导致阻塞"""
+    if os.path.exists(LOCK_PATH):
         try:
             os.remove(LOCK_PATH)
         except OSError:
             pass
-    if DEBUG and existed:
-        _dbg(f"_clean_lock: removed /tmp/lock.json")
 
 
-def _call_evolving(method_name, *args, timeout=None):
-    """
-    在子进程中调用 EvolvingSim 方法，带超时保护。
-
-    原理：EvolvingSim 底层通过 os.popen 调用 AppleScript 操作同花顺。
-    如果 AppleScript 卡住（弹窗/焦点丢失），os.popen 会同步阻塞不返回。
-    本函数将 EvolvingSim 调用放进子进程，超时后杀掉子进程并清理残留。
-
-    Args:
-        method_name: EvolvingSim 方法名（如 'getHoldingShares', 'buy', 'sell'）
-        *args: 传递给方法的参数
-        timeout: 超时秒数，默认 EVOLVING_TIMEOUT (8s)
-
-    Returns:
-        EvolvingSim 方法的返回值（dict/tuple），失败返回 None
-    """
-    if timeout is None:
-        timeout = EVOLVING_TIMEOUT
-
-    # 构建在子进程中执行的 Python 脚本
-    # 注意：使用 sys.executable 确保使用 venv 中的 Python
-    args_repr = ", ".join(repr(a) for a in args)
-    code = (
-        f"import sys, json; "
-        f"sys.path.insert(0, {SCRIPT_DIR!r}); "
-        f"from evolving.evolving import EvolvingSim; "
-        f"e = EvolvingSim(); "
-        f"result = e.{method_name}({args_repr}); "
-        f"print(json.dumps(result, ensure_ascii=False, default=str))"
-    )
-
-    if DEBUG:
-        _dbg(f"_call_evolving({method_name}, {args_repr}) timeout={timeout}s "
-             f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-
-    start = time.time()
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, '-c', code],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            cwd=SCRIPT_DIR,
-        )
-        stdout, stderr = proc.communicate(timeout=timeout)
-        elapsed = time.time() - start
-        returncode = proc.returncode
-        if returncode == 0 and stdout.strip():
-            if DEBUG:
-                _dbg(f"_call_evolving({method_name}) OK ({elapsed:.2f}s) "
-                     f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-            time.sleep(2)
-            return json.loads(stdout.strip())
-        else:
-            stderr_preview = (stderr or '').strip()[:200]
-            if DEBUG:
-                _dbg(f"_call_evolving({method_name}) FAIL ({elapsed:.2f}s) rc={returncode} "
-                     f"stderr={stderr_preview[:100]}")
-            print(f"  ⚠️ EvolvingSim.{method_name} 执行失败: {stderr_preview}")
-            return None
-    except subprocess.TimeoutExpired:
-        elapsed = time.time() - start
-        if DEBUG:
-            _dbg(f"_call_evolving({method_name}) TIMEOUT ({elapsed:.2f}s) "
-                 f"osascript_before_kill={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-        print(f"  ⚠️ EvolvingSim.{method_name} 超时 ({timeout}s)，强制清理...")
-        # 显式杀掉子进程，确保残留的 osascript 也被清理
-        if proc is not None and proc.pid:
-            try:
-                proc.kill()
-                proc.wait(timeout=3)
-                if DEBUG:
-                    _dbg(f"_call_evolving({method_name}) killed pid={proc.pid}")
-            except Exception as ex:
-                if DEBUG:
-                    _dbg(f"_call_evolving({method_name}) kill error: {ex}")
-        _clean_lock()
-        _kill_osascript_zombies()
-        time.sleep(1)
-        if DEBUG:
-            _dbg(f"_call_evolving({method_name}) after_cleanup "
-                 f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-        return None
-    except json.JSONDecodeError:
-        elapsed = time.time() - start
-        if DEBUG:
-            _dbg(f"_call_evolving({method_name}) JSON_DECODE_ERROR ({elapsed:.2f}s)")
-        print(f"  ⚠️ EvolvingSim.{method_name} 返回数据解析失败")
-        _clean_lock()
-        return None
-    except Exception as e:
-        elapsed = time.time() - start
-        if DEBUG:
-            _dbg(f"_call_evolving({method_name}) EXCEPTION ({elapsed:.2f}s): {e}")
-        print(f"  ⚠️ EvolvingSim.{method_name} 异常: {e}")
-        _clean_lock()
-        return None
-
-
-def _get_position(code):
-    """返回 (shares, avg_cost) 或 (0, 0)"""
-    if os.path.exists(PF_PATH):
-        with open(PF_PATH) as f:
-            pf = json.load(f)
-        pos = pf.get('positions', {}).get(code, {})
-        return pos.get('shares', 0), pos.get('avg_cost', 0.0)
-    return 0, 0.0
-
-
-def _activate_tonghuashun():
-    """激活同花顺窗口，用 open -a 前台化"""
-    import subprocess
+def _pre_call():
+    """调用 EvolvingSim 前的准备：open -a 同花顺 + sleep 1 + 清锁"""
     subprocess.run(['open', '-a', '同花顺'], capture_output=True, timeout=3)
+    time.sleep(1)
+    _clean_lock()
 
 
-def _ensure_sim_trade_page():
+def _post_call():
+    """调用 EvolvingSim 后的等待：sleep 2"""
+    time.sleep(2)
+
+
+def _new_evolving():
+    """创建新的 EvolvingSim 实例（每次调用都新建，用完即弃）"""
+    _pre_call()
+    return EvolvingSim()
+
+
+def _call_evolving(method_name, *args):
     """
-    确保同花顺在模拟交易→股票页面。
-    先用 button 6 导航到交易页，再用命名按钮切换到模拟股票。
-    避免 macOS 26 上 EvolvingSim 的 click button 1 归位失败。
+    直接调用 EvolvingSim 方法（不用子进程）。
+    返回 EvolvingSim 方法的原始返回值，异常时返回 None。
     """
-    applescript = '''
-    tell application "同花顺" to activate
-    delay 0.5
-    tell application "System Events"
-        tell process "同花顺"
-            try
-                -- 先在交易页：尝试直接点 A股（如果已在交易页）
-                try
-                    click button "A股" of window 1
-                end try
-                delay 0.2
-                -- 切换到模拟交易
-                click button "模拟" of window 1
-                delay 0.2
-                -- 选择股票
-                click button "股票" of window 1
-                delay 0.1
-                return "ok"
-            on error errMsg
-                -- 如果 A股 不存在，说明不在交易页，先点 button 6 导航到交易
-                try
-                    click button 6 of window 1
-                    delay 0.5
-                    click button "A股" of window 1
-                    delay 0.2
-                    click button "模拟" of window 1
-                    delay 0.2
-                    click button "股票" of window 1
-                    delay 0.1
-                    return "ok"
-                on error errMsg2
-                    return "failed: " & errMsg2
-                end try
-            end try
-        end tell
-    end tell
-    '''
+    e = _new_evolving()
     try:
-        r = subprocess.run(['osascript', '-e', applescript],
-                           capture_output=True, text=True, timeout=8)
-        if DEBUG and r.stdout.strip() != 'ok':
-            _dbg(f"_ensure_sim_trade_page: {r.stdout.strip()}")
-    except Exception as e:
-        if DEBUG:
-            _dbg(f"_ensure_sim_trade_page FAILED: {e}")
-
-
-def _retry_get_holding_shares(max_retries=3, delay=2):
-    """带重试+超时保护+僵尸清理的 getHoldingShares"""
-    if DEBUG:
-        _dbg(f"_retry_get_holding_shares START (max_retries={max_retries}) "
-             f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-    for attempt in range(1, max_retries + 1):
-        # 每次重试前先激活窗口 + 清理僵尸 osascript 进程，确保无残留进程占用锁
-        _activate_tonghuashun()
-        _kill_osascript_zombies()
-        _clean_lock()
-
-        if DEBUG:
-            _dbg(f"_retry_get_holding_shares attempt={attempt}/{max_retries} "
-                 f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-
-        h = _call_evolving('getHoldingShares')
-        if isinstance(h, dict) and h.get('status'):
-            if DEBUG:
-                _dbg(f"_retry_get_holding_shares SUCCESS attempt={attempt}")
-            return h
-
-        if attempt < max_retries:
-            print(f"⚠️ EvolvingSim 连接失败，{delay}秒后重试 ({attempt}/{max_retries})")
-            time.sleep(delay)
-
-    if DEBUG:
-        _dbg(f"_retry_get_holding_shares ALL_FAILED osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-    raise RuntimeError("❌ 连接同花顺失败，请确认同花顺在模拟交易界面")
-
-
-def _get_holding_shares(code=None):
-    """
-    查 EvolvingSim 持仓（带重试+窗口激活）。
-    返回 dict {code: shares} 或 (若 code 指定) 单只数量。
-    """
-    h = _retry_get_holding_shares()
-    result = {}
-    for row in h.get('data', []):
-        if row and len(row) >= 7:
-            result[row[0]] = int(row[6])
-    if code:
-        return result.get(code, 0)
+        method = getattr(e, method_name)
+        result = method(*args)
+    except Exception as ex:
+        print(f"  ⚠️ EvolvingSim.{method_name} 异常: {ex}")
+        result = None
+    _post_call()
     return result
 
 
-def _get_price(code):
-    """获取当前市价（来自 EvolvingSim 持仓数据）"""
-    _clean_lock()
-    h = _call_evolving('getHoldingShares')
-    if not (isinstance(h, dict) and h.get('status')):
-        return None
-    for row in h.get('data', []):
-        if row and len(row) >= 3 and row[0] == code:
-            return float(row[2])
-    return None
+# ─── 数量校验 ──────────────────────────────────────────────────────────
+
+def _validate_shares(shares):
+    """校验数量是 100 的整数倍"""
+    if shares % 100 != 0:
+        print(f"❌ 数量 {shares} 不是 100 的整数倍")
+        sys.exit(1)
 
 
 # ─── sync ──────────────────────────────────────────────────────────────
 
-def _retry_get_account_info(max_retries=3, delay=2):
-    """带重试+窗口激活的 getAccountInfo"""
-    for attempt in range(1, max_retries + 1):
-        _activate_tonghuashun()
-        time.sleep(0.5)
-        _clean_lock()
-        acct = _call_evolving('getAccountInfo')
-        if isinstance(acct, dict) and acct.get('status'):
-            return acct
-        if attempt < max_retries:
-            print(f"⚠️ getAccountInfo 失败，{delay}秒后重试 ({attempt}/{max_retries})")
-            time.sleep(delay)
-    print("⚠️ 获取账户信息失败")
-    return None
-
-
 def sync():
-    """同步持仓到 portfolio.json（带重试+窗口激活）"""
-    h = _retry_get_holding_shares()
-    acct = _retry_get_account_info()
+    """同步持仓到 portfolio.json"""
+    h = _call_evolving('getHoldingShares')
+    acct = _call_evolving('getAccountInfo')
 
     if os.path.exists(PF_PATH):
         with open(PF_PATH) as f:
@@ -342,30 +102,36 @@ def sync():
     else:
         pf = {'positions': {}, 'account': {}}
 
-    # 用 tracker 标准名称覆盖 EvolvingSim 返回的截断名
     code_map = get_code_map()
 
-    for row in h.get('data', []):
-        if not row or len(row) < 12:
-            continue
-        code = row[0]
-        shares_val = int(row[6])
-        cost = float(row[10])
-        if shares_val > 0:
-            cur_price = float(row[2])
-            name = code_map.get(code, {}).get('name') or row[1]
-            pf['positions'][code] = {
-                'name': name,
-                'shares': shares_val,
-                'avg_cost': cost,
-                'current_price': cur_price,
-                'market_price': cur_price,
-                'market_value': float(row[11]),
-                'pnl': float(row[3]),
-                'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,
-            }
-        elif code in pf['positions']:
-            del pf['positions'][code]
+    if isinstance(h, dict) and h.get('status'):
+        for row in h.get('data', []):
+            if not row or len(row) < 12:
+                continue
+            code = row[0]
+            try:
+                shares_val = int(row[6])
+            except (ValueError, TypeError):
+                shares_val = 0
+            try:
+                cost = float(row[10])
+            except (ValueError, TypeError):
+                cost = 0.0
+            if shares_val > 0:
+                cur_price = float(row[2])
+                name = code_map.get(code, {}).get('name') or row[1]
+                pf['positions'][code] = {
+                    'name': name,
+                    'shares': shares_val,
+                    'avg_cost': cost,
+                    'current_price': cur_price,
+                    'market_price': cur_price,
+                    'market_value': float(row[11]),
+                    'pnl': float(row[3]),
+                    'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,
+                }
+            elif code in pf['positions']:
+                del pf['positions'][code]
 
     if isinstance(acct, dict) and acct.get('status'):
         d = acct['data']
@@ -376,36 +142,42 @@ def sync():
         }
     pf['last_updated'] = time.strftime('%Y-%m-%d %H:%M')
 
-    # 4. 同步 _signal_state
-    ss = pf.get('_signal_state', {})
-    active_codes = set()
-    for row in h.get('data', []):
-        if not row or len(row) < 12:
-            continue
-        code = row[0]
-        shares_val = int(row[6])
-        if shares_val > 0:
-            active_codes.add(code)
-            if code in ss:
-                ss[code]['shares'] = shares_val
-                ss[code]['avg_cost'] = float(row[10])
-                ss[code]['current_price'] = float(row[2])
-            # code 不在 _signal_state 中的情况不处理（signal_generator 负责管理）
-
-    # 清除已清仓的 code（同花顺里没有了但 _signal_state 里还有）
-    for code in list(ss.keys()):
-        if code not in active_codes:
-            del ss[code]
-
-    pf['_signal_state'] = ss
-
     with open(PF_PATH, 'w') as f:
         json.dump(pf, f, ensure_ascii=False, indent=2)
 
     print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{pf['account']['total_asset']:.0f}")
 
 
-# ─── 持仓增量确认下单 ────────────────────────────────────────────────
+# ─── 获取持仓/价格 ─────────────────────────────────────────────────────
+
+def _get_holding_shares(code=None):
+    """获取 EvolvingSim 中某标的持仓数量"""
+    h = _call_evolving('getHoldingShares')
+    result = {}
+    if isinstance(h, dict) and h.get('status'):
+        for row in h.get('data', []):
+            if row and len(row) >= 7:
+                try:
+                    result[row[0]] = int(row[6])
+                except (ValueError, TypeError):
+                    result[row[0]] = 0
+    if code:
+        return result.get(code, 0)
+    return result
+
+
+def _get_price(code):
+    """获取当前市价（来自 EvolvingSim 持仓数据）"""
+    h = _call_evolving('getHoldingShares')
+    if not (isinstance(h, dict) and h.get('status')):
+        return None
+    for row in h.get('data', []):
+        if row and len(row) >= 3 and row[0] == code:
+            return float(row[2])
+    return None
+
+
+# ─── 持仓增量确认下单 ──────────────────────────────────────────────────
 
 def _trade_with_confirmation(action, code, shares, price):
     """
@@ -413,45 +185,26 @@ def _trade_with_confirmation(action, code, shares, price):
     action: 'buy' | 'sell'
     返回 (success, before_shares, after_shares)
     """
-    if DEBUG:
-        _dbg(f"_trade_with_confirmation START action={action} code={code} shares={shares} price={price} "
-             f"osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
-
     # 1. 查当前持仓
-    holding_map = _get_holding_shares()
-    before = holding_map.get(code, 0)
+    before = _get_holding_shares(code)
 
-    if DEBUG:
-        _dbg(f"_trade_with_confirmation before={before} code={code}")
-
-    # 2. 下单前确保同花顺在模拟交易→股票页面（修复 macOS 26 上 EvolvingSim 的 button 1 归位失败）
-    _ensure_sim_trade_page()
-
-    # 3. 下单（新实例，带超时保护）
-    _clean_lock()
+    # 2. 下单
     result = _call_evolving(action, code, shares, price)
     if result is None:
-        print(f"❌ {action} {code} {shares}股@{price} → 下单超时/失败")
-        if DEBUG:
-            _dbg(f"_trade_with_confirmation RESULT=None osascript={_osascript_count()} lock={'YES' if _lock_exists() else 'NO'}")
+        print(f"❌ {action} {code} {shares}股@{price} → 下单失败")
         return False, before, before
 
     ok, contract = result
 
     if not ok:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
-        if DEBUG:
-            _dbg(f"_trade_with_confirmation result NOT OK: ({ok}, {contract})")
         return False, before, before
 
-    # 4. 等一等让成交生效
+    # 3. 等一等让成交生效
     time.sleep(1.5)
 
-    # 5. 持仓增量确认
-    if DEBUG:
-        _dbg(f"_trade_with_confirmation confirming position change...")
-    holding_map2 = _get_holding_shares()
-    after = holding_map2.get(code, 0)
+    # 4. 持仓增量确认
+    after = _get_holding_shares(code)
 
     if action == 'buy':
         delta = after - before
@@ -460,11 +213,8 @@ def _trade_with_confirmation(action, code, shares, price):
         delta = before - after
         expected = shares
 
-    if DEBUG:
-        _dbg(f"_trade_with_confirmation after={after} delta={delta} expected={expected}")
-
     if delta == expected:
-        # 6. 成交确认 → 同步 portfolio
+        # 成交确认 → 同步 portfolio
         sync()
         label = '买入' if action == 'buy' else '卖出'
         print(f"✅ {label} {code} {shares}股@{price} → 持仓从{before}→{after}股 合同:{contract}")
@@ -479,10 +229,12 @@ def _trade_with_confirmation(action, code, shares, price):
 # ─── buy / sell ────────────────────────────────────────────────────────
 
 def do_buy(code, shares, price):
+    _validate_shares(shares)
     return _trade_with_confirmation('buy', code, shares, price)
 
 
 def do_sell(code, shares, price):
+    _validate_shares(shares)
     return _trade_with_confirmation('sell', code, shares, price)
 
 
@@ -492,7 +244,8 @@ def _is_continuous_auction():
     """连续竞价时段: 9:30-11:30, 13:00-15:00"""
     now = time.localtime()
     t = now.tm_hour * 60 + now.tm_min
-    return (570 <= t <= 690) or (780 <= t <= 900)  # 9:30=570, 11:30=690, 13:00=780, 15:00=900
+    return (570 <= t <= 690) or (780 <= t <= 900)
+
 
 def do_t0_buy(code, shares, price, pair_price=None):
     """
@@ -500,9 +253,11 @@ def do_t0_buy(code, shares, price, pair_price=None):
       1. 检查连续竞价时段
       2. 撤同方向(买入)未成交委托
       3. 主单：买入 shares@price（限价≤当前价）
-      4. 配对：挂卖出单 shares@pair_price（限价≥当前价，ATR×2）
+      4. 配对：挂卖出单 shares@pair_price（限价≥当前价）
     配对失败不影响主单结果。
     """
+    _validate_shares(shares)
+
     if not _is_continuous_auction():
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
         return False
@@ -520,16 +275,9 @@ def do_t0_buy(code, shares, price, pair_price=None):
 
     # 配对价格
     if pair_price is None:
-        klines_5min = fetch_klines_5min(code)
-        atr = calc_atr(klines_5min, 14) if klines_5min else None
-        if atr is None:
-            print(f"[WARN] {code} 5分钟ATR不可用，降级为价格×2%粗估")
-            atr = round(price * 0.02, 3)
-        pair_price = round(price + atr * 1.1, 3)
-    else:
-        atr = None
+        pair_price = round(price * 1.02, 3)
 
-    print(f"🔁 做T买入 {code} {shares}股@{buy_limit} | ATR≈{atr or 'N/A'} | 配对卖出挂单@{pair_price}")
+    print(f"🔁 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单@{pair_price}")
 
     # 主单
     ok, before, after = _trade_with_confirmation('buy', code, shares, buy_limit)
@@ -539,8 +287,6 @@ def do_t0_buy(code, shares, price, pair_price=None):
         sell_limit = max(pair_price, cur_price)
         if sell_limit != pair_price:
             print(f"   ⚠️ 卖出限价调整: {pair_price} → {sell_limit} (≥当前价{cur_price})")
-        _clean_lock()
-        _ensure_sim_trade_page()
         result = _call_evolving('sell', code, shares, sell_limit)
         if result is not None:
             p_ok, p_contract = result
@@ -549,7 +295,7 @@ def do_t0_buy(code, shares, price, pair_price=None):
             else:
                 print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}: {p_contract}")
         else:
-            print(f"   ⚠️ 配对卖出挂单超时 {code} {shares}股@{sell_limit}")
+            print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}")
 
         print(f"✅ 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单 {shares}股@{sell_limit}")
     else:
@@ -564,9 +310,11 @@ def do_t0_sell(code, shares, price, pair_price=None):
       1. 检查连续竞价时段
       2. 撤同方向(卖出)未成交委托
       3. 主单：卖出 shares@price（限价≥当前价）
-      4. 配对：挂买入单 shares@pair_price（限价≤当前价，ATR×2）
+      4. 配对：挂买入单 shares@pair_price（限价≤当前价）
     配对失败不影响主单结果。
     """
+    _validate_shares(shares)
+
     if not _is_continuous_auction():
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
         return False
@@ -584,16 +332,9 @@ def do_t0_sell(code, shares, price, pair_price=None):
 
     # 配对价格
     if pair_price is None:
-        klines_5min = fetch_klines_5min(code)
-        atr = calc_atr(klines_5min, 14) if klines_5min else None
-        if atr is None:
-            print(f"[WARN] {code} 5分钟ATR不可用，降级为价格×2%粗估")
-            atr = round(price * 0.02, 3)
-        pair_price = round(price - atr * 1.1, 3)
-    else:
-        atr = None
+        pair_price = round(price * 0.98, 3)
 
-    print(f"🔁 做T卖出 {code} {shares}股@{sell_limit} | ATR≈{atr or 'N/A'} | 配对买入挂单@{pair_price}")
+    print(f"🔁 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单@{pair_price}")
 
     # 主单
     ok, before, after = _trade_with_confirmation('sell', code, shares, sell_limit)
@@ -603,8 +344,6 @@ def do_t0_sell(code, shares, price, pair_price=None):
         buy_limit = min(pair_price, cur_price)
         if buy_limit != pair_price:
             print(f"   ⚠️ 买入限价调整: {pair_price} → {buy_limit} (≤当前价{cur_price})")
-        _clean_lock()
-        _ensure_sim_trade_page()
         result = _call_evolving('buy', code, shares, buy_limit)
         if result is not None:
             p_ok, p_contract = result
@@ -613,7 +352,7 @@ def do_t0_sell(code, shares, price, pair_price=None):
             else:
                 print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}: {p_contract}")
         else:
-            print(f"   ⚠️ 配对买入挂单超时 {code} {shares}股@{buy_limit}")
+            print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}")
 
         print(f"✅ 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单 {shares}股@{buy_limit}")
     else:
@@ -632,17 +371,14 @@ def do_revoke(code, direction):
     流程:
       1. 查 getEntrust → 找 code + direction + 未成交
       2. 逐一 revokeEntrust(contractNo)
-      3. 撤完确认委托清空
     """
-    _clean_lock()
-
-    # 1. 查委托（带超时保护）
+    # 查委托
     ent = _call_evolving('getEntrust', 'today', True)
     if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
         print(f"⚠️ 无待撤委托 {code} {direction}")
         return True
 
-    # 2. 找匹配的未成交委托
+    # 找匹配的未成交委托
     targets = []
     for row in ent['data']:
         if row and len(row) > 10 and row[2] == code and row[4] == direction and row[5] == '未成交':
@@ -654,10 +390,9 @@ def do_revoke(code, direction):
         print(f"⚠️ 无待撤委托 {code} {direction}")
         return True
 
-    # 3. 逐一撤单（带超时保护）
+    # 逐一撤单
     revoked = 0
     for contract in targets:
-        _clean_lock()
         result = _call_evolving('revokeEntrust', contract)
         if result is not None:
             status, info = result
@@ -667,7 +402,7 @@ def do_revoke(code, direction):
             else:
                 print(f"   ❌ 撤单失败 {contract}: {info}")
         else:
-            print(f"   ❌ 撤单超时 {contract}")
+            print(f"   ❌ 撤单失败 {contract}")
         time.sleep(0.3)
 
     print(f"✅ 撤单 {code} {direction}：{revoked}笔已撤")
