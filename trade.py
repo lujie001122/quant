@@ -110,13 +110,13 @@ def _call_evolving(method_name, *args, timeout=None):
     # 注意：使用 sys.executable 确保使用 venv 中的 Python
     args_repr = ", ".join(repr(a) for a in args)
     code = (
-            f"import sys, json; "
-            f"sys.path.insert(0, {SCRIPT_DIR!r}); "
-            f"from evolving.evolving import EvolvingSim; "
-            f"e = EvolvingSim(); "
-            f"result = e.{method_name}({args_repr}); "
-            f"print(json.dumps(result, ensure_ascii=False, default=str))"
-        )
+        f"import sys, json; "
+        f"sys.path.insert(0, {SCRIPT_DIR!r}); "
+        f"from evolving.evolving import EvolvingSim; "
+        f"e = EvolvingSim(); "
+        f"result = e.{method_name}({args_repr}); "
+        f"print(json.dumps(result, ensure_ascii=False, default=str))"
+    )
 
     if DEBUG:
         _dbg(f"_call_evolving({method_name}, {args_repr}) timeout={timeout}s "
@@ -124,33 +124,13 @@ def _call_evolving(method_name, *args, timeout=None):
 
     start = time.time()
     proc = None
-    alert_stop = False
     try:
-        # 激活同花顺窗口，确保子进程的 EvolvingSim 能找到窗口
-        _activate_tonghuashun()
-        # 额外关闭弹框：_activate_tonghuashun 已关过一次，但 begin failed 可能又弹了
-        _close_tonghuashun_alerts(max_iterations=4, delay=0.15)
-        # cliclick 兜底：点击弹框"确认"按钮区域（屏幕中央偏下，弹框通常在此位置）
-        for _ in range(3):
-            subprocess.run(['cliclick', 'c:960,540'], capture_output=True, timeout=2)
-            time.sleep(0.1)
-
-        # 后台线程持续关闭弹框（EvolvingSim 执行期间防止弹框阻塞 AppleScript）
-        import threading
-        def _alert_killer_thread():
-            while not alert_stop:
-                _close_tonghuashun_alerts(max_iterations=3, delay=0.1)
-                time.sleep(0.2)
-        alert_thread = threading.Thread(target=_alert_killer_thread, daemon=True)
-        alert_thread.start()
-
         proc = subprocess.Popen(
             [sys.executable, '-c', code],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=SCRIPT_DIR,
         )
         stdout, stderr = proc.communicate(timeout=timeout)
-        alert_stop = True
         elapsed = time.time() - start
         returncode = proc.returncode
         if returncode == 0 and stdout.strip():
@@ -214,101 +194,12 @@ def _get_position(code):
     return 0, 0.0
 
 
-def _close_tonghuashun_alerts(max_iterations=8, delay=0.25):
-    """
-    循环关闭同花顺的所有 sheet/alert 弹框（如 'begin failed'）。
-    弹框可能反复弹出（'begin failed' 会连弹多次），
-    循环关闭直到连续无弹框或达到最大迭代次数。
-
-    用法: 在 _activate_tonghuashun 和 _call_evolving 中调用。
-    """
-    CHECK_SCRIPT = (
-        'tell application "System Events"\n'
-        '  tell process "同花顺"\n'
-        '    try\n'
-        '      set sCount to count of sheets of window 1\n'
-        '      return sCount\n'
-        '    on error\n'
-        '      return 0\n'
-        '    end try\n'
-        '  end tell\n'
-        'end tell'
-    )
-
-    CLICK_SCRIPT = (
-        'tell application "System Events"\n'
-        '  tell process "同花顺"\n'
-        '    try\n'
-        '      tell sheet 1 of window 1\n'
-        '        try\n'
-        '          click button "确认"\n'
-        '          return "ok:确认"\n'
-        '        on error\n'
-        '          try\n'
-        '            click button "确定"\n'
-        '            return "ok:确定"\n'
-        '          on error\n'
-        '            try\n'
-        '              click button "OK"\n'
-        '              return "ok:OK"\n'
-        '            on error\n'
-        '              click button 1\n'
-        '              return "ok:button1"\n'
-        '            end try\n'
-        '          end try\n'
-        '        end try\n'
-        '      end tell\n'
-        '    on error errMsg\n'
-        '      return "error"\n'
-        '    end try\n'
-        '  end tell\n'
-        'end tell'
-    )
-
-    closed_total = 0
-    for _ in range(max_iterations):
-        r = subprocess.run(['osascript', '-s', 's', '-e', CHECK_SCRIPT],
-                         capture_output=True, text=True, timeout=3)
-        try:
-            s_count = int(r.stdout.strip())
-        except Exception:
-            s_count = 0
-
-        if s_count <= 0:
-            return True  # 无弹框，干净退出
-
-        # 关闭所有 sheet
-        for _ in range(s_count):
-            r2 = subprocess.run(['osascript', '-s', 's', '-e', CLICK_SCRIPT],
-                               capture_output=True, text=True, timeout=3)
-            if 'ok:' in r2.stdout:
-                closed_total += 1
-            time.sleep(0.12)
-
-        time.sleep(delay)
-
-    if DEBUG:
-        _dbg(f"_close_tonghuashun_alerts: 关闭{closed_total}个弹框后仍有残留")
-    return False
-
-
 def _activate_tonghuashun():
-    """激活同花顺窗口：open -a 前台化 + 关闭弹框 + cliclick 点击标题栏"""
+    """激活同花顺窗口：open -a 前台化 + cliclick 点击标题栏"""
     import subprocess
     subprocess.run(['open', '-a', '同花顺'], capture_output=True, timeout=3)
-    # 自动关闭 'begin failed' 等弹框（两轮：前后各一轮）
-    _close_tonghuashun_alerts(max_iterations=10, delay=0.15)
-    # cliclick 点击确认按钮区域（屏幕中央，弹框'确认'按钮位置）
-    for _ in range(5):
-        subprocess.run(['cliclick', 'c:960,560'], capture_output=True, timeout=2)
-        time.sleep(0.08)
-    # 再次关闭弹框
-    _close_tonghuashun_alerts(max_iterations=8, delay=0.15)
     # 用 cliclick 点击屏幕上方（同花顺标题栏区域），模拟用户点击激活窗口
-    # macOS 26 上同花顺需要 Accessibility 树重建，模拟点击触发 OS 重建
     subprocess.run(['cliclick', 'c:960,50'], capture_output=True, timeout=3)
-    # 最后再关一轮弹框（弹框可能又弹了）
-    _close_tonghuashun_alerts(max_iterations=4, delay=0.1)
 
 
 def _retry_get_holding_shares(max_retries=3, delay=2):
