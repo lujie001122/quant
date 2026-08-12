@@ -675,7 +675,7 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=Tru
                 pair_shares = int(pos.shares * 0.30 / 100) * 100
                 if pair_shares >= 100 and pair_price > 0:
                     spread = (pair_price - price) * pair_shares
-                    if spread > 1:
+                    if spread > 200:
                         t0_pair = {
                             "trade_type": "t0_pair",
                             "action": "卖出(配对挂单)",
@@ -699,7 +699,7 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=Tru
                 pair_shares = int(pos.shares * 0.30 / 100) * 100
                 if pair_shares >= 100 and pair_price > 0:
                     spread = (price - pair_price) * pair_shares
-                    if spread > 1:
+                    if spread > 200:
                         t0_pair = {
                             "trade_type": "t0_pair",
                             "action": "买入(配对挂单)",
