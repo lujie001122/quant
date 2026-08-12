@@ -519,13 +519,83 @@ def _trade_type_to_mode(action):
     return "buy_sell"
 
 
+def _sync_entrust_to_orders():
+    """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
+    将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
+    """
+    try:
+        from evolving.evolving import EvolvingSim
+        e = EvolvingSim()
+        # getEntrust('today', False) 返回今日全部委托(含已成交、已撤单)
+        ent = e.getEntrust('today', False)
+        time.sleep(2)
+    except Exception as e:
+        print(f"[_sync_entrust] ⚠️ EvolvingSim 调用失败: {e}")
+        return
+
+    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+        print(f"[_sync_entrust] ⚠️ getEntrust 返回异常，跳过同步")
+        return
+
+    # 构建同花顺委托索引: {code: {direction: status}}
+    # row[2]=code, row[4]=direction, row[5]=status, row[10]=contract
+    ths_map = {}
+    for row in ent['data']:
+        if not row or len(row) <= 10:
+            continue
+        code = row[2]
+        direction = row[4]
+        status = row[5]
+        if code not in ths_map:
+            ths_map[code] = {}
+        ths_map[code][direction] = status
+
+    # 遍历本地 pending 订单，同步同花顺状态
+    orders = _load_today_orders()
+    orders_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders')
+    updated = 0
+
+    for fname, order in orders.items():
+        if order.get('status') != 'pending':
+            continue
+        code = order.get('code', '')
+        direction = order.get('direction', '')
+        if code not in ths_map or direction not in ths_map[code]:
+            continue
+        ths_status = ths_map[code][direction]
+
+        new_status = None
+        if ths_status in ('已成交', '全部成交', '部分成交'):
+            new_status = 'filled'
+        elif ths_status in ('已撤单', '已撤销', '废单'):
+            new_status = 'revoked'
+
+        if new_status:
+            order_path = os.path.join(orders_dir, fname)
+            try:
+                order['status'] = new_status
+                order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                with open(order_path, 'w') as f:
+                    json.dump(order, f, ensure_ascii=False, indent=2)
+                updated += 1
+                print(f"[_sync_entrust] {code} {direction} pending→{new_status} (同花顺:{ths_status})")
+            except (IOError, json.JSONDecodeError) as e:
+                print(f"[_sync_entrust] ⚠️ 更新 {fname} 失败: {e}")
+
+    if updated:
+        print(f"[_sync_entrust] 同步完成: {updated} 笔订单状态已更新")
+
+
 def _check_pending_orders(mode=None):
-    """检查 orders/ 目录中今日的挂单状态。
+    """检查 orders/ 目录中今日的挂单状态，同步同花顺委托状态。
     mode: 'buy_sell' | 't0' | None=全部
     返回: (pending_map, filled_codes)
       pending_map: {code: direction} 今日未成交的挂单
       filled_codes: set of (code, mode) 今日已成交
     """
+    # ── 同步同花顺委托状态，更新本地订单文件 ──
+    _sync_entrust_to_orders()
+
     orders = _load_today_orders()
     pending_map = {}
     filled_codes = set()
