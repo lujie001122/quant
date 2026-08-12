@@ -153,12 +153,17 @@ def _get_price(code):
 
 # ─── 持仓增量确认下单 ──────────────────────────────────────────────────
 
-def _trade_with_confirmation(action, code, shares, price):
+def _trade_with_confirmation(action, code, shares, price, order_action=None):
     """
-    通用下单 + 持仓增量确认。
-    action: 'buy' | 'sell'
-    返回 (success, before_shares, after_shares)
+    通用下单 + 持仓增量确认 + 订单持久化。
+    action: 'buy' | 'sell'（传给 EvolvingSim）
+    order_action: 订单记录用的 action 名，None 则默认用 action（如 't0_buy'/'t0_sell'）
+    返回 (status, before_shares, after_shares, contract)
+      status: 'filled' | 'pending' | 'failed'
     """
+    if order_action is None:
+        order_action = action
+
     # 1. 查当前持仓
     before = _get_holding_shares(code)
     time.sleep(1)  # 等 EvolvingSim 释放锁
@@ -167,13 +172,15 @@ def _trade_with_confirmation(action, code, shares, price):
     result = _call_evolving(action, code, shares, price)
     if result is None:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败")
-        return False, before, before, None
+        _write_order(code, order_action, shares, price, None, 'failed')
+        return 'failed', before, before, None
 
     ok, contract = result
 
     if not ok:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
-        return False, before, before, contract
+        _write_order(code, order_action, shares, price, contract, 'failed')
+        return 'failed', before, before, contract
 
     # 3. 等一等让成交生效
     time.sleep(1.5)
@@ -189,16 +196,19 @@ def _trade_with_confirmation(action, code, shares, price):
         expected = shares
 
     if delta == expected:
-        # 成交确认 → 同步 portfolio
+        # 成交确认 → 写入订单状态 filled + 同步 portfolio
         sync()
         label = '买入' if action == 'buy' else '卖出'
         print(f"✅ {label} {code} {shares}股@{price} → 持仓从{before}→{after}股 合同:{contract}")
-        return True, before, after, contract
+        _write_order(code, order_action, shares, price, contract, 'filled')
+        return 'filled', before, after, contract
     else:
+        # EvolvingSim 返回 True 但持仓没变 → 挂单未成交
         label = '买入' if action == 'buy' else '卖出'
-        print(f"❌ {label} {code} {shares}股@{price} → 下单成功但持仓未变（{before}→{after}），"
-              f"期望增量{expected}实际增量{delta}，可能未成交")
-        return False, before, after, contract
+        print(f"⏳ {label} {code} {shares}股@{price} → 下单已提交但持仓未变（{before}→{after}），"
+              f"期望增量{expected}实际增量{delta}，挂单中")
+        _write_order(code, order_action, shares, price, contract, 'pending')
+        return 'pending', before, after, contract
 
 
 # ─── 订单持久化 ──────────────────────────────────────────────────────────
@@ -207,7 +217,7 @@ def _write_order(code, action, shares, price, contract, status='pending'):
     """写订单到 orders/ 目录，用于信号生成器去重/挂单检查。
 
     action: 'buy' | 'sell' | 't0_buy' | 't0_sell'
-    status: 'pending' | 'filled' | 'revoked'
+    status: 'pending' | 'filled' | 'revoked' | 'failed'
     """
     os.makedirs(ORDERS_DIR, exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
@@ -260,16 +270,14 @@ def _update_order_status(code, action, new_status):
 
 def do_buy(code, shares, price):
     _validate_shares(shares)
-    ok, before, after, contract = _trade_with_confirmation('buy', code, shares, price)
-    _write_order(code, 'buy', shares, price, contract, 'filled' if ok else 'pending')
-    return ok
+    status, before, after, contract = _trade_with_confirmation('buy', code, shares, price)
+    return status == 'filled'
 
 
 def do_sell(code, shares, price):
     _validate_shares(shares)
-    ok, before, after, contract = _trade_with_confirmation('sell', code, shares, price)
-    _write_order(code, 'sell', shares, price, contract, 'filled' if ok else 'pending')
-    return ok
+    status, before, after, contract = _trade_with_confirmation('sell', code, shares, price)
+    return status == 'filled'
 
 
 # ─── T0 做T配对 ───────────────────────────────────────────────────────
@@ -314,10 +322,9 @@ def do_t0_buy(code, shares, price, pair_price=None):
     print(f"🔁 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单@{pair_price}")
 
     # 主单
-    ok, before, after, contract = _trade_with_confirmation('buy', code, shares, buy_limit)
-    _write_order(code, 't0_buy', shares, buy_limit, contract, 'filled' if ok else 'pending')
+    status, before, after, contract = _trade_with_confirmation('buy', code, shares, buy_limit, order_action='t0_buy')
 
-    if ok:
+    if status == 'filled':
         # 配对卖出挂单: 限价 ≥ 当前价
         sell_limit = max(pair_price, cur_price)
         if sell_limit != pair_price:
@@ -340,7 +347,7 @@ def do_t0_buy(code, shares, price, pair_price=None):
     else:
         print(f"❌ 做T买入主单失败，不挂配对单")
 
-    return ok
+    return status == 'filled'
 
 
 def do_t0_sell(code, shares, price, pair_price=None):
@@ -376,10 +383,9 @@ def do_t0_sell(code, shares, price, pair_price=None):
     print(f"🔁 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单@{pair_price}")
 
     # 主单
-    ok, before, after, contract = _trade_with_confirmation('sell', code, shares, sell_limit)
-    _write_order(code, 't0_sell', shares, sell_limit, contract, 'filled' if ok else 'pending')
+    status, before, after, contract = _trade_with_confirmation('sell', code, shares, sell_limit, order_action='t0_sell')
 
-    if ok:
+    if status == 'filled':
         # 配对买入挂单: 限价 ≤ 当前价
         buy_limit = min(pair_price, cur_price)
         if buy_limit != pair_price:
@@ -402,7 +408,7 @@ def do_t0_sell(code, shares, price, pair_price=None):
     else:
         print(f"❌ 做T卖出主单失败，不挂配对单")
 
-    return ok
+    return status == 'filled'
 
 
 # ─── revoke ────────────────────────────────────────────────────────────
