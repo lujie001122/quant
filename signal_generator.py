@@ -519,6 +519,20 @@ def _trade_type_to_mode(action):
     return "buy_sell"
 
 
+def _get_signal_direction(trade_type, action):
+    """从信号 trade_type 和 action 推导方向: 'buy' | 'sell' | 'unknown'"""
+    if trade_type == "buy":
+        return "buy"
+    if trade_type in ("sell", "liquidate", "reduce"):
+        return "sell"
+    if trade_type == "t0":
+        if "买入" in action:
+            return "buy"
+        if "卖出" in action:
+            return "sell"
+    return "unknown"
+
+
 def _sync_entrust_to_orders():
     """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
     将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
@@ -590,8 +604,8 @@ def _check_pending_orders(mode=None):
     """检查 orders/ 目录中今日的挂单状态，同步同花顺委托状态。
     mode: 'buy_sell' | 't0' | None=全部
     返回: (pending_map, filled_codes)
-      pending_map: {code: direction} 今日未成交的挂单
-      filled_codes: set of (code, mode) 今日已成交
+      pending_map: {code: direction} 今日未成交的挂单（受 mode 过滤）
+      filled_codes: set of (code, mode, direction) 今日已成交（不受 mode 过滤，全部收集）
     """
     # ── 同步同花顺委托状态，更新本地订单文件 ──
     _sync_entrust_to_orders()
@@ -607,13 +621,16 @@ def _check_pending_orders(mode=None):
         action = order.get('action', '')
         order_mode = 't0' if 't0_' in action else 'buy_sell'
 
+        # filled_codes 不受 mode 过滤，全部收集（去重用）
+        if status == 'filled':
+            filled_codes.add((code, order_mode, direction))
+
+        # pending_map 受 mode 过滤
         if mode and order_mode != mode:
             continue
 
         if status == 'pending':
             pending_map[code] = direction
-        elif status == 'filled':
-            filled_codes.add((code, order_mode))
 
     return pending_map, filled_codes
 
@@ -757,8 +774,8 @@ def execute_signals(result, mode=None):
     # ═══ 挂单检查：同步同花顺委托状态 + 构建 filled_codes（去重用） ═══
     pending_map, filled_codes = _check_pending_orders(mode)
     if filled_codes:
-        for code, fmode in filled_codes:
-            print(f"[EXECUTE] 去重: {code} mode={fmode} 今日已成交，跳过")
+        for code, fmode, fdir in filled_codes:
+            print(f"[EXECUTE] 去重: {code} mode={fmode} dir={fdir} 今日已成交，跳过")
     if pending_map:
         for code, direction in pending_map.items():
             print(f"[EXECUTE] 挂单: {code} {direction} 未成交，后续撤单")
@@ -794,10 +811,11 @@ def execute_signals(result, mode=None):
         trade_type = sig["trade_type"]
         action = sig.get("action", "")
 
-        # ═══ 去重检查：同 code + 同 mode + 已成交 → 跳过 ═══
+        # ═══ 去重检查：同 code + 同 mode + 同 direction + 已成交 → 跳过 ═══
         sig_mode = _trade_type_to_mode(trade_type)
-        if (code, sig_mode) in filled_codes:
-            print(f"  ⏭️ {code} mode={sig_mode} 今日已成交，跳过")
+        sig_direction = _get_signal_direction(trade_type, action)
+        if (code, sig_mode, sig_direction) in filled_codes:
+            print(f"  ⏭️ {code} mode={sig_mode} dir={sig_direction} 今日已成交，跳过")
             skip_count += 1
             continue
 
