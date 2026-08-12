@@ -115,5 +115,14 @@
     "shares": 7100,
     "error": "下单未成交(增量确认失败)",
     "retry_cmd": "python3 trade.py t0_sell 159532 7100 1.632 1.628"
+  },
+  {
+    "timestamp": "2026-08-12 10:00:45",
+    "code": "515050",
+    "action": "sell",
+    "price": 1.026,
+    "shares": 1600,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py sell 515050 1600 1.026"
   }
 ]

@@ -1,16 +1,16 @@
 {
   "515050": {
-    "timestamp": "2026-08-11 14:30:01",
+    "timestamp": "2026-08-12 10:00:45",
     "code": "515050",
-    "action": "t0",
-    "shares": 9700,
-    "price": 1.02,
-    "direction": "买入",
-    "time_window": "2026-08-11",
+    "action": "sell",
+    "shares": 1600,
+    "price": 1.026,
+    "direction": "卖出",
+    "time_window": "2026-08-12",
     "before_shares": 0,
     "after_shares": 0,
-    "pending": false,
-    "mode": "t0"
+    "pending": true,
+    "mode": "buy_sell"
   },
   "515880": {
     "timestamp": "2026-08-11 10:40:41",
@@ -25,17 +25,17 @@
     "pending": false
   },
   "512170": {
-    "timestamp": "2026-08-11 14:30:15",
+    "timestamp": "2026-08-12 10:00:59",
     "code": "512170",
-    "action": "t0",
-    "shares": 14600,
-    "price": 0.352,
-    "direction": "买入",
-    "time_window": "2026-08-11",
+    "action": "sell",
+    "shares": 3100,
+    "price": 0.353,
+    "direction": "卖出",
+    "time_window": "2026-08-12",
     "before_shares": 0,
     "after_shares": 0,
     "pending": false,
-    "mode": "t0"
+    "mode": "buy_sell"
   },
   "159516": {
     "timestamp": "2026-08-11 14:30:48",
@@ -75,5 +75,18 @@
     "after_shares": 0,
     "pending": false,
     "mode": "t0"
+  },
+  "159611": {
+    "timestamp": "2026-08-12 10:03:24",
+    "code": "159611",
+    "action": "sell",
+    "shares": 1200,
+    "price": 1.062,
+    "direction": "卖出",
+    "time_window": "2026-08-12",
+    "before_shares": 12300,
+    "after_shares": 11100,
+    "pending": false,
+    "mode": "buy_sell"
   }
 }

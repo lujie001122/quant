@@ -38,7 +38,7 @@ def _akshare_retry(func, *args, retries=3, initial_delay=API_DELAY, **kwargs):
 
 
 def _safe_float(val, default=0.0):
-    """安全转换akshare返回值为float, 处理"-"、None、空字符串等异常值"""
+    """安全转换返回值为float, 处理None、空字符串等异常值"""
     try:
         if val is None or val == "" or val == "-":
             return default
@@ -47,69 +47,63 @@ def _safe_float(val, default=0.0):
         return default
 
 
+# 扶瑶API配置
+_FUYAO_BASE = "https://fuyao.aicubes.cn"
+_FUYAO_HEADERS = {"X-api-key": "sk-fuyao-KuEuKMVJQ8dVfZhi0AzVDULSxAzOAwv2"}
+
+
+def _code_to_thscode(code):
+    """将ETF代码转换为扶瑶thscode格式: 1xxxxx→.SZ, 5xxxxx→.SH"""
+    if code.startswith("1"):
+        return f"{code}.SZ"
+    elif code.startswith("5"):
+        return f"{code}.SH"
+    else:
+        return f"{code}.SZ"  # fallback
+
+
+def _fetch_single_quote(code):
+    """通过扶瑶API获取单只ETF实时行情"""
+    thscode = _code_to_thscode(code)
+    url = f"{_FUYAO_BASE}/api/fund/market/snapshot?thscode={thscode}"
+    req = urllib.request.Request(url, headers=_FUYAO_HEADERS)
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if data.get("code") != 0:
+        raise RuntimeError(f"扶瑶API返回错误(code={data.get('code')}): {data.get('message')}")
+    items = data.get("data", {}).get("item", [])
+    if not items:
+        raise RuntimeError(f"扶瑶API返回空数据: {code}")
+    return items[0]
+
+
 def fetch_realtime_quotes():
-    """获取ETF实时行情（Sina主源0.2s→akshare备用16s）"""
-    sina_url = "https://hq.sinajs.cn/list=" + ",".join(CODE_MAP.values())
-
-    # 主数据源: Sina (单请求0.2秒)
-    try:
-        req = urllib.request.Request(sina_url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.sina.com.cn",
-        })
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            raw = resp.read().decode("gbk")
-        result = {}
-        for line in raw.strip().split("\n"):
-            if not line.strip(): continue
-            idx = line.find('"')
-            if idx == -1: continue
-            parts = line[idx+1:line.rfind('"')].split(",")
-            if len(parts) < 6: continue
-            for code, sid in CODE_MAP.items():
-                if sid not in line: continue
-                try:
-                    price = float(parts[3])
-                    prev = float(parts[2])
-                except ValueError:
-                    continue  # 跳过异常数据行
-                pct = round((price - prev) / prev * 100, 2) if prev else 0
-                result[code] = {
-                    "name": ETFS[code]["name"],
-                    "price": price,
-                    "pct_change": pct,
-                    "change": round(price - prev, 3),
-                    "volume": float(parts[8]) if len(parts) > 8 else 0,
-                    "amount": 0,
-                    "high": float(parts[4]),
-                    "low": float(parts[5]),
-                    "open": float(parts[1]),
-                    "prev_close": prev,
-                }
-        return result
-    except Exception:
-        pass
-
-    # 备用: akshare
-    df = _akshare_retry(ak.fund_etf_spot_em)
+    """获取ETF实时行情（扶瑶API: /api/fund/market/snapshot）"""
     result = {}
     for code in ETFS:
-        row = df[df["代码"] == code]
-        if len(row) == 0:
-            raise RuntimeError(f"未找到ETF {code} 的实时行情数据")
-        r = row.iloc[0]
-        result[code] = {
-            "name": r["名称"],
-            "price": _safe_float(r["最新价"]),
-            "pct_change": _safe_float(r["涨跌幅"]),
-            "change": _safe_float(r["涨跌额"]),
-            "volume": _safe_float(r["成交量"]),
-            "amount": _safe_float(r["成交额"]),
-            "high": _safe_float(r["最高价"]),
-            "low": _safe_float(r["最低价"]),
-            "open": _safe_float(r["开盘价"]),
-            "prev_close": _safe_float(r["昨收"]),
-        }
+        try:
+            item = _fetch_single_quote(code)
+            price = _safe_float(item.get("last_price"))
+            prev = _safe_float(item.get("prev_price"))
+            pct = _safe_float(item.get("price_change_ratio_pct"))
+            chg = _safe_float(item.get("price_change"))
+            result[code] = {
+                "name": ETFS[code]["name"],
+                "price": price,
+                "pct_change": round(pct, 2),
+                "change": round(chg, 3),
+                "volume": _safe_float(item.get("volume")),
+                "amount": _safe_float(item.get("turnover")),
+                "high": _safe_float(item.get("high_price")),
+                "low": _safe_float(item.get("low_price")),
+                "open": _safe_float(item.get("open_price")),
+                "prev_close": prev,
+            }
+        except Exception as e:
+            print(f"[WARN] {code} 扶瑶API获取行情失败: {e}")
+            continue
+    if not result:
+        raise RuntimeError("所有ETF行情获取均失败")
     return result
 
 

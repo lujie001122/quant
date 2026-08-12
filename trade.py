@@ -27,7 +27,6 @@ import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
-LOCK_PATH = '/tmp/lock.json'
 
 from evolving.evolving import EvolvingSim
 from tracker import get_code_map
@@ -37,47 +36,25 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
 # ─── EvolvingSim 调用辅助 ──────────────────────────────────────────────
 
-def _clean_lock():
-    """清理 EvolvingSim 锁文件，避免异常退出后残留导致阻塞"""
-    if os.path.exists(LOCK_PATH):
-        try:
-            os.remove(LOCK_PATH)
-        except OSError:
-            pass
+# ─── 全局单例 ──────────────────────────────────────────────────────────
 
-
-def _pre_call():
-    """调用 EvolvingSim 前的准备：open -a 同花顺 + sleep 1 + 清锁"""
-    subprocess.run(['open', '-a', '同花顺'], capture_output=True, timeout=3)
-    time.sleep(1)
-    _clean_lock()
-
-
-def _post_call():
-    """调用 EvolvingSim 后的等待：sleep 2"""
-    time.sleep(2)
-
-
-def _new_evolving():
-    """创建新的 EvolvingSim 实例（每次调用都新建，用完即弃）"""
-    _pre_call()
-    return EvolvingSim()
+_EVOLVING = None
 
 
 def _call_evolving(method_name, *args):
     """
-    直接调用 EvolvingSim 方法（不用子进程）。
-    返回 EvolvingSim 方法的原始返回值，异常时返回 None。
+    直接调用 EvolvingSim 方法，每次新建实例。
     """
-    e = _new_evolving()
+    e = EvolvingSim()
     try:
         method = getattr(e, method_name)
         result = method(*args)
+        time.sleep(2)
+        return result
     except Exception as ex:
         print(f"  ⚠️ EvolvingSim.{method_name} 异常: {ex}")
-        result = None
-    _post_call()
-    return result
+        time.sleep(2)
+        return None
 
 
 # ─── 数量校验 ──────────────────────────────────────────────────────────
