@@ -382,6 +382,24 @@ def do_t0_sell(code, shares, price, pair_price=None):
 
 # ─── revoke ────────────────────────────────────────────────────────────
 
+def _confirm_revoke(e, contract, code, direction):
+    """查 getEntrust 确认某委托号备注是否变为'全部撤单'。
+    返回 True 表示已撤成，False 表示仍为'未成交'或其他状态。
+    """
+    ent = e.getEntrust('today', True)
+    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+        return False
+    for row in ent['data']:
+        if row and len(row) > 10 and row[10] == contract:
+            remark = row[5] if len(row) > 5 else ''
+            if remark == '全部撤单':
+                return True
+            else:
+                return False
+    # 委托号已不存在（可能已成交或已撤），保守视为确认成功
+    return True
+
+
 def do_revoke(code, direction):
     """
     撤同标的同方向未成交委托。
@@ -413,18 +431,44 @@ def do_revoke(code, direction):
             return True
 
         # 逐一撤单（同一实例，不产生锁冲突）
+        # 每笔撤单后查 getEntrust 确认备注变为"全部撤单"，否则重试一次
         revoked = 0
         for contract in targets:
             result = e.revokeEntrust(contract)
             if result is not None:
                 status, info = result
-                if status:
-                    print(f"   ✅ 撤: {contract}")
-                    revoked += 1
-                else:
+                if not status:
                     print(f"   ❌ 撤单失败 {contract}: {info}")
+                    continue
             else:
                 print(f"   ❌ 撤单失败 {contract}")
+                continue
+
+            # 确认撤单状态：查 getEntrust 验证备注
+            time.sleep(0.5)
+            confirmed = _confirm_revoke(e, contract, code, direction)
+
+            # 如果第一次确认未撤成，重试一次
+            if not confirmed:
+                print(f"   🔁 重试撤单 {contract} ...")
+                retry = e.revokeEntrust(contract)
+                if retry is not None:
+                    r_status, r_info = retry
+                    if r_status:
+                        time.sleep(0.5)
+                        confirmed = _confirm_revoke(e, contract, code, direction)
+                    else:
+                        print(f"   ❌ 重试撤单失败 {contract}: {r_info}")
+                        continue
+                else:
+                    print(f"   ❌ 重试撤单失败 {contract}")
+                    continue
+
+            if confirmed:
+                print(f"   ✅ 撤: {contract}")
+                revoked += 1
+            else:
+                print(f"   ❌ 撤单未确认 {contract}：重试后备注仍未变更为'全部撤单'")
             time.sleep(0.3)
 
         # 更新订单状态
