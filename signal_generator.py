@@ -286,6 +286,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             if t0_exec is not None:
                 action, position_ratio, trade_type, reason = t0_exec[:4]
                 t0_pair = t0_exec[4] if len(t0_exec) > 4 else None
+        elif buy_score >= 2 and pos.has_position and pos.can_t0_today(today_str, atr_pct):
+            # 其他 action 被优先级1抢占时(如趋势止盈卖10%)，T0买入信号仍应生成配对挂单
+            print(f"[DEBUG {code}] elif branch: action={action!r}, t0_signal={t0_signal!r}")
+            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False)
+            if t0_exec is not None:
+                t0_pair = t0_exec[4] if len(t0_exec) > 4 else None
+                # 将配对挂单信息附加到 reason 中
+                if t0_pair:
+                    pair_action = t0_pair.get("action", "")
+                    pair_price = t0_pair.get("pair_price", 0)
+                    reason += f" | T0配对挂单: {pair_action}({pair_price:.3f})"
 
         # 优先级3: 网格(仅持仓时生效，不触发建仓；仓位超限时禁止网格买入)
         if action == "持有":

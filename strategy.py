@@ -644,9 +644,12 @@ def evaluate_t0(t, pos, price, today_str, atr_pct):
     return result
 
 
-def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct):
+def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True):
     """从 evaluate_t0 结果中解析出具体的执行动作(trade_type, action, position_ratio, reason, t0_pair)
     在 generate_signals 的优先级2阶段调用
+
+    record_t0: 是否记录T0次数。当 action 被优先级1抢占时(如趋势止盈)，
+               仅生成配对挂单，不记录T0次数(False)
     """
     buy_score = result["buy_score"]
     sell_score = result["sell_score"]
@@ -661,7 +664,8 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct):
             if _position_capped:
                 return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None,
                         f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过")
-            pos.record_t0(today_str)
+            if record_t0:
+                pos.record_t0(today_str)
             ratio = 0.30
             # 配对卖出挂单: 高位卖出 (5min ATR×1.1)
             atr_5m = t.get("atr_5min")
@@ -671,7 +675,7 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct):
                 pair_shares = int(pos.shares * 0.30 / 100) * 100
                 if pair_shares >= 100 and pair_price > 0:
                     spread = (pair_price - price) * pair_shares
-                    if spread > 10:
+                    if spread > 1:
                         t0_pair = {
                             "trade_type": "t0_pair",
                             "action": "卖出(配对挂单)",
@@ -684,7 +688,8 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct):
             return ("买入", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 
         elif "卖出" in t0_signal:
-            pos.record_t0(today_str)
+            if record_t0:
+                pos.record_t0(today_str)
             ratio = 0.1 if "半" in t0_signal else 0.2
             # 配对买入挂单: 低位吃回 (5min ATR×1.1)
             atr_5m = t.get("atr_5min")
@@ -694,7 +699,7 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct):
                 pair_shares = int(pos.shares * 0.30 / 100) * 100
                 if pair_shares >= 100 and pair_price > 0:
                     spread = (price - pair_price) * pair_shares
-                    if spread > 10:
+                    if spread > 1:
                         t0_pair = {
                             "trade_type": "t0_pair",
                             "action": "买入(配对挂单)",
