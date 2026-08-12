@@ -155,60 +155,29 @@ def _get_price(code):
 
 def _trade_with_confirmation(action, code, shares, price, order_action=None):
     """
-    通用下单 + 持仓增量确认 + 订单持久化。
-    action: 'buy' | 'sell'（传给 EvolvingSim）
-    order_action: 订单记录用的 action 名，None 则默认用 action（如 't0_buy'/'t0_sell'）
-    返回 (status, before_shares, after_shares, contract)
-      status: 'filled' | 'pending' | 'failed'
+    下单 + 订单持久化。不查持仓，照搬手动成功流程。
     """
     if order_action is None:
         order_action = action
 
-    # 1. 查当前持仓
-    before = _get_holding_shares(code)
-    time.sleep(1)  # 等 EvolvingSim 释放锁
-
-    # 2. 下单
+    # 下单
     result = _call_evolving(action, code, shares, price)
     if result is None:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败")
         _write_order(code, order_action, shares, price, None, 'failed')
-        return 'failed', before, before, None
+        return 'failed', 0, 0, None
 
     ok, contract = result
 
     if not ok:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
         _write_order(code, order_action, shares, price, contract, 'failed')
-        return 'failed', before, before, contract
+        return 'failed', 0, 0, contract
 
-    # 3. 等一等让成交生效
-    time.sleep(1.5)
-
-    # 4. 持仓增量确认
-    after = _get_holding_shares(code)
-
-    if action == 'buy':
-        delta = after - before
-        expected = shares
-    else:
-        delta = before - after
-        expected = shares
-
-    if delta == expected:
-        # 成交确认 → 写入订单状态 filled + 同步 portfolio
-        sync()
-        label = '买入' if action == 'buy' else '卖出'
-        print(f"✅ {label} {code} {shares}股@{price} → 持仓从{before}→{after}股 合同:{contract}")
-        _write_order(code, order_action, shares, price, contract, 'filled')
-        return 'filled', before, after, contract
-    else:
-        # EvolvingSim 返回 True 但持仓没变 → 挂单未成交
-        label = '买入' if action == 'buy' else '卖出'
-        print(f"⏳ {label} {code} {shares}股@{price} → 下单已提交但持仓未变（{before}→{after}），"
-              f"期望增量{expected}实际增量{delta}，挂单中")
-        _write_order(code, order_action, shares, price, contract, 'pending')
-        return 'pending', before, after, contract
+    # 下单成功，挂单 pending
+    print(f"⏳ {action} {code} {shares}股@{price} → 已挂单 合同:{contract}")
+    _write_order(code, order_action, shares, price, contract, 'pending')
+    return 'pending', 0, 0, contract
 
 
 # ─── 订单持久化 ──────────────────────────────────────────────────────────
