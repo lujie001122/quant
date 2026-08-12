@@ -382,45 +382,53 @@ def do_t0_sell(code, shares, price, pair_price=None):
 # ─── revoke_all ───────────────────────────────────────────────────────
 
 def revoke_all():
-    """全撤：调用 EvolvingSim 撤销全部买卖委托，并删除今日 orders/ 订单文件。
+    """全撤：调用 EvolvingSim 撤销全部买卖委托，并将今日 pending 订单标记为 revoked（保留 filled）。
+
+    铁律：
+    - 不删除订单文件，改为标记状态
+    - 已成交(filled)订单保留不动
+    - 全撤失败只告警，不阻塞后续流程
 
     用法：python3 trade.py revoke_all
-    成功后删除今天所有 orders/ 目录下的订单文件。
     """
     e = EvolvingSim()
+    revoke_ok = False
     try:
         result = e.revokeEntrust(revokeType='allBuyAndSell')
         if result is not None:
-            status, info = result
-            if status:
-                print(f"✅ 全撤成功: {info}")
-            else:
-                print(f"❌ 全撤失败: {info}")
-                return False
+            revoke_ok = result[0]
+            print(f"{'✅ 全撤成功' if revoke_ok else '⚠️ 全撤失败'}: {result[1] if len(result) > 1 else result}")
         else:
-            print(f"❌ 全撤失败: 返回 None")
-            return False
+            print(f"⚠️ 全撤失败: 返回 None")
     except Exception as ex:
-        print(f"❌ 全撤异常: {ex}")
-        return False
+        print(f"⚠️ 全撤异常: {ex}")
     finally:
         time.sleep(2)
 
-    # 删除今天所有 orders/ 订单文件
+    # 标记今日 pending 订单为 revoked，保留 filled
     if os.path.exists(ORDERS_DIR):
         today = datetime.now().strftime('%Y%m%d')
-        deleted = 0
+        updated = 0
         for fname in os.listdir(ORDERS_DIR):
-            if fname.startswith(today) and fname.endswith('.json'):
-                try:
-                    os.remove(os.path.join(ORDERS_DIR, fname))
-                    deleted += 1
-                except OSError:
-                    pass
-        if deleted:
-            print(f"✅ 已清理 {deleted} 个今日订单文件")
+            if not (fname.startswith(today) and fname.endswith('.json')):
+                continue
+            order_path = os.path.join(ORDERS_DIR, fname)
+            try:
+                with open(order_path, 'r') as f:
+                    order = json.load(f)
+                # 保留 filled 订单不动，只标记 pending 为 revoked
+                if order.get('status') == 'pending':
+                    order['status'] = 'revoked'
+                    order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    with open(order_path, 'w') as f:
+                        json.dump(order, f, ensure_ascii=False, indent=2)
+                    updated += 1
+            except (json.JSONDecodeError, IOError, OSError):
+                pass
+        if updated:
+            print(f"✅ 已标记 {updated} 个 pending 订单为 revoked（filled 订单保留）")
 
-    return True
+    return revoke_ok
 
 
 # ─── main ──────────────────────────────────────────────────────────────

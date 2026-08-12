@@ -754,9 +754,37 @@ def execute_signals(result, mode=None):
     print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
     print("=" * 60)
 
-    # ═══ 全撤：执行前先撤销所有未成交委托，清理 orders/ ═══
+    # ═══ 挂单检查：同步同花顺委托状态 + 构建 filled_codes（去重用） ═══
+    pending_map, filled_codes = _check_pending_orders(mode)
+    if filled_codes:
+        for code, fmode in filled_codes:
+            print(f"[EXECUTE] 去重: {code} mode={fmode} 今日已成交，跳过")
+    if pending_map:
+        for code, direction in pending_map.items():
+            print(f"[EXECUTE] 挂单: {code} {direction} 未成交，后续撤单")
+
+    # ═══ 全撤：执行前先撤销所有未成交委托 ═══
+    # 失败时告警但不阻塞后续执行
     print("[EXECUTE] 全撤所有未成交委托...")
-    os.system(f"python3 {trade_script} revoke_all")
+    try:
+        revoke_proc = subprocess.run(
+            [sys.executable or "python3", trade_script, "revoke_all"],
+            capture_output=True, text=True, timeout=30, cwd=script_dir
+        )
+        if revoke_proc.returncode != 0:
+            print(f"  ⚠️ revoke_all 返回码非零({revoke_proc.returncode})，继续执行...")
+            if revoke_proc.stdout:
+                print(f"  {revoke_proc.stdout.strip()}")
+            if revoke_proc.stderr:
+                print(f"  [stderr] {revoke_proc.stderr.strip()}")
+        else:
+            if revoke_proc.stdout:
+                for line in revoke_proc.stdout.strip().split("\n"):
+                    print(f"  {line}")
+    except subprocess.TimeoutExpired:
+        print(f"  ⚠️ revoke_all 超时，继续执行...")
+    except Exception as e:
+        print(f"  ⚠️ revoke_all 异常: {e}，继续执行...")
 
     success_count = 0
     fail_count = 0
@@ -765,6 +793,13 @@ def execute_signals(result, mode=None):
     for i, (code, sig) in enumerate(actionable):
         trade_type = sig["trade_type"]
         action = sig.get("action", "")
+
+        # ═══ 去重检查：同 code + 同 mode + 已成交 → 跳过 ═══
+        sig_mode = _trade_type_to_mode(trade_type)
+        if (code, sig_mode) in filled_codes:
+            print(f"  ⏭️ {code} mode={sig_mode} 今日已成交，跳过")
+            skip_count += 1
+            continue
 
         # ═══ 获取当前实时价 ═══
         signal_price_str = sig.get("price", "0")
