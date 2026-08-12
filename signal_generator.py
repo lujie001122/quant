@@ -680,13 +680,20 @@ def _build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
     if trade_type in ("buy", "sell", "liquidate", "reduce"):
         return f"python3 trade.py {trade_type if trade_type in ('buy','sell') else 'sell'} {code} {shares} {price:.3f}"
     elif trade_type == "t0":
-        t0_pair = sig.get("t0_pair", {})
-        pair_price = t0_pair.get("pair_price", 0)
-        pair_shares = t0_pair.get("shares", 0)
-        if "买入" in sig.get("action", ""):
-            return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+        t0_pair = sig.get("t0_pair")
+        if t0_pair:
+            pair_price = t0_pair.get("pair_price", 0)
+            pair_shares = t0_pair.get("shares", 0)
+            if "买入" in sig.get("action", ""):
+                return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+            else:
+                return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
         else:
-            return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+            # 无配对做T：降级为普通买卖重试命令
+            if "买入" in sig.get("action", ""):
+                return f"python3 trade.py buy {code} {shares} {price:.3f}"
+            else:
+                return f"python3 trade.py sell {code} {shares} {price:.3f}"
     return ""
 
 
