@@ -124,5 +124,41 @@
     "shares": 1600,
     "error": "下单未成交(增量确认失败)",
     "retry_cmd": "python3 trade.py sell 515050 1600 1.026"
+  },
+  {
+    "timestamp": "2026-08-12 11:21:49",
+    "code": "159611",
+    "action": "t0",
+    "price": 1.06,
+    "shares": 3300,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 159611 3300 1.060"
+  },
+  {
+    "timestamp": "2026-08-12 11:38:08",
+    "code": "159611",
+    "action": "t0",
+    "price": 1.059,
+    "shares": 3300,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 159611 3300 1.059"
+  },
+  {
+    "timestamp": "2026-08-12 11:41:07",
+    "code": "159611",
+    "action": "t0",
+    "price": 1.059,
+    "shares": 3300,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 159611 3300 1.059"
+  },
+  {
+    "timestamp": "2026-08-12 13:41:20",
+    "code": "512170",
+    "action": "t0",
+    "price": 0.35,
+    "shares": 18100,
+    "error": "下单未成交(增量确认失败)",
+    "retry_cmd": "python3 trade.py buy 512170 18100 0.350"
   }
 ]

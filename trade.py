@@ -34,20 +34,15 @@ from tracker import get_code_map
 CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
 
-# ─── EvolvingSim 调用辅助 ──────────────────────────────────────────────
-
-# ─── 全局单例 ──────────────────────────────────────────────────────────
-
-_EVOLVING = None
-
+# ─── EvolvingSim 调用 ──────────────────────────────────────────────────
 
 def _call_evolving(method_name, *args):
     """
-    直接调用 EvolvingSim 方法，每次新建实例。
+    直接调用 EvolvingSim 方法。
     """
     e = EvolvingSim()
     try:
-        method = getattr(e, method_name)
+        method = e.__getattribute__(method_name)
         result = method(*args)
         time.sleep(2)
         return result
@@ -164,6 +159,7 @@ def _trade_with_confirmation(action, code, shares, price):
     """
     # 1. 查当前持仓
     before = _get_holding_shares(code)
+    time.sleep(1)  # 等 EvolvingSim 释放锁
 
     # 2. 下单
     result = _call_evolving(action, code, shares, price)
