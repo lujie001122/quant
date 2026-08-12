@@ -11,6 +11,7 @@ import akshare as ak
 import json
 import time
 import urllib.request
+from datetime import datetime
 
 from tracker import get_etfs_config, get_code_map
 
@@ -38,7 +39,7 @@ def _akshare_retry(func, *args, retries=3, initial_delay=API_DELAY, **kwargs):
 
 
 def _safe_float(val, default=0.0):
-    """安全转换返回值为float, 处理None、空字符串等异常值"""
+    """安全转换akshare返回值为float, 处理"-"、None、空字符串等异常值"""
     try:
         if val is None or val == "" or val == "-":
             return default
@@ -47,70 +48,75 @@ def _safe_float(val, default=0.0):
         return default
 
 
-# 扶瑶API配置
-_FUYAO_BASE = "https://fuyao.aicubes.cn"
-_FUYAO_HEADERS = {"X-api-key": "sk-fuyao-KuEuKMVJQ8dVfZhi0AzVDULSxAzOAwv2"}
-
-
-def _code_to_thscode(code):
-    """将ETF代码转换为扶瑶thscode格式: 1xxxxx→.SZ, 5xxxxx→.SH"""
-    if code.startswith("1"):
-        return f"{code}.SZ"
-    elif code.startswith("5"):
-        return f"{code}.SH"
-    else:
-        return f"{code}.SZ"  # fallback
-
-
-def _fetch_single_quote(code):
-    """通过扶瑶API获取单只ETF实时行情"""
-    thscode = _code_to_thscode(code)
-    url = f"{_FUYAO_BASE}/api/fund/market/snapshot?thscode={thscode}"
-    req = urllib.request.Request(url, headers=_FUYAO_HEADERS)
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    if data.get("code") != 0:
-        raise RuntimeError(f"扶瑶API返回错误(code={data.get('code')}): {data.get('message')}")
-    items = data.get("data", {}).get("item", [])
-    if not items:
-        raise RuntimeError(f"扶瑶API返回空数据: {code}")
-    return items[0]
-
-
 def fetch_realtime_quotes():
-    """获取ETF实时行情（扶瑶API: /api/fund/market/snapshot）"""
+    """获取ETF实时行情（Sina主源0.2s→akshare备用16s）"""
+    sina_url = "https://hq.sinajs.cn/list=" + ",".join(CODE_MAP.values())
+
+    # 主数据源: Sina (单请求0.2秒)
+    try:
+        req = urllib.request.Request(sina_url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn",
+        })
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode("gbk")
+        result = {}
+        for line in raw.strip().split("\n"):
+            if not line.strip(): continue
+            idx = line.find('"')
+            if idx == -1: continue
+            parts = line[idx+1:line.rfind('"')].split(",")
+            if len(parts) < 6: continue
+            for code, sid in CODE_MAP.items():
+                if sid not in line: continue
+                try:
+                    price = float(parts[3])
+                    prev = float(parts[2])
+                except ValueError:
+                    continue  # 跳过异常数据行
+                pct = round((price - prev) / prev * 100, 2) if prev else 0
+                result[code] = {
+                    "name": ETFS[code]["name"],
+                    "price": price,
+                    "pct_change": pct,
+                    "change": round(price - prev, 3),
+                    "volume": float(parts[8]) if len(parts) > 8 else 0,
+                    "amount": 0,
+                    "high": float(parts[4]),
+                    "low": float(parts[5]),
+                    "open": float(parts[1]),
+                    "prev_close": prev,
+                }
+        return result
+    except Exception:
+        pass
+
+    # 备用: akshare
+    df = _akshare_retry(ak.fund_etf_spot_em)
     result = {}
     for code in ETFS:
-        try:
-            item = _fetch_single_quote(code)
-            price = _safe_float(item.get("last_price"))
-            prev = _safe_float(item.get("prev_price"))
-            pct = _safe_float(item.get("price_change_ratio_pct"))
-            chg = _safe_float(item.get("price_change"))
-            result[code] = {
-                "name": ETFS[code]["name"],
-                "price": price,
-                "pct_change": round(pct, 2),
-                "change": round(chg, 3),
-                "volume": _safe_float(item.get("volume")),
-                "amount": _safe_float(item.get("turnover")),
-                "high": _safe_float(item.get("high_price")),
-                "low": _safe_float(item.get("low_price")),
-                "open": _safe_float(item.get("open_price")),
-                "prev_close": prev,
-            }
-        except Exception as e:
-            print(f"[WARN] {code} 扶瑶API获取行情失败: {e}")
-            continue
-    if not result:
-        raise RuntimeError("所有ETF行情获取均失败")
+        row = df[df["代码"] == code]
+        if len(row) == 0:
+            raise RuntimeError(f"未找到ETF {code} 的实时行情数据")
+        r = row.iloc[0]
+        result[code] = {
+            "name": r["名称"],
+            "price": _safe_float(r["最新价"]),
+            "pct_change": _safe_float(r["涨跌幅"]),
+            "change": _safe_float(r["涨跌额"]),
+            "volume": _safe_float(r["成交量"]),
+            "amount": _safe_float(r["成交额"]),
+            "high": _safe_float(r["最高价"]),
+            "low": _safe_float(r["最低价"]),
+            "open": _safe_float(r["开盘价"]),
+            "prev_close": _safe_float(r["昨收"]),
+        }
     return result
 
 
-def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq", sid=None):
+def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
     """获取日K线(腾讯前复权接口, 自带qfq无需手动复权)"""
-    if sid is None:
-        sid = CODE_MAP.get(code, "")
+    sid = CODE_MAP.get(code, "")
     if not sid:
         raise RuntimeError(f"{code} 无代码映射")
 
@@ -180,73 +186,23 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq", sid
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
 
 
-def fetch_klines_daily_arrays(code, sid=None):
-    """获取日K线并转换为 {closes, highs, lows, volumes} 四个数组
-    统一 rotation.py 和 backtest_bt 的格式转换。
-    """
-    klines = fetch_klines_daily(code, sid=sid)
-    if not klines or len(klines) < 30:
-        return None
-
-    closes = [d["close"] for d in klines]
-    highs = [d["high"] for d in klines]
-    lows = [d["low"] for d in klines]
-    volumes = [d["volume"] for d in klines]
-    return {"closes": closes, "highs": highs, "lows": lows, "volumes": volumes,
-            "_raw_klines": klines}
-
-
-def fetch_klines_daily_df(code, sid=None):
-    """获取日K线并转换为 pandas DataFrame (OHLCV)
-    统一 backtest_bt 的格式转换。
-    """
-    import pandas as pd
-    klines = fetch_klines_daily(code, sid=sid)
-    rows = []
-    for k in klines:
-        rows.append({
-            "date": k["date"],
-            "open": k["open"],
-            "close": k["close"],
-            "high": k["high"],
-            "low": k["low"],
-            "volume": k["volume"],
-        })
-    if len(rows) <= 50:
-        raise RuntimeError(f"{code} K线不足({len(rows)}条)")
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    df.set_index("date", inplace=True)
-    return df[["open", "high", "low", "close", "volume"]]
-
-
-def calc_max_drawdown(closes):
-    """计算历史最大回撤(%)
-    从 rotation.py 移动到此统一管理。
-    """
-    if len(closes) < 2:
-        return None
-    peak = closes[0]
-    max_dd = 0.0
-    for c in closes:
-        if c > peak:
-            peak = c
-        dd = (peak - c) / peak * 100
-        if dd > max_dd:
-            max_dd = dd
-    return max_dd
-
-
 def fetch_klines_5min(code, today=None):
-    """获取5分钟K线(腾讯接口, 1200根覆盖约20天历史)
+    """获取5分钟K线(腾讯接口, 48根覆盖4小时交易时段)
     返回: [{"time","open","close","high","low","volume","amount"}, ...]
-    today参数预留，供回测传入日期使用
+    非交易时段返回空列表
     """
     sid = CODE_MAP.get(code, "")
     if not sid:
         return []
 
-    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={sid},m5,,1200"
+    # 非交易时段快速返回（9:30前或15:00后）
+    now = datetime.now()
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    if now < market_open or now > market_close:
+        return []
+
+    url = f"https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={sid},m5,,48"
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0",
