@@ -41,17 +41,17 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 def _call_evolving(method_name, *args):
     """
     直接调用 EvolvingSim 方法。
+    sleep(2) 放在 finally 中确保每次调用结束后锁有足够时间释放。
     """
     e = EvolvingSim()
     try:
         method = e.__getattribute__(method_name)
-        result = method(*args)
-        time.sleep(2)
-        return result
+        return method(*args)
     except Exception as ex:
         print(f"  ⚠️ EvolvingSim.{method_name} 异常: {ex}")
-        time.sleep(2)
         return None
+    finally:
+        time.sleep(2)
 
 
 # ─── 数量校验 ──────────────────────────────────────────────────────────
@@ -390,47 +390,52 @@ def do_revoke(code, direction):
     流程:
       1. 查 getEntrust → 找 code + direction + 未成交
       2. 逐一 revokeEntrust(contractNo)
+    用一个 EvolvingSim 实例完成查委托+逐笔撤单，避免锁冲突。
     """
-    # 查委托
-    ent = _call_evolving('getEntrust', 'today', True)
-    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
-        print(f"⚠️ 无待撤委托 {code} {direction}")
-        return True
+    e = EvolvingSim()
+    try:
+        # 查委托
+        ent = e.getEntrust('today', True)
+        if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+            print(f"⚠️ 无待撤委托 {code} {direction}")
+            return True
 
-    # 找匹配的未成交委托
-    targets = []
-    for row in ent['data']:
-        if row and len(row) > 10 and row[2] == code and row[4] == direction and row[5] == '未成交':
-            contract = row[10]
-            if contract.strip():
-                targets.append(contract)
+        # 找匹配的未成交委托
+        targets = []
+        for row in ent['data']:
+            if row and len(row) > 10 and row[2] == code and row[4] == direction and row[5] == '未成交':
+                contract = row[10]
+                if contract.strip():
+                    targets.append(contract)
 
-    if not targets:
-        print(f"⚠️ 无待撤委托 {code} {direction}")
-        return True
+        if not targets:
+            print(f"⚠️ 无待撤委托 {code} {direction}")
+            return True
 
-    # 逐一撤单
-    revoked = 0
-    for contract in targets:
-        result = _call_evolving('revokeEntrust', contract)
-        if result is not None:
-            status, info = result
-            if status:
-                print(f"   ✅ 撤: {contract}")
-                revoked += 1
+        # 逐一撤单（同一实例，不产生锁冲突）
+        revoked = 0
+        for contract in targets:
+            result = e.revokeEntrust(contract)
+            if result is not None:
+                status, info = result
+                if status:
+                    print(f"   ✅ 撤: {contract}")
+                    revoked += 1
+                else:
+                    print(f"   ❌ 撤单失败 {contract}: {info}")
             else:
-                print(f"   ❌ 撤单失败 {contract}: {info}")
-        else:
-            print(f"   ❌ 撤单失败 {contract}")
-        time.sleep(0.3)
+                print(f"   ❌ 撤单失败 {contract}")
+            time.sleep(0.3)
 
-    # 更新订单状态
-    action = 'buy' if direction == '买入' else 'sell'
-    _update_order_status(code, action, 'revoked')
-    _update_order_status(code, f't0_{action}', 'revoked')
+        # 更新订单状态
+        action = 'buy' if direction == '买入' else 'sell'
+        _update_order_status(code, action, 'revoked')
+        _update_order_status(code, f't0_{action}', 'revoked')
 
-    print(f"✅ 撤单 {code} {direction}：{revoked}笔已撤")
-    return revoked > 0
+        print(f"✅ 撤单 {code} {direction}：{revoked}笔已撤")
+        return revoked > 0
+    finally:
+        time.sleep(2)
 
 
 # ─── main ──────────────────────────────────────────────────────────────
