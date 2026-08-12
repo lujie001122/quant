@@ -618,26 +618,6 @@ def _check_pending_orders(mode=None):
     return pending_map, filled_codes
 
 
-def _is_duplicate_signal(code, direction, today_str, mode=None):
-    """从 orders/ 目录检查是否为同方向重复信号。
-    mode: 'buy_sell' | 't0' | None — 只检查同 mode 的记录
-    返回 True 表示同方向旧单仍在，需要先撤旧单再挂新单。
-    """
-    orders = _load_today_orders()
-    for fname, order in orders.items():
-        if order.get('code') != code:
-            continue
-        if order.get('direction') != direction:
-            continue
-        if order.get('status') == 'revoked':
-            continue
-        order_mode = 't0' if 't0_' in order.get('action', '') else 'buy_sell'
-        if mode and order_mode != mode:
-            continue
-        return True
-    return False
-
-
 def _detect_error_type(stdout, stderr, returncode, exit_reason=None):
     """从 subprocess 输出中检测错误类型。
     返回 (error_type, detail)
@@ -724,14 +704,6 @@ def execute_signals(result, mode=None):
     trade_script = os.path.join(script_dir, "trade.py")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
-    # ═══ 挂单检查：检查 orders/ 目录中今日未成交的挂单 ═══
-    pending_map, filled_codes = _check_pending_orders(mode=mode)
-    # 标记今日已成交的 code → 跳过不重复挂
-    if pending_map:
-        print(f"[EXECUTE] 发现 {len(pending_map)} 只ETF有未成交挂单: {dict(pending_map)}")
-    if filled_codes:
-        print(f"[EXECUTE] 发现 {len(filled_codes)} 只ETF今日已成交: {filled_codes}")
-
     # ═══ 获取当前实时价（用于 --execute 下单） ═══
     live_quotes = {}
     try:
@@ -782,6 +754,10 @@ def execute_signals(result, mode=None):
     print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
     print("=" * 60)
 
+    # ═══ 全撤：执行前先撤销所有未成交委托，清理 orders/ ═══
+    print("[EXECUTE] 全撤所有未成交委托...")
+    os.system(f"python3 {trade_script} revoke_all")
+
     success_count = 0
     fail_count = 0
     skip_count = 0
@@ -789,14 +765,6 @@ def execute_signals(result, mode=None):
     for i, (code, sig) in enumerate(actionable):
         trade_type = sig["trade_type"]
         action = sig.get("action", "")
-
-        # ═══ 挂单检查：旧单已成交 → 跳过不重复挂 ═══
-        sig_mode = _trade_type_to_mode(trade_type)
-        if (code, sig_mode) in filled_codes:
-            direction = _signal_direction(sig)
-            print(f"\n[{i+1}/{len(actionable)}] ⏭️  {code} {direction}({sig_mode}) 今日已成交，跳过不重复挂")
-            skip_count += 1
-            continue
 
         # ═══ 获取当前实时价 ═══
         signal_price_str = sig.get("price", "0")
@@ -975,52 +943,8 @@ def execute_signals(result, mode=None):
             fail_count += 1
             continue
 
-        # ═══ 执行前检查：未成交挂单或同方向重复信号 → 先撤旧单再挂新单 ═══
-        direction = _signal_direction(sig)
-
-        # 检查1: 来自上次执行未成交的挂单（pending_map）
-        need_revoke = False
-        if code in pending_map and direction:
-            pending_dir = pending_map[code]
-            if pending_dir == direction:
-                print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 上次未成交挂单({pending_dir})，先撤旧单再挂新单...")
-                need_revoke = True
-            else:
-                print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 上次未成交挂单({pending_dir})方向与新信号({direction})不同，撤旧单后挂新单...")
-                need_revoke = True
-
-        # 检查2: 同方向重复信号（已成交但同天又来信号）
-        if direction and _is_duplicate_signal(code, direction, today_str, mode=sig_mode):
-            need_revoke = True
-            print(f"\n[{i+1}/{len(actionable)}] 🔄 {code} 同方向重复信号({sig_mode})，先撤旧单再挂新单...")
-
-        if need_revoke:
-            os.system("open -a 同花顺")
-            os.system("cliclick c:960,50")
-            revoke_dir = direction
-            if code in pending_map and pending_map.get(code) != direction:
-                revoke_dir = pending_map[code]
-            revoke_cmd = ["python3", trade_script, "revoke", code, revoke_dir]
-            print(f"  → 撤单: {' '.join(revoke_cmd)}")
-            try:
-                revoke_proc = subprocess.run(
-                    revoke_cmd, capture_output=True, text=True,
-                    timeout=60, cwd=script_dir
-                )
-                if revoke_proc.stdout:
-                    print(revoke_proc.stdout.strip())
-                if revoke_proc.returncode == 0:
-                    print(f"  ✅ {code} 同方向旧单已撤，准备挂新单")
-                else:
-                    print(f"  ⚠️ 撤单返回非0 (exit={revoke_proc.returncode})，继续尝试挂新单")
-                    if revoke_proc.stderr:
-                        print(f"  [stderr] {revoke_proc.stderr.strip()}")
-            except subprocess.TimeoutExpired:
-                print(f"  ⚠️ 撤单超时(60s)，继续尝试挂新单")
-            except Exception as e:
-                print(f"  ⚠️ 撤单异常: {e}，继续尝试挂新单")
-
         # ═══ 执行命令（含重试） ═══
+        direction = _signal_direction(sig)
         print(f"\n[{i+1}/{len(actionable)}] {label}")
         print(f"  → {' '.join(cmd)}")
 

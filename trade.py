@@ -8,8 +8,7 @@
   python3 trade.py sell CODE SHARES PRICE        # 卖出（持仓增量确认）
   python3 trade.py t0_buy CODE SHARES PRICE [PAIR_PRICE]  # 做T买入配对：买入+高位卖出挂单
   python3 trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE] # 做T卖出配对：卖出+低位买入挂单
-  python3 trade.py revoke CODE 买入              # 撤同方向未成交委托
-  python3 trade.py revoke CODE 卖出              # 撤同方向未成交委托
+  python3 trade.py revoke_all                    # 全撤所有买卖委托+清理今日订单文件
 
 铁律:
   1. 只用 EvolvingSim 公开接口: getHoldingShares/getAccountInfo/buy/sell/getEntrust/revokeEntrust
@@ -273,8 +272,8 @@ def do_t0_buy(code, shares, price, pair_price=None):
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
         return False
 
-    # 撤同方向未成交委托(买入方向)
-    do_revoke(code, '买入')
+    # 全撤所有未成交委托
+    revoke_all()
 
     # 获取当前市价用于限价检查
     cur_price = _get_price(code) or price
@@ -334,8 +333,8 @@ def do_t0_sell(code, shares, price, pair_price=None):
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
         return False
 
-    # 撤同方向未成交委托(卖出方向)
-    do_revoke(code, '卖出')
+    # 全撤所有未成交委托
+    revoke_all()
 
     # 获取当前市价用于限价检查
     cur_price = _get_price(code) or price
@@ -380,106 +379,48 @@ def do_t0_sell(code, shares, price, pair_price=None):
     return status == 'filled'
 
 
-# ─── revoke ────────────────────────────────────────────────────────────
+# ─── revoke_all ───────────────────────────────────────────────────────
 
-def _confirm_revoke(e, contract, code, direction):
-    """查 getEntrust 确认某委托号备注是否变为'全部撤单'。
-    返回 True 表示已撤成，False 表示仍为'未成交'或其他状态。
-    """
-    ent = e.getEntrust('today', True)
-    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
-        return False
-    for row in ent['data']:
-        if row and len(row) > 10 and row[10] == contract:
-            remark = row[5] if len(row) > 5 else ''
-            if remark == '全部撤单':
-                return True
-            else:
-                return False
-    # 委托号已不存在（可能已成交或已撤），保守视为确认成功
-    return True
+def revoke_all():
+    """全撤：调用 EvolvingSim 撤销全部买卖委托，并删除今日 orders/ 订单文件。
 
-
-def do_revoke(code, direction):
-    """
-    撤同标的同方向未成交委托。
-    direction: '买入' | '卖出'
-
-    流程:
-      1. 查 getEntrust → 找 code + direction + 未成交
-      2. 逐一 revokeEntrust(contractNo)
-    用一个 EvolvingSim 实例完成查委托+逐笔撤单，避免锁冲突。
+    用法：python3 trade.py revoke_all
+    成功后删除今天所有 orders/ 目录下的订单文件。
     """
     e = EvolvingSim()
     try:
-        # 查委托
-        ent = e.getEntrust('today', True)
-        if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
-            print(f"⚠️ 无待撤委托 {code} {direction}")
-            return True
-
-        # 找匹配的未成交委托
-        targets = []
-        for row in ent['data']:
-            if row and len(row) > 10 and row[2] == code and row[4] == direction and row[5] == '未成交':
-                contract = row[10]
-                if contract.strip():
-                    targets.append(contract)
-
-        if not targets:
-            print(f"⚠️ 无待撤委托 {code} {direction}")
-            return True
-
-        # 逐一撤单（同一实例，不产生锁冲突）
-        # 每笔撤单后查 getEntrust 确认备注变为"全部撤单"，否则重试一次
-        revoked = 0
-        for contract in targets:
-            result = e.revokeEntrust(contract)
-            if result is not None:
-                status, info = result
-                if not status:
-                    print(f"   ❌ 撤单失败 {contract}: {info}")
-                    continue
+        result = e.revokeEntrust(revokeType='allBuyAndSell')
+        if result is not None:
+            status, info = result
+            if status:
+                print(f"✅ 全撤成功: {info}")
             else:
-                print(f"   ❌ 撤单失败 {contract}")
-                continue
-
-            # 确认撤单状态：查 getEntrust 验证备注
-            time.sleep(0.5)
-            confirmed = _confirm_revoke(e, contract, code, direction)
-
-            # 如果第一次确认未撤成，重试一次
-            if not confirmed:
-                print(f"   🔁 重试撤单 {contract} ...")
-                retry = e.revokeEntrust(contract)
-                if retry is not None:
-                    r_status, r_info = retry
-                    if r_status:
-                        time.sleep(0.5)
-                        confirmed = _confirm_revoke(e, contract, code, direction)
-                    else:
-                        print(f"   ❌ 重试撤单失败 {contract}: {r_info}")
-                        continue
-                else:
-                    print(f"   ❌ 重试撤单失败 {contract}")
-                    continue
-
-            if confirmed:
-                print(f"   ✅ 撤: {contract}")
-                revoked += 1
-            else:
-                print(f"   ❌ 撤单未确认 {contract}：重试后备注仍未变更为'全部撤单'")
-            time.sleep(0.3)
-
-        # 更新订单状态
-        action = 'buy' if direction == '买入' else 'sell'
-        _update_order_status(code, action, 'revoked')
-        _update_order_status(code, f't0_{action}', 'revoked')
-
-        print(f"✅ 撤单 {code} {direction}：{revoked}笔已撤")
-        return revoked > 0
+                print(f"❌ 全撤失败: {info}")
+                return False
+        else:
+            print(f"❌ 全撤失败: 返回 None")
+            return False
+    except Exception as ex:
+        print(f"❌ 全撤异常: {ex}")
+        return False
     finally:
         time.sleep(2)
+
+    # 删除今天所有 orders/ 订单文件
+    if os.path.exists(ORDERS_DIR):
+        today = datetime.now().strftime('%Y%m%d')
+        deleted = 0
+        for fname in os.listdir(ORDERS_DIR):
+            if fname.startswith(today) and fname.endswith('.json'):
+                try:
+                    os.remove(os.path.join(ORDERS_DIR, fname))
+                    deleted += 1
+                except OSError:
+                    pass
+        if deleted:
+            print(f"✅ 已清理 {deleted} 个今日订单文件")
+
+    return True
 
 
 # ─── main ──────────────────────────────────────────────────────────────
@@ -520,11 +461,8 @@ if __name__ == '__main__':
         pair_p = float(sys.argv[5]) if len(sys.argv) >= 6 else None
         do_t0_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
 
-    elif cmd == 'revoke':
-        if len(sys.argv) != 4:
-            print("用法: trade.py revoke CODE 买入|卖出")
-            sys.exit(1)
-        do_revoke(sys.argv[2], sys.argv[3])
+    elif cmd == 'revoke_all':
+        revoke_all()
 
     else:
         print(f"未知命令: {cmd}")

@@ -1,0 +1,11 @@
+{
+  "code": "159516",
+  "action": "buy",
+  "shares": 100,
+  "price": 0.756,
+  "contract": "6198796687",
+  "status": "revoked",
+  "direction": "买入",
+  "created_at": "2026-08-12 23:55:38",
+  "updated_at": "2026-08-12 23:59:44"
+}
