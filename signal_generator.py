@@ -490,19 +490,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 # 三、执行层 — 持久化 + 异常处理 + 告警推送
 # ============================================================
 
-LAST_EXECUTED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_executed.json")
-TRADE_ERRORS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".trade_errors.json")
+# ─── 订单管理（orders/ 目录） ────────────────────────────────────────
 
-
-def _load_last_executed():
-    """加载上次执行记录，返回 {code: {action, shares, price, time_window, timestamp}}"""
-    if os.path.exists(LAST_EXECUTED_PATH):
-        try:
-            with open(LAST_EXECUTED_PATH, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {}
+def _load_today_orders():
+    """从 orders/ 目录加载今日所有订单，返回 {filename: order_dict}"""
+    orders_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders')
+    if not os.path.exists(orders_dir):
+        return {}
+    today = datetime.now().strftime('%Y%m%d')
+    orders = {}
+    for fname in os.listdir(orders_dir):
+        if fname.startswith(today) and fname.endswith('.json'):
+            try:
+                with open(os.path.join(orders_dir, fname)) as f:
+                    order = json.load(f)
+                orders[fname] = order
+            except (json.JSONDecodeError, IOError):
+                pass
+    return orders
 
 
 def _trade_type_to_mode(action):
@@ -514,140 +519,53 @@ def _trade_type_to_mode(action):
     return "buy_sell"
 
 
-def _save_last_executed(code, action, shares, price, direction, before_shares, after_shares, pending=False, mode=None):
-    """保存执行记录到 .last_executed.json
-    pending=True:  订单已挂但未成交（挂单中）
-    pending=False: 订单已成交（默认）
-    mode: 'buy_sell' | 't0' — 区分建仓信号和做T信号，互不干扰过滤
-    使用复合键 f"{code}__{mode}" 确保同一 code 的买卖信号和做T信号互不覆盖
-    """
-    mode_val = mode or _trade_type_to_mode(action)
-    key = f"{code}__{mode_val}"
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    last = _load_last_executed()
-    last[key] = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "code": code,
-        "action": action,
-        "shares": shares,
-        "price": price,
-        "direction": direction,
-        "time_window": today_str,
-        "before_shares": before_shares,
-        "after_shares": after_shares,
-        "pending": pending,
-        "mode": mode_val,
-    }
-    try:
-        with open(LAST_EXECUTED_PATH, "w") as f:
-            json.dump(last, f, ensure_ascii=False, indent=2)
-    except IOError:
-        pass
-
-
-def _save_trade_error(code, action, price, shares, error_msg, retry_cmd):
-    """记录交易错误到 .trade_errors.json"""
-    errors = []
-    if os.path.exists(TRADE_ERRORS_PATH):
-        try:
-            with open(TRADE_ERRORS_PATH, "r") as f:
-                errors = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            errors = []
-    if not isinstance(errors, list):
-        errors = []
-
-    errors.append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "code": code,
-        "action": action,
-        "price": price,
-        "shares": shares,
-        "error": error_msg,
-        "retry_cmd": retry_cmd,
-    })
-    try:
-        with open(TRADE_ERRORS_PATH, "w") as f:
-            json.dump(errors, f, ensure_ascii=False, indent=2)
-    except IOError:
-        pass
-
-
 def _check_pending_orders(mode=None):
-    """检查 .last_executed.json 中今日的挂单状态
-    mode: 'buy_sell' | 't0' | None=全部 — 按模式过滤成交记录
+    """检查 orders/ 目录中今日的挂单状态。
+    mode: 'buy_sell' | 't0' | None=全部
     返回: (pending_map, filled_codes)
       pending_map: {code: direction} 今日未成交的挂单
-      filled_codes: set of codes 今日已成交（按 mode 区分，同 code 不同 mode 独立）
+      filled_codes: set of (code, mode) 今日已成交
     """
-    last = _load_last_executed()
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    orders = _load_today_orders()
     pending_map = {}
     filled_codes = set()
 
-    for key, entry in last.items():
-        if not isinstance(entry, dict):
+    for fname, order in orders.items():
+        code = order.get('code', '')
+        direction = order.get('direction', '')
+        status = order.get('status', '')
+        action = order.get('action', '')
+        order_mode = 't0' if 't0_' in action else 'buy_sell'
+
+        if mode and order_mode != mode:
             continue
-        if entry.get("time_window") != today_str:
-            continue
-        # 模式过滤：只看指定 mode 的成交记录
-        # 兼容旧记录（无 mode 字段）：从 action 推导 mode
-        entry_mode = entry.get("mode") or _trade_type_to_mode(entry.get("action", ""))
-        if mode and entry_mode != mode:
-            continue
-        entry_code = entry.get("code", "")
-        if entry.get("pending", False):
-            # 挂单中（未成交）
-            pending_map[entry_code] = entry.get("direction", "")
-        else:
-            # 已成交 — 用 (code, mode) 元组区分买卖信号和做T信号
-            filled_codes.add((entry_code, entry_mode))
+
+        if status == 'pending':
+            pending_map[code] = direction
+        elif status == 'filled':
+            filled_codes.add((code, order_mode))
 
     return pending_map, filled_codes
 
 
-def _clear_pending_order(code, mode=None):
-    """清除指定 code 的挂单记录（撤单后调用）
-    mode: 指定 mode 则只清除该 mode 的记录；None 则清除该 code 所有 mode 的记录
-    """
-    last = _load_last_executed()
-    if mode:
-        target_key = f"{code}__{mode}"
-        if target_key in last:
-            del last[target_key]
-    else:
-        # 清除所有 mode 下该 code 的记录（兼容旧格式单 key）
-        keys_to_delete = [k for k in last if k == code or k.startswith(f"{code}__")]
-        for k in keys_to_delete:
-            del last[k]
-    try:
-        with open(LAST_EXECUTED_PATH, "w") as f:
-            json.dump(last, f, ensure_ascii=False, indent=2)
-    except IOError:
-        pass
-
-
 def _is_duplicate_signal(code, direction, today_str, mode=None):
-    """检查是否为同方向重复信号：同代码+同方向+同时间窗口+同模式。
+    """从 orders/ 目录检查是否为同方向重复信号。
     mode: 'buy_sell' | 't0' | None — 只检查同 mode 的记录
-    返回 True 表示同方向旧单仍在，需要先撤旧单再挂新单（不再直接跳过）。
-    使用复合键 f"{code}__{mode}" 确保买卖信号和做T信号互不干扰。
+    返回 True 表示同方向旧单仍在，需要先撤旧单再挂新单。
     """
-    last = _load_last_executed()
-    mode_val = mode or "buy_sell"
-    key = f"{code}__{mode_val}"
-    entry = last.get(key, {})
-    # 兼容旧格式单 key
-    if not entry and code in last and isinstance(last[code], dict):
-        entry = last[code]
-        # 旧记录 mode 不匹配 → 忽略
-        entry_mode = entry.get("mode") or _trade_type_to_mode(entry.get("action", ""))
-        if mode and entry_mode != mode:
-            entry = {}
-    if not entry or not isinstance(entry, dict):
-        return False
-    return (entry.get("direction") == direction
-            and entry.get("time_window") == today_str)
+    orders = _load_today_orders()
+    for fname, order in orders.items():
+        if order.get('code') != code:
+            continue
+        if order.get('direction') != direction:
+            continue
+        if order.get('status') == 'revoked':
+            continue
+        order_mode = 't0' if 't0_' in order.get('action', '') else 'buy_sell'
+        if mode and order_mode != mode:
+            continue
+        return True
+    return False
 
 
 def _detect_error_type(stdout, stderr, returncode, exit_reason=None):
@@ -736,7 +654,7 @@ def execute_signals(result, mode=None):
     trade_script = os.path.join(script_dir, "trade.py")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
-    # ═══ 挂单检查：检查 .last_executed.json 中今日未成交的挂单 ═══
+    # ═══ 挂单检查：检查 orders/ 目录中今日未成交的挂单 ═══
     pending_map, filled_codes = _check_pending_orders(mode=mode)
     # 标记今日已成交的 code → 跳过不重复挂
     if pending_map:
@@ -1023,7 +941,6 @@ def execute_signals(result, mode=None):
                     print(revoke_proc.stdout.strip())
                 if revoke_proc.returncode == 0:
                     print(f"  ✅ {code} 同方向旧单已撤，准备挂新单")
-                    _clear_pending_order(code, mode=sig_mode)
                 else:
                     print(f"  ⚠️ 撤单返回非0 (exit={revoke_proc.returncode})，继续尝试挂新单")
                     if revoke_proc.stderr:
@@ -1074,7 +991,6 @@ def execute_signals(result, mode=None):
                     if stderr_out:
                         print(f"  [stderr] {stderr_out.strip()}")
                     print(f"  ✅ {code} {direction} {shares}股@{price:.3f} → 持仓{before_shares}→{after_shares}股")
-                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares, mode=sig_mode)
                     success_count += 1
                     success = True
                     break
@@ -1091,7 +1007,6 @@ def execute_signals(result, mode=None):
                             print(f"  [stderr] {stderr_out.strip()}")
                         alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连(3次重试全失败)。重试: {retry_cmd}"
                         print(alert_msg, file=sys.stderr)
-                        _save_trade_error(code, trade_type, price, shares, "同花顺断连(3次重试全失败)", retry_cmd)
                         final_error = err_detail
                         final_error_type = err_type
 
@@ -1102,8 +1017,6 @@ def execute_signals(result, mode=None):
                         print(f"  [stderr] {stderr_out.strip()}")
                     alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单未成交(增量确认失败)。重试: {retry_cmd}"
                     print(alert_msg, file=sys.stderr)
-                    _save_trade_error(code, trade_type, price, shares, "下单未成交(增量确认失败)", retry_cmd)
-                    _save_last_executed(code, trade_type, shares, price, direction, before_shares, after_shares, pending=True, mode=sig_mode)
                     final_error = err_detail
                     final_error_type = err_type
                     break
@@ -1124,7 +1037,6 @@ def execute_signals(result, mode=None):
                 else:
                     alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单超时(120s×3)。重试: {retry_cmd}"
                     print(alert_msg, file=sys.stderr)
-                    _save_trade_error(code, trade_type, price, shares, "下单超时(120s×3)", retry_cmd)
                     final_error = "超时"
                     final_error_type = "timeout"
 
@@ -1136,8 +1048,6 @@ def execute_signals(result, mode=None):
 
         if not success:
             fail_count += 1
-            if final_error_type and final_error_type not in ("tonghuashun_disconnect", "not_filled", "timeout"):
-                _save_trade_error(code, trade_type, price, shares, final_error or "未知错误", retry_cmd)
 
         if i < len(actionable) - 1:
             time.sleep(3)

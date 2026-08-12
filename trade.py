@@ -24,9 +24,11 @@ import os
 import json
 import time
 import subprocess
+from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
+ORDERS_DIR = os.path.join(SCRIPT_DIR, 'orders')
 
 from evolving.evolving import EvolvingSim
 from tracker import get_code_map
@@ -165,13 +167,13 @@ def _trade_with_confirmation(action, code, shares, price):
     result = _call_evolving(action, code, shares, price)
     if result is None:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败")
-        return False, before, before
+        return False, before, before, None
 
     ok, contract = result
 
     if not ok:
         print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
-        return False, before, before
+        return False, before, before, contract
 
     # 3. 等一等让成交生效
     time.sleep(1.5)
@@ -191,24 +193,83 @@ def _trade_with_confirmation(action, code, shares, price):
         sync()
         label = '买入' if action == 'buy' else '卖出'
         print(f"✅ {label} {code} {shares}股@{price} → 持仓从{before}→{after}股 合同:{contract}")
-        return True, before, after
+        return True, before, after, contract
     else:
         label = '买入' if action == 'buy' else '卖出'
         print(f"❌ {label} {code} {shares}股@{price} → 下单成功但持仓未变（{before}→{after}），"
               f"期望增量{expected}实际增量{delta}，可能未成交")
-        return False, before, after
+        return False, before, after, contract
+
+
+# ─── 订单持久化 ──────────────────────────────────────────────────────────
+
+def _write_order(code, action, shares, price, contract, status='pending'):
+    """写订单到 orders/ 目录，用于信号生成器去重/挂单检查。
+
+    action: 'buy' | 'sell' | 't0_buy' | 't0_sell'
+    status: 'pending' | 'filled' | 'revoked'
+    """
+    os.makedirs(ORDERS_DIR, exist_ok=True)
+    today = datetime.now().strftime('%Y%m%d')
+    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
+
+    order = {
+        'code': code,
+        'action': action,
+        'shares': shares,
+        'price': price,
+        'contract': contract,
+        'status': status,
+        'direction': '买入' if 'buy' in action else '卖出',
+        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+    try:
+        with open(order_path, 'w') as f:
+            json.dump(order, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        print(f"  ⚠️ 订单持久化失败: {e}")
+
+
+def _update_order_status(code, action, new_status):
+    """更新 orders/ 中订单的状态（撤单/成交后调用）。
+
+    action: 'buy' | 'sell' | 't0_buy' | 't0_sell'
+    new_status: 'filled' | 'revoked'
+    """
+    today = datetime.now().strftime('%Y%m%d')
+    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
+
+    if not os.path.exists(order_path):
+        print(f"  ⚠️ 订单文件不存在: {order_path}")
+        return
+
+    try:
+        with open(order_path, 'r') as f:
+            order = json.load(f)
+        order['status'] = new_status
+        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(order_path, 'w') as f:
+            json.dump(order, f, ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"  ⚠️ 更新订单状态失败: {e}")
 
 
 # ─── buy / sell ────────────────────────────────────────────────────────
 
 def do_buy(code, shares, price):
     _validate_shares(shares)
-    return _trade_with_confirmation('buy', code, shares, price)
+    ok, before, after, contract = _trade_with_confirmation('buy', code, shares, price)
+    _write_order(code, 'buy', shares, price, contract, 'filled' if ok else 'pending')
+    return ok
 
 
 def do_sell(code, shares, price):
     _validate_shares(shares)
-    return _trade_with_confirmation('sell', code, shares, price)
+    ok, before, after, contract = _trade_with_confirmation('sell', code, shares, price)
+    _write_order(code, 'sell', shares, price, contract, 'filled' if ok else 'pending')
+    return ok
 
 
 # ─── T0 做T配对 ───────────────────────────────────────────────────────
@@ -253,7 +314,8 @@ def do_t0_buy(code, shares, price, pair_price=None):
     print(f"🔁 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单@{pair_price}")
 
     # 主单
-    ok, before, after = _trade_with_confirmation('buy', code, shares, buy_limit)
+    ok, before, after, contract = _trade_with_confirmation('buy', code, shares, buy_limit)
+    _write_order(code, 't0_buy', shares, buy_limit, contract, 'filled' if ok else 'pending')
 
     if ok:
         # 配对卖出挂单: 限价 ≥ 当前价
@@ -269,6 +331,10 @@ def do_t0_buy(code, shares, price, pair_price=None):
                 print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}: {p_contract}")
         else:
             print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}")
+            p_contract = None
+
+        # 记录配对挂单
+        _write_order(code, 't0_sell', shares, sell_limit, p_contract, 'pending')
 
         print(f"✅ 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单 {shares}股@{sell_limit}")
     else:
@@ -310,7 +376,8 @@ def do_t0_sell(code, shares, price, pair_price=None):
     print(f"🔁 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单@{pair_price}")
 
     # 主单
-    ok, before, after = _trade_with_confirmation('sell', code, shares, sell_limit)
+    ok, before, after, contract = _trade_with_confirmation('sell', code, shares, sell_limit)
+    _write_order(code, 't0_sell', shares, sell_limit, contract, 'filled' if ok else 'pending')
 
     if ok:
         # 配对买入挂单: 限价 ≤ 当前价
@@ -326,6 +393,10 @@ def do_t0_sell(code, shares, price, pair_price=None):
                 print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}: {p_contract}")
         else:
             print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}")
+            p_contract = None
+
+        # 记录配对挂单
+        _write_order(code, 't0_buy', shares, buy_limit, p_contract, 'pending')
 
         print(f"✅ 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单 {shares}股@{buy_limit}")
     else:
@@ -377,6 +448,11 @@ def do_revoke(code, direction):
         else:
             print(f"   ❌ 撤单失败 {contract}")
         time.sleep(0.3)
+
+    # 更新订单状态
+    action = 'buy' if direction == '买入' else 'sell'
+    _update_order_status(code, action, 'revoked')
+    _update_order_status(code, f't0_{action}', 'revoked')
 
     print(f"✅ 撤单 {code} {direction}：{revoked}笔已撤")
     return revoked > 0
