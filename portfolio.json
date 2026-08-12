@@ -191,7 +191,7 @@
           "t0_count": 0
         }
       },
-      "shares": 19400,
+      "shares": 24900,
       "avg_cost": 1.065,
       "current_price": 1.062
     },
@@ -295,5 +295,5 @@
     "cash": 81013.91,
     "market_value": 136112.1
   },
-  "last_updated": "2026-08-13 00:14"
+  "last_updated": "2026-08-13 07:27"
 }

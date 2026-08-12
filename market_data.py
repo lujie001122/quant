@@ -186,6 +186,18 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
 
 
+def fetch_klines_daily_df(code, start="20250101", end="20261231", adjust="qfq"):
+    """获取日K线返回 pandas DataFrame"""
+    import pandas as pd
+    klines = fetch_klines_daily(code, start, end, adjust)
+    if not klines:
+        return None
+    df = pd.DataFrame(klines)
+    if not df.empty:
+        df.set_index("date", inplace=True)
+    return df
+
+
 def fetch_klines_5min(code, today=None):
     """获取5分钟K线(腾讯接口, 48根覆盖4小时交易时段)
     返回: [{"time","open","close","high","low","volume","amount"}, ...]

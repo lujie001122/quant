@@ -52,10 +52,16 @@ CODES["000725"] = _DEFAULT_CODES["000725"]
 # ═══════════════════════════════════════════════
 
 def fetch_daily(code, sid):
-    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily_df
-    统一格式转换到 market_data。
-    """
-    return fetch_klines_daily_df(code, sid=sid)
+    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily"""
+    import pandas as pd
+    klines = fetch_klines_daily(code)
+    if not klines:
+        return None
+    df = pd.DataFrame(klines)
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+        df.set_index("date", inplace=True)
+    return df
 
 
 # ═══════════════════════════════════════════════
