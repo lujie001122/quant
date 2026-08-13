@@ -96,6 +96,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         if p.has_position and p.build_phase == 0:
                             p.build_phase = 1
                             p.add_count = 0
+                        # entry_avg_cost初始化: 如果为0但实际有持仓, 用当前avg_cost
+                        if p.entry_avg_cost == 0 and p.shares > 0:
+                            p.entry_avg_cost = p.avg_cost
                     # last_grid_trigger跨天重置
                     if p.last_grid_trigger and p.last_grid_trigger != today_str:
                         p.last_grid_trigger = None
