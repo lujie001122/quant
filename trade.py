@@ -4,8 +4,8 @@
 
 用法:
   python3 trade.py sync                          # 同步持仓到 portfolio.json
-  python3 trade.py buy CODE SHARES PRICE         # 买入（持仓增量确认）
-  python3 trade.py sell CODE SHARES PRICE        # 卖出（持仓增量确认）
+  python3 trade.py buy CODE SHARES PRICE         # 买入
+  python3 trade.py sell CODE SHARES PRICE        # 卖出
   python3 trade.py t0_buy CODE SHARES PRICE [PAIR_PRICE]  # 做T买入配对：买入+高位卖出挂单
   python3 trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE] # 做T卖出配对：卖出+低位买入挂单
   python3 trade.py revoke_all                    # 全撤所有买卖委托+清理今日订单文件
@@ -38,10 +38,7 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 # ─── EvolvingSim 调用 ──────────────────────────────────────────────────
 
 def _call_evolving(method_name, *args):
-    """
-    直接调用 EvolvingSim 方法。
-    sleep(2) 放在 finally 中确保每次调用结束后锁有足够时间释放。
-    """
+    """直接调用 EvolvingSim 方法。"""
     e = EvolvingSim()
     try:
         method = e.__getattribute__(method_name)
@@ -121,72 +118,10 @@ def sync():
     print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{pf['account']['total_asset']:.0f}")
 
 
-# ─── 获取持仓/价格 ─────────────────────────────────────────────────────
-
-def _get_holding_shares(code=None):
-    """获取 EvolvingSim 中某标的持仓数量"""
-    h = _call_evolving('getHoldingShares')
-    result = {}
-    if isinstance(h, dict) and h.get('status'):
-        for row in h.get('data', []):
-            if row and len(row) >= 7:
-                try:
-                    result[row[0]] = int(row[6])
-                except (ValueError, TypeError):
-                    result[row[0]] = 0
-    if code:
-        return result.get(code, 0)
-    return result
-
-
-def _get_price(code):
-    """获取当前市价（来自 EvolvingSim 持仓数据）"""
-    h = _call_evolving('getHoldingShares')
-    if not (isinstance(h, dict) and h.get('status')):
-        return None
-    for row in h.get('data', []):
-        if row and len(row) >= 3 and row[0] == code:
-            return float(row[2])
-    return None
-
-
-# ─── 持仓增量确认下单 ──────────────────────────────────────────────────
-
-def _trade_with_confirmation(action, code, shares, price, order_action=None):
-    """
-    下单 + 订单持久化。不查持仓，照搬手动成功流程。
-    """
-    if order_action is None:
-        order_action = action
-
-    # 下单
-    result = _call_evolving(action, code, shares, price)
-    if result is None:
-        print(f"❌ {action} {code} {shares}股@{price} → 下单失败")
-        _write_order(code, order_action, shares, price, None, 'failed')
-        return 'failed', 0, 0, None
-
-    ok, contract = result
-
-    if not ok:
-        print(f"❌ {action} {code} {shares}股@{price} → 下单失败: {contract}")
-        _write_order(code, order_action, shares, price, contract, 'failed')
-        return 'failed', 0, 0, contract
-
-    # 下单成功，挂单 pending
-    print(f"⏳ {action} {code} {shares}股@{price} → 已挂单 合同:{contract}")
-    _write_order(code, order_action, shares, price, contract, 'pending')
-    return 'pending', 0, 0, contract
-
-
 # ─── 订单持久化 ──────────────────────────────────────────────────────────
 
 def _write_order(code, action, shares, price, contract, status='pending'):
-    """写订单到 orders/ 目录，用于信号生成器去重/挂单检查。
-
-    action: 'buy' | 'sell' | 't0_buy' | 't0_sell'
-    status: 'pending' | 'filled' | 'revoked' | 'failed'
-    """
+    """写订单到 orders/ 目录。"""
     os.makedirs(ORDERS_DIR, exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
     order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
@@ -211,11 +146,7 @@ def _write_order(code, action, shares, price, contract, status='pending'):
 
 
 def _update_order_status(code, action, new_status):
-    """更新 orders/ 中订单的状态（撤单/成交后调用）。
-
-    action: 'buy' | 'sell' | 't0_buy' | 't0_sell'
-    new_status: 'filled' | 'revoked'
-    """
+    """更新 orders/ 中订单的状态。"""
     today = datetime.now().strftime('%Y%m%d')
     order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
 
@@ -234,163 +165,93 @@ def _update_order_status(code, action, new_status):
         print(f"  ⚠️ 更新订单状态失败: {e}")
 
 
-# ─── buy / sell ────────────────────────────────────────────────────────
+# ─── 从 signal_generator.py 复制：_load_today_orders + _sync_entrust_to_orders ──
 
-def do_buy(code, shares, price):
-    _validate_shares(shares)
-    status, before, after, contract = _trade_with_confirmation('buy', code, shares, price)
-    return status == 'filled'
-
-
-def do_sell(code, shares, price):
-    _validate_shares(shares)
-    status, before, after, contract = _trade_with_confirmation('sell', code, shares, price)
-    return status == 'filled'
-
-
-# ─── T0 做T配对 ───────────────────────────────────────────────────────
-
-def _is_continuous_auction():
-    """连续竞价时段: 9:30-11:30, 13:00-15:00"""
-    now = time.localtime()
-    t = now.tm_hour * 60 + now.tm_min
-    return (570 <= t <= 690) or (780 <= t <= 900)
+def _load_today_orders():
+    """从 orders/ 目录加载今日所有订单，返回 {filename: order_dict}"""
+    if not os.path.exists(ORDERS_DIR):
+        return {}
+    today = datetime.now().strftime('%Y%m%d')
+    orders = {}
+    for fname in os.listdir(ORDERS_DIR):
+        if fname.startswith(today) and fname.endswith('.json'):
+            try:
+                with open(os.path.join(ORDERS_DIR, fname)) as f:
+                    order = json.load(f)
+                orders[fname] = order
+            except (json.JSONDecodeError, IOError):
+                pass
+    return orders
 
 
-def do_t0_buy(code, shares, price, pair_price=None):
+def _sync_entrust_to_orders():
+    """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
+    将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
+    （从 signal_generator.py 复制过来）
     """
-    做T买入配对：
-      1. 检查连续竞价时段
-      2. 撤同方向(买入)未成交委托
-      3. 主单：买入 shares@price（限价≤当前价）
-      4. 配对：挂卖出单 shares@pair_price（限价≥当前价）
-    配对失败不影响主单结果。
-    """
-    _validate_shares(shares)
+    try:
+        e = EvolvingSim()
+        ent = e.getEntrust('today', False)
+        time.sleep(2)
+    except Exception as ex:
+        print(f"[_sync_entrust] ⚠️ EvolvingSim 调用失败: {ex}")
+        return
 
-    if not _is_continuous_auction():
-        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
-        return False
+    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+        print(f"[_sync_entrust] ⚠️ getEntrust 返回异常，跳过同步")
+        return
 
-    # 全撤所有未成交委托
-    revoke_all()
+    # 构建同花顺委托索引: {code: {direction: status}}
+    ths_map = {}
+    for row in ent['data']:
+        if not row or len(row) <= 10:
+            continue
+        code = row[2]
+        direction = row[4]
+        status = row[5]
+        if code not in ths_map:
+            ths_map[code] = {}
+        ths_map[code][direction] = status
 
-    # 获取当前市价用于限价检查
-    cur_price = _get_price(code) or price
+    # 遍历本地 pending 订单，同步同花顺状态
+    orders = _load_today_orders()
+    updated = 0
 
-    # 买入限价: ≤ 当前价
-    buy_limit = min(price, cur_price)
-    if buy_limit != price:
-        print(f"   ⚠️ 买入限价调整: {price} → {buy_limit} (≤当前价{cur_price})")
+    for fname, order in orders.items():
+        if order.get('status') != 'pending':
+            continue
+        code = order.get('code', '')
+        direction = order.get('direction', '')
+        if code not in ths_map or direction not in ths_map[code]:
+            continue
+        ths_status = ths_map[code][direction]
 
-    # 配对价格
-    if pair_price is None:
-        pair_price = round(price * 1.02, 3)
+        new_status = None
+        if ths_status in ('已成交', '全部成交', '部分成交'):
+            new_status = 'filled'
+        elif ths_status in ('已撤单', '已撤销', '废单'):
+            new_status = 'revoked'
 
-    print(f"🔁 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单@{pair_price}")
+        if new_status:
+            order_path = os.path.join(ORDERS_DIR, fname)
+            try:
+                order['status'] = new_status
+                order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                with open(order_path, 'w') as f:
+                    json.dump(order, f, ensure_ascii=False, indent=2)
+                updated += 1
+                print(f"[_sync_entrust] {code} {direction} pending→{new_status} (同花顺:{ths_status})")
+            except (IOError, json.JSONDecodeError) as ex:
+                print(f"[_sync_entrust] ⚠️ 更新 {fname} 失败: {ex}")
 
-    # 主单
-    status, before, after, contract = _trade_with_confirmation('buy', code, shares, buy_limit, order_action='t0_buy')
-
-    if status == 'filled':
-        # 配对卖出挂单: 限价 ≥ 当前价
-        sell_limit = max(pair_price, cur_price)
-        if sell_limit != pair_price:
-            print(f"   ⚠️ 卖出限价调整: {pair_price} → {sell_limit} (≥当前价{cur_price})")
-        result = _call_evolving('sell', code, shares, sell_limit)
-        if result is not None:
-            p_ok, p_contract = result
-            if p_ok:
-                print(f"   ✅ 配对卖出挂单 {code} {shares}股@{sell_limit} 合同:{p_contract}")
-            else:
-                print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}: {p_contract}")
-        else:
-            print(f"   ⚠️ 配对卖出挂单失败 {code} {shares}股@{sell_limit}")
-            p_contract = None
-
-        # 记录配对挂单
-        _write_order(code, 't0_sell', shares, sell_limit, p_contract, 'pending')
-
-        print(f"✅ 做T买入 {code} {shares}股@{buy_limit} | 配对卖出挂单 {shares}股@{sell_limit}")
-    else:
-        print(f"❌ 做T买入主单失败，不挂配对单")
-
-    return status == 'filled'
-
-
-def do_t0_sell(code, shares, price, pair_price=None):
-    """
-    做T卖出配对：
-      1. 检查连续竞价时段
-      2. 撤同方向(卖出)未成交委托
-      3. 主单：卖出 shares@price（限价≥当前价）
-      4. 配对：挂买入单 shares@pair_price（限价≤当前价）
-    配对失败不影响主单结果。
-    """
-    _validate_shares(shares)
-
-    if not _is_continuous_auction():
-        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
-        return False
-
-    # 全撤所有未成交委托
-    revoke_all()
-
-    # 获取当前市价用于限价检查
-    cur_price = _get_price(code) or price
-
-    # 卖出限价: ≥ 当前价
-    sell_limit = max(price, cur_price)
-    if sell_limit != price:
-        print(f"   ⚠️ 卖出限价调整: {price} → {sell_limit} (≥当前价{cur_price})")
-
-    # 配对价格
-    if pair_price is None:
-        pair_price = round(price * 0.98, 3)
-
-    print(f"🔁 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单@{pair_price}")
-
-    # 主单
-    status, before, after, contract = _trade_with_confirmation('sell', code, shares, sell_limit, order_action='t0_sell')
-
-    if status == 'filled':
-        # 配对买入挂单: 限价 ≤ 当前价
-        buy_limit = min(pair_price, cur_price)
-        if buy_limit != pair_price:
-            print(f"   ⚠️ 买入限价调整: {pair_price} → {buy_limit} (≤当前价{cur_price})")
-        result = _call_evolving('buy', code, shares, buy_limit)
-        if result is not None:
-            p_ok, p_contract = result
-            if p_ok:
-                print(f"   ✅ 配对买入挂单 {code} {shares}股@{buy_limit} 合同:{p_contract}")
-            else:
-                print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}: {p_contract}")
-        else:
-            print(f"   ⚠️ 配对买入挂单失败 {code} {shares}股@{buy_limit}")
-            p_contract = None
-
-        # 记录配对挂单
-        _write_order(code, 't0_buy', shares, buy_limit, p_contract, 'pending')
-
-        print(f"✅ 做T卖出 {code} {shares}股@{sell_limit} | 配对买入挂单 {shares}股@{buy_limit}")
-    else:
-        print(f"❌ 做T卖出主单失败，不挂配对单")
-
-    return status == 'filled'
+    if updated:
+        print(f"[_sync_entrust] 同步完成: {updated} 笔订单状态已更新")
 
 
-# ─── revoke_all ───────────────────────────────────────────────────────
+# ─── 全撤 ──────────────────────────────────────────────────────────────
 
-def revoke_all():
-    """全撤：调用 EvolvingSim 撤销全部买卖委托，并将今日 pending 订单标记为 revoked（保留 filled）。
-
-    铁律：
-    - 不删除订单文件，改为标记状态
-    - 已成交(filled)订单保留不动
-    - 全撤失败只告警，不阻塞后续流程
-
-    用法：python3 trade.py revoke_all
-    """
+def _revoke_all():
+    """全撤：调用 EvolvingSim 撤销全部买卖委托，并标记本地 pending 订单为 revoked。"""
     e = EvolvingSim()
     revoke_ok = False
     try:
@@ -416,7 +277,6 @@ def revoke_all():
             try:
                 with open(order_path, 'r') as f:
                     order = json.load(f)
-                # 保留 filled 订单不动，只标记 pending 为 revoked
                 if order.get('status') == 'pending':
                     order['status'] = 'revoked'
                     order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -429,6 +289,123 @@ def revoke_all():
             print(f"✅ 已标记 {updated} 个 pending 订单为 revoked（filled 订单保留）")
 
     return revoke_ok
+
+
+def revoke_all():
+    """公开接口：全撤所有买卖委托。"""
+    return _revoke_all()
+
+
+# ─── 连续竞价判断 ──────────────────────────────────────────────────────
+
+def _is_continuous_auction():
+    """连续竞价时段: 9:30-11:30, 13:00-15:00"""
+    now = time.localtime()
+    t = now.tm_hour * 60 + now.tm_min
+    return (570 <= t <= 690) or (780 <= t <= 900)
+
+
+# ─── 统一买卖做T入口 ───────────────────────────────────────────────────
+
+def _unified_trade(action, code, shares, price, pair_price=None):
+    """统一买卖做T流程：
+    1. 校验100倍数
+    2. getEntrust 同步订单成交信息
+    3. 全撤未成交
+    4. 做T：检查连续竞价
+    5. 下单主单 → EvolvingSim
+    6. 做T：挂配对反方向单
+    7. _write_order 写入订单
+    """
+    # 1. 校验100倍数
+    _validate_shares(shares)
+
+    is_t0 = action in ('t0_buy', 't0_sell')
+
+    # 2. getEntrust 同步订单成交信息
+    _sync_entrust_to_orders()
+
+    # 3. 全撤未成交
+    _revoke_all()
+
+    # 4. 做T：检查连续竞价
+    if is_t0 and not _is_continuous_auction():
+        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
+        return False
+
+    # 确定 EvolvingSim 方法名和配对方向
+    if action in ('buy', 't0_buy'):
+        method = 'buy'
+        pair_method = 'sell'
+        pair_action = 't0_sell'
+    else:
+        method = 'sell'
+        pair_method = 'buy'
+        pair_action = 't0_buy'
+
+    # 5. 下单主单 → EvolvingSim
+    if is_t0:
+        print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
+    else:
+        print(f"📊 {action} {code} {shares}股@{price}")
+
+    result = _call_evolving(method, code, shares, price)
+    if result is None:
+        print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
+        _write_order(code, action, shares, price, None, 'failed')
+        return False
+
+    ok, contract = result
+    if not ok:
+        print(f"❌ {method} {code} {shares}股@{price} → 下单失败: {contract}")
+        _write_order(code, action, shares, price, contract, 'failed')
+        return False
+
+    print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
+
+    # 7. _write_order 写入订单
+    _write_order(code, action, shares, price, contract, 'pending')
+
+    # 6. 做T：挂配对反方向单
+    if is_t0 and pair_price is not None:
+        p_result = _call_evolving(pair_method, code, shares, pair_price)
+        p_contract = None
+        if p_result is not None:
+            p_ok, p_contract = p_result
+            if p_ok:
+                print(f"   ✅ 配对{pair_method}挂单 {code} {shares}股@{pair_price} 合同:{p_contract}")
+            else:
+                print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}: {p_contract}")
+        else:
+            print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}")
+
+        _write_order(code, pair_action, shares, pair_price, p_contract, 'pending')
+
+        print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
+
+    return True
+
+
+# ─── buy / sell / t0_buy / t0_sell（缩为2-3行） ────────────────────────
+
+def do_buy(code, shares, price):
+    return _unified_trade('buy', code, shares, price)
+
+
+def do_sell(code, shares, price):
+    return _unified_trade('sell', code, shares, price)
+
+
+def do_t0_buy(code, shares, price, pair_price=None):
+    if pair_price is None:
+        pair_price = round(price * 1.02, 3)
+    return _unified_trade('t0_buy', code, shares, price, pair_price)
+
+
+def do_t0_sell(code, shares, price, pair_price=None):
+    if pair_price is None:
+        pair_price = round(price * 0.98, 3)
+    return _unified_trade('t0_sell', code, shares, price, pair_price)
 
 
 # ─── main ──────────────────────────────────────────────────────────────
