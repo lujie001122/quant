@@ -358,13 +358,11 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     result = _call_evolving(method, code, shares, price)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
-        _write_order(code, action, shares, price, None, 'failed')
         return False
 
     ok, contract = result
     if not ok:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败: {contract}")
-        _write_order(code, action, shares, price, contract, 'failed')
         return False
 
     print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
