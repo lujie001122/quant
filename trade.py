@@ -146,6 +146,26 @@ def _write_order(code, action, shares, price, contract, status='pending'):
         print(f"  ⚠️ 订单持久化失败: {e}")
 
 
+def _update_order_status(code, action, new_status):
+    """更新 orders/ 中订单的状态。"""
+    today = datetime.now().strftime('%Y%m%d')
+    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
+
+    if not os.path.exists(order_path):
+        print(f"  ⚠️ 订单文件不存在: {order_path}")
+        return
+
+    try:
+        with open(order_path, 'r') as f:
+            order = json.load(f)
+        order['status'] = new_status
+        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(order_path, 'w') as f:
+            json.dump(order, f, ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"  ⚠️ 更新订单状态失败: {e}")
+
+
 # ─── 从 signal_generator.py 复制：_load_today_orders + _sync_entrust_to_orders ──
 
 def _load_today_orders():
@@ -298,22 +318,21 @@ def _is_continuous_auction():
 def _unified_trade(action, code, shares, price, pair_price=None):
     """统一买卖做T流程：
     1. 校验100倍数
-    2. 单 EvolvingSim 实例：getEntrust 同步订单 + 全撤未成交
-    3. 做T：检查连续竞价
-    4. 下单主单 → EvolvingSim（同一实例）
-    5. 做T：挂配对反方向单（同一实例）
-    6. _write_order 写入订单
+    2. 一个实例：_sync_entrust + _revoke_all（合并共用）
+    3. buy/sell 新实例：下单主单
+    4. 做T 新实例：挂配对反方向单
+    5. _write_order 写入订单
     """
     # 1. 校验100倍数
     _validate_shares(shares)
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
-    # 2. 单 EvolvingSim 实例：sync + revoke
-    e = EvolvingSim()
+    # 2. 一个实例：_sync_entrust + _revoke_all 合并共用
+    e_sync = EvolvingSim()
     orders = _load_today_orders()
-    _sync_entrust_to_orders(e=e, orders=orders)
-    _revoke_all(e=e, orders=orders)
+    _sync_entrust_to_orders(e=e_sync, orders=orders)
+    _revoke_all(e=e_sync, orders=orders)
 
     # 3. 做T：检查连续竞价
     if is_t0 and not _is_continuous_auction():
@@ -330,14 +349,13 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         pair_method = 'buy'
         pair_action = 't0_buy'
 
-    # 4. 下单主单 → EvolvingSim（复用同一实例）
+    # 4. 下单主单 → 新 EvolvingSim 实例
     if is_t0:
         print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
     else:
         print(f"📊 {action} {code} {shares}股@{price}")
 
-    result = _call_evolving(method, code, shares, price, e=e)
-    time.sleep(2)
+    result = _call_evolving(method, code, shares, price)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
         _write_order(code, action, shares, price, None, 'failed')
@@ -354,10 +372,9 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     # 6. _write_order 写入订单
     _write_order(code, action, shares, price, contract, 'pending')
 
-    # 5. 做T：挂配对反方向单（复用同一实例）
+    # 5. 做T：挂配对反方向单 → 新 EvolvingSim 实例
     if is_t0 and pair_price is not None:
-        p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
-        time.sleep(2)
+        p_result = _call_evolving(pair_method, code, shares, pair_price)
         p_contract = None
         if p_result is not None:
             p_ok, p_contract = p_result
