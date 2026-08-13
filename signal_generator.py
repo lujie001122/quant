@@ -520,16 +520,16 @@ def _trade_type_to_mode(action):
 
 
 def _get_signal_direction(trade_type, action):
-    """从信号 trade_type 和 action 推导方向: 'buy' | 'sell' | 'unknown'"""
+    """从信号 trade_type 和 action 推导方向: '买入' | '卖出' | 'unknown'"""
     if trade_type == "buy":
-        return "buy"
+        return "买入"
     if trade_type in ("sell", "liquidate", "reduce"):
-        return "sell"
+        return "卖出"
     if trade_type == "t0":
         if "买入" in action:
-            return "buy"
+            return "买入"
         if "卖出" in action:
-            return "sell"
+            return "卖出"
     return "unknown"
 
 
@@ -600,15 +600,18 @@ def _sync_entrust_to_orders():
         print(f"[_sync_entrust] 同步完成: {updated} 笔订单状态已更新")
 
 
-def _check_pending_orders(mode=None):
+def _check_pending_orders(mode=None, sync_entrust=True):
     """检查 orders/ 目录中今日的挂单状态，同步同花顺委托状态。
     mode: 'buy_sell' | 't0' | None=全部
+    sync_entrust: 是否同步同花顺委托状态（默认 True）。_unified_trade 内部已有同步，
+                  调用方可传 False 避免重复同步。
     返回: (pending_map, filled_codes)
       pending_map: {code: direction} 今日未成交的挂单（受 mode 过滤）
-      filled_codes: set of (code, mode, direction) 今日已成交（不受 mode 过滤，全部收集）
+      filled_codes: set of (code, mode, direction) 今日已成交/已挂单（不受 mode 过滤，全部收集）
     """
     # ── 同步同花顺委托状态，更新本地订单文件 ──
-    _sync_entrust_to_orders()
+    if sync_entrust:
+        _sync_entrust_to_orders()
 
     orders = _load_today_orders()
     pending_map = {}
@@ -771,15 +774,6 @@ def execute_signals(result, mode=None):
     print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
     print("=" * 60)
 
-    # ═══ 挂单检查：同步同花顺委托状态 + 构建 filled_codes（去重用） ═══
-    pending_map, filled_codes = _check_pending_orders(mode)
-    if filled_codes:
-        for code, fmode, fdir in filled_codes:
-            print(f"[EXECUTE] 去重: {code} mode={fmode} dir={fdir} 今日已成交，跳过")
-    if pending_map:
-        for code, direction in pending_map.items():
-            print(f"[EXECUTE] 挂单: {code} {direction} 未成交，后续撤单")
-
     # ═══ 全撤：执行前先撤销所有未成交委托 ═══
     # 失败时告警但不阻塞后续执行
     print("[EXECUTE] 全撤所有未成交委托...")
@@ -802,6 +796,14 @@ def execute_signals(result, mode=None):
         print(f"  ⚠️ revoke_all 超时，继续执行...")
     except Exception as e:
         print(f"  ⚠️ revoke_all 异常: {e}，继续执行...")
+
+    # ═══ 撤单后重新收集 filled_codes（revoked 不在 filled_codes 里，允许挂新单） ═══
+    # 不调 _sync_entrust_to_orders（_unified_trade 内部已有，避免重复同步）
+    pending_map, filled_codes = _check_pending_orders(mode, sync_entrust=False)
+    if filled_codes:
+        print(f"[EXECUTE] 去重: {len(filled_codes)} 笔已成交/已挂单，跳过重复信号")
+    if pending_map:
+        print(f"[EXECUTE] 当前 pending 挂单: {len(pending_map)} 笔")
 
     success_count = 0
     fail_count = 0
