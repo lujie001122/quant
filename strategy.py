@@ -79,6 +79,13 @@ class PositionInfo:
         self.prev_macd_status = None
         # 保本止盈状态
         self.breakeven_activated = False
+        # 止损污染修复: 建仓时锁定的原始买入价(不受后续加仓摊低成本影响)
+        self.entry_avg_cost = 0.0
+
+    @property
+    def entry_cost(self):
+        """止损用成本: 优先使用建仓时锁定的原始价, 避免加仓摊低成本导致止损失效"""
+        return self.entry_avg_cost if self.entry_avg_cost > 0 else self.avg_cost
 
     @property
     def has_position(self):
@@ -151,6 +158,7 @@ class PositionInfo:
         self.shares = 0
         self.cost = 0
         self.avg_cost = 0
+        self.entry_avg_cost = 0
         self.base_price = None
         self.dead_shares = 0
         self.active_shares = 0
@@ -200,6 +208,7 @@ class PositionInfo:
         self.build_phase = 1
         self.build_first_price = price
         self.base_price = price
+        self.entry_avg_cost = price  # 建仓时锁定原始买入价, 避免后续加仓污染止损
         self.empty_days = 0
         return "买入", channel_name, "buy"
 
@@ -231,6 +240,7 @@ class PositionInfo:
             "shares": self.shares,
             "avg_cost": self.avg_cost,
             "current_price": self.current_price,
+            "entry_avg_cost": self.entry_avg_cost,
         }
 
     def from_dict(self, data):
@@ -259,6 +269,7 @@ class PositionInfo:
         self.shares = data.get("shares", self.shares)
         self.avg_cost = data.get("avg_cost", self.avg_cost)
         self.current_price = data.get("current_price", self.current_price)
+        self.entry_avg_cost = data.get("entry_avg_cost", 0.0)
 
 
 # ============================================================
@@ -356,16 +367,16 @@ def evaluate_stop(pos, t, price, today_str):
         return stop_actions
 
     # ── 保本止盈: 浮盈≥10%激活, 回落到成本+2%清仓 ──
-    if pos.avg_cost > 0:
-        profit_pct = (price - pos.avg_cost) / pos.avg_cost
+    if pos.entry_cost > 0:
+        profit_pct = (price - pos.entry_cost) / pos.entry_cost
         if profit_pct >= 0.10 - 0.0001:
             pos.breakeven_activated = True
-        if pos.breakeven_activated and price <= pos.avg_cost * 1.02:
-            stop_actions.append((f"保本止盈(avg={pos.avg_cost:.3f}→现价{price:.3f})", "breakeven_stop"))
+        if pos.breakeven_activated and price <= pos.entry_cost * 1.02:
+            stop_actions.append((f"保本止盈(avg={pos.entry_cost:.3f}→现价{price:.3f})", "breakeven_stop"))
 
     # ── 均价止损12%: 从买入均价跌12%无条件清仓 ──
-    if pos.avg_cost > 0 and price <= pos.avg_cost * 0.88:
-        stop_actions.append((f"均价止损12%(avg={pos.avg_cost:.3f}→现价{price:.3f})", "avg_stop_12pct"))
+    if pos.entry_cost > 0 and price <= pos.entry_cost * 0.88:
+        stop_actions.append((f"均价止损12%(avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_12pct"))
 
     # ── 硬止盈30%: base_price*1.30 ──
     if pos.base_price and price >= pos.base_price * 1.30:
