@@ -37,17 +37,18 @@ CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
 # ─── EvolvingSim 调用 ──────────────────────────────────────────────────
 
-def _call_evolving(method_name, *args):
-    """直接调用 EvolvingSim 方法。"""
-    e = EvolvingSim()
+def _call_evolving(method_name, *args, e=None):
+    """直接调用 EvolvingSim 方法。可复用传入的 EvolvingSim 实例。"""
+    _e = e or EvolvingSim()
     try:
-        method = e.__getattribute__(method_name)
+        method = getattr(_e, method_name)
         return method(*args)
     except Exception as ex:
         print(f"  ⚠️ EvolvingSim.{method_name} 异常: {ex}")
         return None
     finally:
-        time.sleep(2)
+        if e is None:
+            time.sleep(2)
 
 
 # ─── 数量校验 ──────────────────────────────────────────────────────────
@@ -145,26 +146,6 @@ def _write_order(code, action, shares, price, contract, status='pending'):
         print(f"  ⚠️ 订单持久化失败: {e}")
 
 
-def _update_order_status(code, action, new_status):
-    """更新 orders/ 中订单的状态。"""
-    today = datetime.now().strftime('%Y%m%d')
-    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
-
-    if not os.path.exists(order_path):
-        print(f"  ⚠️ 订单文件不存在: {order_path}")
-        return
-
-    try:
-        with open(order_path, 'r') as f:
-            order = json.load(f)
-        order['status'] = new_status
-        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(order_path, 'w') as f:
-            json.dump(order, f, ensure_ascii=False, indent=2)
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"  ⚠️ 更新订单状态失败: {e}")
-
-
 # ─── 从 signal_generator.py 复制：_load_today_orders + _sync_entrust_to_orders ──
 
 def _load_today_orders():
@@ -184,13 +165,17 @@ def _load_today_orders():
     return orders
 
 
-def _sync_entrust_to_orders():
+def _sync_entrust_to_orders(e=None, orders=None):
     """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
     将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
     （从 signal_generator.py 复制过来）
+    e: 可选复用的 EvolvingSim 实例，None 则自建
+    orders: 可选预加载的今日订单 {filename: order_dict}，None 则自加载
     """
-    try:
+    own_e = e is None
+    if own_e:
         e = EvolvingSim()
+    try:
         ent = e.getEntrust('today', False)
         time.sleep(2)
     except Exception as ex:
@@ -214,7 +199,8 @@ def _sync_entrust_to_orders():
         ths_map[code][direction] = status
 
     # 遍历本地 pending 订单，同步同花顺状态
-    orders = _load_today_orders()
+    if orders is None:
+        orders = _load_today_orders()
     updated = 0
 
     for fname, order in orders.items():
@@ -250,9 +236,14 @@ def _sync_entrust_to_orders():
 
 # ─── 全撤 ──────────────────────────────────────────────────────────────
 
-def _revoke_all():
-    """全撤：调用 EvolvingSim 撤销全部买卖委托，并标记本地 pending 订单为 revoked。"""
-    e = EvolvingSim()
+def _revoke_all(e=None, orders=None):
+    """全撤：调用 EvolvingSim 撤销全部买卖委托，并标记本地 pending 订单为 revoked。
+    e: 可选复用的 EvolvingSim 实例，None 则自建
+    orders: 可选预加载的今日订单 {filename: order_dict}，None 则自加载
+    """
+    own_e = e is None
+    if own_e:
+        e = EvolvingSim()
     revoke_ok = False
     try:
         result = e.revokeEntrust(revokeType='allBuyAndSell')
@@ -267,26 +258,23 @@ def _revoke_all():
         time.sleep(2)
 
     # 标记今日 pending 订单为 revoked，保留 filled
-    if os.path.exists(ORDERS_DIR):
-        today = datetime.now().strftime('%Y%m%d')
-        updated = 0
-        for fname in os.listdir(ORDERS_DIR):
-            if not (fname.startswith(today) and fname.endswith('.json')):
-                continue
-            order_path = os.path.join(ORDERS_DIR, fname)
-            try:
-                with open(order_path, 'r') as f:
-                    order = json.load(f)
-                if order.get('status') == 'pending':
-                    order['status'] = 'revoked'
-                    order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    with open(order_path, 'w') as f:
-                        json.dump(order, f, ensure_ascii=False, indent=2)
-                    updated += 1
-            except (json.JSONDecodeError, IOError, OSError):
-                pass
-        if updated:
-            print(f"✅ 已标记 {updated} 个 pending 订单为 revoked（filled 订单保留）")
+    if orders is None:
+        orders = _load_today_orders()
+    updated = 0
+    for fname, order in orders.items():
+        if order.get('status') != 'pending':
+            continue
+        order['status'] = 'revoked'
+        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        order_path = os.path.join(ORDERS_DIR, fname)
+        try:
+            with open(order_path, 'w') as f:
+                json.dump(order, f, ensure_ascii=False, indent=2)
+            updated += 1
+        except (IOError, OSError) as ex:
+            print(f"  ⚠️ 标记 revoked 失败 {fname}: {ex}")
+    if updated:
+        print(f"✅ 已标记 {updated} 个 pending 订单为 revoked（filled 订单保留）")
 
     return revoke_ok
 
@@ -310,25 +298,24 @@ def _is_continuous_auction():
 def _unified_trade(action, code, shares, price, pair_price=None):
     """统一买卖做T流程：
     1. 校验100倍数
-    2. getEntrust 同步订单成交信息
-    3. 全撤未成交
-    4. 做T：检查连续竞价
-    5. 下单主单 → EvolvingSim
-    6. 做T：挂配对反方向单
-    7. _write_order 写入订单
+    2. 单 EvolvingSim 实例：getEntrust 同步订单 + 全撤未成交
+    3. 做T：检查连续竞价
+    4. 下单主单 → EvolvingSim（同一实例）
+    5. 做T：挂配对反方向单（同一实例）
+    6. _write_order 写入订单
     """
     # 1. 校验100倍数
     _validate_shares(shares)
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
-    # 2. getEntrust 同步订单成交信息
-    _sync_entrust_to_orders()
+    # 2. 单 EvolvingSim 实例：sync + revoke
+    e = EvolvingSim()
+    orders = _load_today_orders()
+    _sync_entrust_to_orders(e=e, orders=orders)
+    _revoke_all(e=e, orders=orders)
 
-    # 3. 全撤未成交
-    _revoke_all()
-
-    # 4. 做T：检查连续竞价
+    # 3. 做T：检查连续竞价
     if is_t0 and not _is_continuous_auction():
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
         return False
@@ -343,13 +330,14 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         pair_method = 'buy'
         pair_action = 't0_buy'
 
-    # 5. 下单主单 → EvolvingSim
+    # 4. 下单主单 → EvolvingSim（复用同一实例）
     if is_t0:
         print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
     else:
         print(f"📊 {action} {code} {shares}股@{price}")
 
-    result = _call_evolving(method, code, shares, price)
+    result = _call_evolving(method, code, shares, price, e=e)
+    time.sleep(2)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
         _write_order(code, action, shares, price, None, 'failed')
@@ -363,12 +351,13 @@ def _unified_trade(action, code, shares, price, pair_price=None):
 
     print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
 
-    # 7. _write_order 写入订单
+    # 6. _write_order 写入订单
     _write_order(code, action, shares, price, contract, 'pending')
 
-    # 6. 做T：挂配对反方向单
+    # 5. 做T：挂配对反方向单（复用同一实例）
     if is_t0 and pair_price is not None:
-        p_result = _call_evolving(pair_method, code, shares, pair_price)
+        p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
+        time.sleep(2)
         p_contract = None
         if p_result is not None:
             p_ok, p_contract = p_result
