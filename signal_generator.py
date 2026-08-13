@@ -622,7 +622,7 @@ def _check_pending_orders(mode=None):
         order_mode = 't0' if 't0_' in action else 'buy_sell'
 
         # filled_codes 不受 mode 过滤，全部收集（去重用）
-        if status == 'filled':
+        if status in ('filled', 'pending'):
             filled_codes.add((code, order_mode, direction))
 
         # pending_map 受 mode 过滤
