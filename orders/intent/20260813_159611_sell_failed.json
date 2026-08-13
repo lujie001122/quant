@@ -1,0 +1,10 @@
+{
+  "code": "159611",
+  "action": "sell",
+  "shares": 600,
+  "price": 1.064,
+  "direction": "卖出",
+  "status": "failed",
+  "reason": "下单失败: None",
+  "created_at": "2026-08-13 11:10:08"
+}

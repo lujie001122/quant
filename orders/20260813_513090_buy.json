@@ -1,0 +1,11 @@
+{
+  "code": "513090",
+  "action": "buy",
+  "shares": 100,
+  "price": 2.0,
+  "contract": null,
+  "status": "failed",
+  "direction": "买入",
+  "created_at": "2026-08-13 08:31:43",
+  "updated_at": "2026-08-13 08:31:43"
+}

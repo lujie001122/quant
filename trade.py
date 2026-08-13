@@ -28,6 +28,7 @@ from datetime import datetime
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
 ORDERS_DIR = os.path.join(SCRIPT_DIR, 'orders')
+INTENT_DIR = os.path.join(ORDERS_DIR, 'intent')
 
 from evolving.evolving import EvolvingSim
 from tracker import get_code_map
@@ -120,6 +121,60 @@ def sync():
 
 
 # ─── 订单持久化 ──────────────────────────────────────────────────────────
+
+def _write_intent(code, action, shares, price):
+    """下单前写 intent 文件到 orders/intent/ 目录。
+    格式: {date}_{code}_{action}.json
+    记录信号意图，防同 cron 内多个信号重复下单。
+    """
+    os.makedirs(INTENT_DIR, exist_ok=True)
+    today = datetime.now().strftime('%Y%m%d')
+    intent_path = os.path.join(INTENT_DIR, f'{today}_{code}_{action}.json')
+
+    direction = '买入' if 'buy' in action else '卖出'
+    intent = {
+        'code': code,
+        'action': action,
+        'shares': shares,
+        'price': price,
+        'direction': direction,
+        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+    try:
+        with open(intent_path, 'w') as f:
+            json.dump(intent, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        print(f"  ⚠️ intent 文件写入失败: {e}")
+
+
+def _write_intent_for_failed(code, action, shares, price, reason='failed'):
+    """下单失败时写 intent 文件（status=failed），下次 cron 可去重识别。
+    文件名加 _failed 后缀避免覆盖成功单的 intent。
+    """
+    os.makedirs(INTENT_DIR, exist_ok=True)
+    today = datetime.now().strftime('%Y%m%d')
+    # 失败 intent 用不同文件名避免覆盖正常 intent
+    intent_path = os.path.join(INTENT_DIR, f'{today}_{code}_{action}_failed.json')
+
+    direction = '买入' if 'buy' in action else '卖出'
+    intent = {
+        'code': code,
+        'action': action,
+        'shares': shares,
+        'price': price,
+        'direction': direction,
+        'status': 'failed',
+        'reason': reason,
+        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
+
+    try:
+        with open(intent_path, 'w') as f:
+            json.dump(intent, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        print(f"  ⚠️ failed intent 文件写入失败: {e}")
+
 
 def _write_order(code, action, shares, price, contract, status='pending'):
     """写订单到 orders/ 目录。"""
@@ -301,7 +356,26 @@ def _revoke_all(e=None, orders=None):
 
 def revoke_all():
     """公开接口：全撤所有买卖委托。"""
-    return _revoke_all()
+    result = _revoke_all()
+    # 清理 intent 文件（撤单后无需保留意图）
+    _cleanup_intent_trade()
+    return result
+
+
+def _cleanup_intent_trade():
+    """清理 intent 文件（trade.py 侧）。"""
+    if not os.path.exists(INTENT_DIR):
+        return
+    removed = 0
+    for fname in os.listdir(INTENT_DIR):
+        if fname.endswith('.json'):
+            try:
+                os.remove(os.path.join(INTENT_DIR, fname))
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        print(f"🧹 清理 {removed} 个 intent 文件")
 
 
 # ─── 连续竞价判断 ──────────────────────────────────────────────────────
@@ -319,9 +393,10 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     """统一买卖做T流程：
     1. 校验100倍数
     2. 一个实例：_sync_entrust + _revoke_all（合并共用）
-    3. buy/sell 新实例：下单主单
-    4. 做T 新实例：挂配对反方向单
-    5. _write_order 写入订单
+    3. 写 intent 文件（防重复）
+    4. buy/sell 新实例：下单主单
+    5. 做T 新实例：挂配对反方向单
+    6. _write_order 写入订单（成功时 pending，失败时 failed）
     """
     # 1. 校验100倍数
     _validate_shares(shares)
@@ -334,9 +409,13 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     _sync_entrust_to_orders(e=e_sync, orders=orders)
     _revoke_all(e=e_sync, orders=orders)
 
-    # 3. 做T：检查连续竞价
+    # 3. 写 intent 文件（下单前，防跨 cron 重复）
+    _write_intent(code, action, shares, price)
+
+    # 4. 做T：检查连续竞价
     if is_t0 and not _is_continuous_auction():
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
+        _write_intent_for_failed(code, action, shares, price, reason='非连续竞价时段')
         return False
 
     # 确定 EvolvingSim 方法名和配对方向
@@ -349,7 +428,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         pair_method = 'buy'
         pair_action = 't0_buy'
 
-    # 4. 下单主单 → 新 EvolvingSim 实例
+    # 5. 下单主单 → 新 EvolvingSim 实例
     if is_t0:
         print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
     else:
@@ -358,19 +437,21 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     result = _call_evolving(method, code, shares, price)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
+        _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
         return False
 
     ok, contract = result
     if not ok:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败: {contract}")
+        _write_intent_for_failed(code, action, shares, price, reason=f'下单失败: {contract}')
         return False
 
     print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
 
-    # 6. _write_order 写入订单
+    # 6. _write_order 写入订单（成功）
     _write_order(code, action, shares, price, contract, 'pending')
 
-    # 5. 做T：挂配对反方向单 → 新 EvolvingSim 实例
+    # 7. 做T：挂配对反方向单 → 新 EvolvingSim 实例
     if is_t0 and pair_price is not None:
         p_result = _call_evolving(pair_method, code, shares, pair_price)
         p_contract = None
