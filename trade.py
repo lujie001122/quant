@@ -374,6 +374,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     if is_t0 and pair_price is not None:
         p_result = _call_evolving(pair_method, code, shares, pair_price)
         p_contract = None
+        p_ok = False
         if p_result is not None:
             p_ok, p_contract = p_result
             if p_ok:
@@ -383,9 +384,11 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         else:
             print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}")
 
-        _write_order(code, pair_action, shares, pair_price, p_contract, 'pending')
-
-        print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
+        if p_ok:
+            _write_order(code, pair_action, shares, pair_price, p_contract, 'pending')
+            print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
+        else:
+            print(f"❌ 配对{pair_method}挂单失败，不写入订单文件")
 
     return True
 
