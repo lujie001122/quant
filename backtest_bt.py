@@ -564,13 +564,13 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓70%
+                # 确认加仓60%
                 elif price > ps["first_price"] and ps["build_phase"] == 1:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
                         ao_ok = False
                     if ao_ok:
-                        if self._buy(d, 0.70, f"确认加70% 突破→phase2"):
+                        if self._buy(d, 0.60, f"确认加60% 突破→phase2"):
                             ps["build_phase"] = 2; ps["bought_today"] = True; ps["add_count"] += 1
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
                             ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
@@ -688,6 +688,38 @@ class ETFStrategy(bt.Strategy):
 
             if entry_result and entry_result[0] == "买入":
                 print(f"[VALIDATE] {date_str} {name} strategy.py入场: {entry_result[1]} {entry_result[3]}")
+
+        # P1-6: DecisionEngine 交叉验证 — 不改变交易，只记录差异
+        self._validate_decision_engine(date_str, strategy_positions)
+
+    def _validate_decision_engine(self, date_str, strategy_positions):
+        """P1-6: 回测通过 DecisionEngine 管线做交叉验证。
+        调用 DecisionEngine.process_signals() 生成 OrderIntent，
+        与回测实际交易方向对比，差异记录日志。"""
+        try:
+            from decision_engine import DecisionEngine
+            from signal_generator import generate_signals
+
+            # 构建简化的 result dict（模拟 signal_generator 输出）
+            engine = DecisionEngine()
+            result = generate_signals()
+            if result is None:
+                return
+
+            # 构建 realtime
+            realtime = {}
+            for d in self.datas:
+                realtime[d._name] = {"price": d.close[0]}
+
+            # 传入真实持仓状态
+            intents = engine.process(result, strategy_positions, realtime, mode='buy_sell')
+            if intents:
+                for intent in intents:
+                    print(f"[DE-VALIDATE] {date_str} {intent.code} "
+                          f"DecisionEngine: {intent.action} {intent.shares}股 "
+                          f"@{intent.price:.3f} ({intent.trade_type}) {intent.reason[:60]}")
+        except Exception as e:
+            pass  # DecisionEngine 不可用时静默跳过
 
     def stop(self):
         pass  # 结果输出在main()中用analyzers

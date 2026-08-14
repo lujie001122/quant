@@ -21,11 +21,9 @@
 
 import math
 
-# 默认参数
-TOTAL_FUND = 220000
-MAX_PER_ETF = 44000
-DEAD_RATIO = 0.6
-ACTIVE_RATIO = 0.4
+# 从 position_info 导入统一常量
+from position_info import TOTAL_FUND, DEAD_RATIO, ACTIVE_RATIO, MAX_PER_ETF
+
 MIN_SHARES = 100  # 最小交易单位
 
 
@@ -101,8 +99,8 @@ class MoneyManager:
 
     @staticmethod
     def get_confirm_entry_ratio(pos):
-        """获取确认加仓比例 (分批2=70%)"""
-        return 0.70
+        """获取确认加仓比例 (分批2=60%)"""
+        return 0.60
 
     @staticmethod
     def get_build_ratio(pos):

@@ -478,14 +478,11 @@ class DecisionEngine:
                     print(f"  [RISK] {intent.code} 仓位{ratio*100:.0f}%已达上限，跳过买入")
                     return False
 
-        # ── 日亏损限额检查 ──
-        if positions and realtime:
-            is_hit, loss_pct, reason = self.rm.is_daily_loss_limit_hit(
-                positions, realtime, datetime.now().strftime("%Y-%m-%d")
-            )
-            if is_hit:
-                print(f"  [RISK] {reason}，跳过所有交易")
-                return False
+        # ── 日亏损限额检查（P0 修复：调正确的 check_daily_loss_limit 方法） ──
+        ok, msg = self.rm.check_daily_loss_limit(intent)
+        if not ok:
+            print(f"  [RISK] {msg}")
+            return False
 
         return True
 

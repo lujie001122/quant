@@ -25,12 +25,11 @@
 from datetime import datetime
 from typing import Tuple
 
-# 默认参数
-TOTAL_FUND = 220000
-MAX_POSITION_RATIO = 0.50  # 单只上限50%
-MAX_DAILY_LOSS_PCT = 0.05  # 日亏损限额5%
-DEAD_RATIO = 0.6
-ACTIVE_RATIO = 0.4
+# 从 position_info 导入统一常量
+from position_info import (
+    TOTAL_FUND, MAX_POSITION_RATIO, MAX_DAILY_LOSS_PCT,
+    DEAD_RATIO, ACTIVE_RATIO,
+)
 
 
 class RiskManager:
@@ -266,14 +265,15 @@ class RiskManager:
         return True, "通过"
 
     @staticmethod
-    def is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct=None):
+    def is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct=None, prev_close=None):
         """检查当日是否超过日亏损限额
 
         参数:
           positions: {code: PositionInfo, ...}
-          realtime: {code: {price, ...}, ...}
+          realtime: {code: {price, open, ...}, ...}
           today_str: "YYYY-MM-DD"
           max_loss_pct: 日亏损限额 (默认5%)
+          prev_close: {code: prev_close_price} 昨日收盘价（用于计算开盘基准）
         返回:
           (is_hit: bool, loss_pct: float, reason: str)
         """
@@ -286,12 +286,23 @@ class RiskManager:
         for code, pos in positions.items():
             if not pos.has_position:
                 continue
-            price = realtime.get(code, {}).get("price", 0)
+            rt = realtime.get(code, {})
+            price = rt.get("price", 0)
             if price <= 0:
                 continue
             total_current_value += pos.shares * price
-            # 估算开盘市值: 用持仓成本或昨日收盘
-            total_morning_value += pos.shares * pos.avg_cost
+
+            # P0 修复：使用开盘价作为基准，而非持仓成本
+            # 日亏损 = 今日开盘市值 - 当前市值（反映当日真实亏损）
+            open_price = rt.get("open", 0)
+            if open_price > 0:
+                total_morning_value += pos.shares * open_price
+            elif prev_close and code in prev_close:
+                # 降级：使用昨日收盘价近似开盘价
+                total_morning_value += pos.shares * prev_close[code]
+            else:
+                # 最终降级：使用当前价格（无开盘数据时跳过该标的）
+                total_morning_value += pos.shares * price
 
         if total_morning_value <= 0:
             return False, 0.0, ""

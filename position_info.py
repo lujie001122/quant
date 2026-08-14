@@ -7,19 +7,62 @@ PositionInfo 是共享状态模型，所有策略模块和回测引擎都依赖�
 """
 
 # ═══════════════════════════════════════════════
-# 模块级常量
+# 模块级常量（默认值，会被 config.yaml 覆盖）
 # ═══════════════════════════════════════════════
 
-TOTAL_FUND = 220000
-DEAD_RATIO = 0.6
-ACTIVE_RATIO = 0.4
-GRID_BUY_LEVELS = 5
-GRID_SELL_LEVELS = 3
-MAX_DAILY_BUYS = 1
-MAX_DAILY_T0 = 2
-DEFENSE_CODE = "159611"
-COOLDOWN_DAYS = 2
-INVERTED_WEIGHTS = [0.20, 0.25, 0.30, 0.35, 0.40]
+import yaml
+import os
+
+def _load_config():
+    """从 config.yaml 加载配置，返回合并后的默认值"""
+    _DEFAULTS = {
+        'total_fund': 220000,
+        'dead_ratio': 0.6,
+        'active_ratio': 0.4,
+        'grid_buy_levels': 5,
+        'grid_sell_levels': 3,
+        'max_daily_buys': 1,
+        'max_daily_t0': 2,
+        'defense_code': '159611',
+        'cooldown_days': 2,
+        'inverted_weights': [0.20, 0.25, 0.30, 0.35, 0.40],
+    }
+    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    try:
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        _DEFAULTS['total_fund'] = cfg.get('total_fund', _DEFAULTS['total_fund'])
+        _DEFAULTS['dead_ratio'] = cfg.get('dead_ratio', _DEFAULTS['dead_ratio'])
+        _DEFAULTS['active_ratio'] = cfg.get('active_ratio', _DEFAULTS['active_ratio'])
+        _DEFAULTS['grid_buy_levels'] = cfg.get('grid_buy_levels', _DEFAULTS['grid_buy_levels'])
+        _DEFAULTS['grid_sell_levels'] = cfg.get('grid_sell_levels', _DEFAULTS['grid_sell_levels'])
+        _DEFAULTS['max_daily_buys'] = cfg.get('max_daily_buys', _DEFAULTS['max_daily_buys'])
+        _DEFAULTS['max_daily_t0'] = cfg.get('max_daily_t0', _DEFAULTS['max_daily_t0'])
+        _DEFAULTS['defense_code'] = cfg.get('defense_code', _DEFAULTS['defense_code'])
+        _DEFAULTS['cooldown_days'] = cfg.get('cooldown_days', _DEFAULTS['cooldown_days'])
+        _DEFAULTS['inverted_weights'] = cfg.get('inverted_weights', _DEFAULTS['inverted_weights'])
+        _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 44000)
+        _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 0.50)
+        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.12)
+    except Exception:
+        pass
+    return _DEFAULTS
+
+_config = _load_config()
+
+TOTAL_FUND = _config['total_fund']
+DEAD_RATIO = _config['dead_ratio']
+ACTIVE_RATIO = _config['active_ratio']
+GRID_BUY_LEVELS = _config['grid_buy_levels']
+GRID_SELL_LEVELS = _config['grid_sell_levels']
+MAX_DAILY_BUYS = _config['max_daily_buys']
+MAX_DAILY_T0 = _config['max_daily_t0']
+DEFENSE_CODE = _config['defense_code']
+COOLDOWN_DAYS = _config['cooldown_days']
+INVERTED_WEIGHTS = _config['inverted_weights']
+MAX_PER_ETF = _config.get('max_per_etf', 44000)
+MAX_POSITION_RATIO = _config.get('max_position_ratio', 0.50)
+MAX_DAILY_LOSS_PCT = _config.get('max_daily_loss_pct', 0.12)
 
 
 class PositionInfo:

@@ -51,11 +51,15 @@ _t0_strategy = T0Strategy()
 
 
 def evaluate_stop(pos, t, price, today_str):
-    return _rsi_macd_strategy.evaluate_stop(pos, t, price, today_str)
+    """评估止盈止损信号（统一入口：委托给 RiskManager，避免逻辑重复）"""
+    from risk_manager import check_stop_loss as _rm_check_stop
+    return _rm_check_stop(pos, t, price, today_str)
 
 
 def resolve_stop_signal(pos, stop_actions):
-    return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
+    """解析止盈止损信号（统一入口：委托给 RiskManager）"""
+    from risk_manager import resolve_stop_signal as _rm_resolve_stop
+    return _rm_resolve_stop(pos, stop_actions)
 
 
 def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
@@ -461,14 +465,16 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 pos.empty_days += 1
                 pos.empty_days_date = today_str
 
-        # 兜底：如果 t0_signal 有有效信号，将 trade_type 和 action 设为 t0（覆盖止盈止损等优先级）
+        # 兜底：如果 t0_signal 有有效信号，仅当 trade_type 未设置或为买入时覆盖为 t0
+        # 止损/止盈/减仓/卖出信号（liquidate/reduce/sell）优先级更高，T0 不覆盖
         if t0_signal and t0_signal not in ("无", "无(非交易时段)", "无(集合竞价时段)"):
             if "买入" in t0_signal or "卖出" in t0_signal:
-                trade_type = "t0"
-                if "买入" in t0_signal:
-                    action = "买入"
-                elif "卖出" in t0_signal:
-                    action = "卖出"
+                if trade_type is None or trade_type == "buy":
+                    trade_type = "t0"
+                    if "买入" in t0_signal:
+                        action = "买入"
+                    elif "卖出" in t0_signal:
+                        action = "卖出"
 
         signals_output[code] = {
             "price": f"{price:.3f}",
@@ -623,18 +629,20 @@ def execute_signals(result, mode=None):
     for code, sig in signals.items():
         trade_type = sig.get("trade_type")
         action = sig.get("action", "")
-        # 兜底：从 t0_signal 字段推导 trade_type 和 action（覆盖已有值）
+        # 兜底：从 t0_signal 字段推导 trade_type 和 action（仅当未设置或为 buy 时覆盖）
+        # 止损/止盈/减仓/卖出信号优先级更高，T0 不覆盖
         t0_sig = sig.get("t0_signal", "")
         if t0_sig and t0_sig not in ("无", "无(非交易时段)", "无(集合竞价时段)"):
             if "买入" in t0_sig or "卖出" in t0_sig:
-                trade_type = "t0"
-                # 从 t0_signal 推导正确的 action 方向，并回写 sig dict
-                if "买入" in t0_sig:
-                    action = "买入"
-                elif "卖出" in t0_sig:
-                    action = "卖出"
-                sig["trade_type"] = trade_type
-                sig["action"] = action
+                if trade_type is None or trade_type == "buy":
+                    trade_type = "t0"
+                    # 从 t0_signal 推导正确的 action 方向，并回写 sig dict
+                    if "买入" in t0_sig:
+                        action = "买入"
+                    elif "卖出" in t0_sig:
+                        action = "卖出"
+                    sig["trade_type"] = trade_type
+                    sig["action"] = action
         if not trade_type:
             continue
         # 模式过滤
