@@ -81,6 +81,9 @@ class DecisionEngine:
         self.mm = MoneyManager()
         self.rm = RiskManager()
         self.config = config or {}
+        # 延迟导入 state_center，避免循环依赖
+        from state_center import StateCenter
+        self.state = StateCenter.get_instance()
 
     # ══════════════════════════════════════════════════
     # 主入口
@@ -98,13 +101,16 @@ class DecisionEngine:
 
         参数:
           result: generate_signals() 返回的 dict
-          positions: {code: PositionInfo, ...} (可选)
-          realtime: {code: {price, ...}, ...} (可选)
-          portfolio_data: portfolio.json 数据 (可选)
+          positions: {code: PositionInfo, ...} (可选，不传则从 state_center 读取)
+          realtime: {code: {price, ...}, ...} (可选，不传则从 portfolio 读取)
+          portfolio_data: portfolio.json 数据 (可选，不传则自动加载)
           mode: 'buy_sell', 't0', 或 None(全部)
 
         返回:
           List[OrderIntent]: 待执行的交易意图列表
+
+        P0 修复: 当 positions/realtime 未传入时，直接从 state_center / portfolio
+        读取最新数据，避免调用方传入过期状态导致错误决策。
         """
         if result is None:
             return []
@@ -112,6 +118,18 @@ class DecisionEngine:
         signals = result.get("signals", {})
         if not signals:
             return []
+
+        # ── P0: 未传入则从 state_center 读取最新状态 ──
+        if positions is None:
+            positions = self._load_positions_from_state()
+        if realtime is None:
+            realtime = self._load_realtime_from_portfolio(code=None)
+        if portfolio_data is None:
+            from state_center import load_portfolio
+            portfolio_data = load_portfolio()
+
+        # 同步 state_center 现金状态
+        self.state.sync_from_portfolio(portfolio_data)
 
         # ── Step 1: AI 信号清洗 ──
         cleaned_result = clean_signals(result, portfolio_data)
@@ -247,6 +265,41 @@ class DecisionEngine:
     # ══════════════════════════════════════════════════
     # 辅助方法
     # ══════════════════════════════════════════════════
+
+    def _load_positions_from_state(self) -> Dict[str, PositionInfo]:
+        """从 state_center / portfolio 加载最新持仓信息，保证决策基于最新数据"""
+        from state_center import get_all_positions
+        positions = {}
+        pf_positions = get_all_positions()
+        for code, pdata in pf_positions.items():
+            pos = PositionInfo()
+            pos.shares = pdata.get("shares", 0)
+            pos.avg_cost = pdata.get("avg_cost", 0.0)
+            pos.cost = pos.avg_cost * pos.shares
+            pos.entry_avg_cost = pdata.get("entry_avg_cost", 0.0)
+            pos.base_price = pdata.get("base_price", pos.avg_cost)
+            pos.peak_price = pdata.get("peak_price", 0.0)
+            pos.build_phase = pdata.get("build_phase", 0)
+            pos.build_first_price = pdata.get("build_first_price", 0.0)
+            pos.stop_level = pdata.get("stop_level", 0)
+            pos.below_ma20_count = pdata.get("below_ma20_count", 0)
+            pos.reached_8pct = pdata.get("reached_8pct", False)
+            pos.reached_15pct = pdata.get("reached_15pct", False)
+            pos.trailing_stop_price = pdata.get("trailing_stop_price", 0.0)
+            pos.breakeven_activated = pdata.get("breakeven_activated", False)
+            pos.add_count = pdata.get("add_count", 0)
+            pos.empty_days = pdata.get("empty_days", 0)
+            pos.active_sell_count = pdata.get("active_sell_count", 0)
+            positions[code] = pos
+        return positions
+
+    def _load_realtime_from_portfolio(self, code: Optional[str] = None) -> Dict:
+        """从 market_data 获取实时行情（价格供决策使用）"""
+        try:
+            from market_data import fetch_realtime_quotes
+            return fetch_realtime_quotes()
+        except Exception:
+            return {}
 
     @staticmethod
     def _parse_price(price_str) -> float:

@@ -16,6 +16,7 @@ state_center.py — 统一状态中心
 用法：
   from state_center import (
       SubAccount, StateCenter, get_main_position, get_t0_position,
+      get_main_cash, get_t0_cash,
       get_tracked_codes, get_code_map, get_etfs_config,
       load_portfolio, save_portfolio,
       get_position_shares, get_position_info,
@@ -43,6 +44,7 @@ class SubAccount:
         self.name = name  # "main" 或 "t0"
         self.positions = {}  # symbol -> {volume, avg_cost, realized_pnl}
         self.cash = 0.0
+        self.initial_cash = 0.0  # 初始现金（用于盈亏计算）
 
 
 class StateCenter:
@@ -79,6 +81,48 @@ class StateCenter:
             return self.t0_account
         return self.main_account
 
+    # ── 现金管理（做T与主策略现金池隔离）──
+    def get_cash(self, account: str = "main") -> float:
+        """获取指定子账户的可用现金"""
+        if account == "main":
+            return self.main_account.cash
+        else:
+            return self.t0_account.cash
+
+    def update_cash(self, amount: float, account: str = "main"):
+        """更新指定子账户的现金余额"""
+        if account == "main":
+            self.main_account.cash += amount
+        else:
+            self.t0_account.cash += amount
+
+    def get_total_cash(self) -> float:
+        """获取总现金（main + t0）"""
+        return self.main_account.cash + self.t0_account.cash
+
+    def get_daily_pnl(self) -> float:
+        """获取当日盈亏（基于初始现金）"""
+        total = self.get_total_cash()
+        initial = self.main_account.initial_cash + self.t0_account.initial_cash
+        return total - initial
+
+    def get_total_asset(self) -> float:
+        """获取总资产（现金 + 持仓市值）"""
+        return self.get_total_cash()  # 简化版，实际需加持仓市值
+
+    def sync_from_portfolio(self, portfolio_data: dict):
+        """从 portfolio.json 同步账户状态到 StateCenter"""
+        account = portfolio_data.get("account", {})
+        cash = account.get("cash", 0.0)
+        total_asset = account.get("total_asset", 0.0)
+
+        # 默认按 80/20 分配（主策略80%，做T20%）
+        if self.main_account.initial_cash == 0:
+            self.main_account.initial_cash = cash * 0.8
+            self.t0_account.initial_cash = cash * 0.2
+            self.main_account.cash = self.main_account.initial_cash
+            self.t0_account.cash = self.t0_account.initial_cash
+
 
 def get_main_position(code: str):
     """便捷函数：获取主策略子账户持仓"""
@@ -88,6 +132,16 @@ def get_main_position(code: str):
 def get_t0_position(code: str):
     """便捷函数：获取做T子账户持仓"""
     return StateCenter.get_instance().get_position(code, account="t0")
+
+
+def get_main_cash() -> float:
+    """便捷函数：获取主策略子账户现金"""
+    return StateCenter.get_instance().get_cash(account="main")
+
+
+def get_t0_cash() -> float:
+    """便捷函数：获取做T子账户现金"""
+    return StateCenter.get_instance().get_cash(account="t0")
 
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────

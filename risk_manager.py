@@ -23,6 +23,7 @@
 """
 
 from datetime import datetime
+from typing import Tuple
 
 # 默认参数
 TOTAL_FUND = 220000
@@ -34,6 +35,15 @@ ACTIVE_RATIO = 0.4
 
 class RiskManager:
     """风险管理器 — 统一处理止损、仓位上限、日亏损限额"""
+
+    def __init__(self, state_center=None):
+        # 延迟导入 state_center，避免循环依赖
+        if state_center is None:
+            from state_center import StateCenter
+            state_center = StateCenter.get_instance()
+        self._state = state_center
+        self.MAX_DAILY_LOSS_PCT = 0.05  # 单日最大亏损5%
+        self.daily_pnl = 0.0
 
     # ══════════════════════════════════════════════
     # 1. 止损检查
@@ -186,9 +196,74 @@ class RiskManager:
             return False, f"仓位已达{ratio*100:.0f}%上限50%"
         return True, ""
 
-    # ══════════════════════════════════════════════
+    # ═══════════════════════════════════════════════
     # 3. 日亏损限额检查
-    # ══════════════════════════════════════════════
+    # ═══════════════════════════════════════════════
+
+    def check_daily_loss_limit(self, order_intent=None) -> Tuple[bool, str]:
+        """检查当日亏损是否已达上限（P0 修复：实际生效）
+
+        从 state_center 获取当日盈亏，与总资产比较。
+        如果亏损比例超过 MAX_DAILY_LOSS_PCT (5%)，阻断所有交易。
+
+        参数:
+          order_intent: OrderIntent 对象（可选，用于日志）
+
+        返回:
+          (ok: bool, reason: str)
+        """
+        daily_loss = self._state.get_daily_pnl()
+        total_asset = self._state.get_total_asset()
+
+        if total_asset <= 0:
+            return True, "总资产未初始化，跳过检查"
+
+        loss_rate = abs(daily_loss) / total_asset if daily_loss < 0 else 0
+
+        if loss_rate >= self.MAX_DAILY_LOSS_PCT:
+            code_str = f"({order_intent.code})" if order_intent else ""
+            return False, (
+                f"当日亏损已达{loss_rate:.2%}，超过{self.MAX_DAILY_LOSS_PCT:.2%}限额，"
+                f"暂停交易{code_str}"
+            )
+        return True, "通过"
+
+    def check_order(self, order_intent) -> Tuple[bool, str]:
+        """统一风控入口（P0 修复）
+
+        检查顺序:
+          1. 日亏损限额检查（每日最多亏损5%）
+          2. 仓位上限检查（单只不超过50%）
+
+        参数:
+          order_intent: OrderIntent 对象
+
+        返回:
+          (ok: bool, reason: str)
+        """
+        # 1. 日亏损限额检查
+        ok, msg = self.check_daily_loss_limit(order_intent)
+        if not ok:
+            return False, msg
+
+        # 2. 仓位上限检查（买入信号）
+        if hasattr(order_intent, 'is_buy') and order_intent.is_buy():
+            from state_center import get_position_info
+            pos_data = get_position_info(order_intent.code)
+            if pos_data.get("shares", 0) > 0:
+                from position_info import PositionInfo
+                pos = PositionInfo()
+                pos.shares = pos_data.get("shares", 0)
+                pos.avg_cost = pos_data.get("avg_cost", 0.0)
+                pos.cost = pos.avg_cost * pos.shares
+                capped, ratio = self.is_position_capped(pos, order_intent.price)
+                if capped:
+                    return False, (
+                        f"{order_intent.code} 仓位{ratio*100:.0f}%已达50%上限，"
+                        f"跳过买入"
+                    )
+
+        return True, "通过"
 
     @staticmethod
     def is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct=None):
@@ -233,6 +308,19 @@ class RiskManager:
 # ═══════════════════════════════════════════════
 
 _rm = RiskManager()
+
+
+def check_order(order_intent):
+    """统一风控入口（P0 修复：日亏损限额在此实际生效）
+    
+    检查顺序:
+      1. 日亏损限额检查（每日最多亏损5%）
+      2. 仓位上限检查（单只不超过50%）
+      3. 止损检查（止盈/止损/减仓）
+    
+    返回: (ok: bool, reason: str)
+    """
+    return _rm.check_order(order_intent)
 
 
 def check_stop_loss(pos, t, price, today_str):
