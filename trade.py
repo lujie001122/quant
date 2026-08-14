@@ -391,38 +391,86 @@ def _is_continuous_auction():
 # ─── 统一买卖做T入口 ───────────────────────────────────────────────────
 
 def _unified_trade(action, code, shares, price, pair_price=None):
-    """下单：校验 → EvolvingSim → 写订单。原生调用，不创建额外实例。"""
+    """统一买卖做T流程：
+    1. 校验100倍数
+    2. 一个实例：_sync_entrust + _revoke_all（合并共用）
+    3. 写 intent 文件（防重复）
+    4. buy/sell 新实例：下单主单
+    5. 做T 新实例：挂配对反方向单
+    6. _write_order 写入订单（成功时 pending，失败时 failed）
+    """
+    # 1. 校验100倍数
     _validate_shares(shares)
 
     is_t0 = action in ('t0_buy', 't0_sell')
+
+    # 2. 一个实例：_sync_entrust + _revoke_all 合并共用
+    e_sync = EvolvingSim()
+    orders = _load_today_orders()
+    _sync_entrust_to_orders(e=e_sync, orders=orders)
+    _revoke_all(e=e_sync, orders=orders)
+
+    # 3. 写 intent 文件（下单前，防跨 cron 重复）
+    _write_intent(code, action, shares, price)
+
+    # 4. 做T：检查连续竞价
     if is_t0 and not _is_continuous_auction():
-        print(f"❌ 非连续竞价时段，不执行挂单")
+        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
+        _write_intent_for_failed(code, action, shares, price, reason='非连续竞价时段')
         return False
 
+    # 确定 EvolvingSim 方法名和配对方向
     if action in ('buy', 't0_buy'):
-        method, pair_method, pair_action = 'buy', 'sell', 't0_sell'
+        method = 'buy'
+        pair_method = 'sell'
+        pair_action = 't0_sell'
     else:
-        method, pair_method, pair_action = 'sell', 'buy', 't0_buy'
+        method = 'sell'
+        pair_method = 'buy'
+        pair_action = 't0_buy'
 
-    label = f"🔁 做T {action}" if is_t0 else f"📊 {action}"
-    print(f"{label} {code} {shares}股@{price}" + (f" | 配对@{pair_price}" if is_t0 and pair_price else ""))
+    # 5. 下单主单 → 新 EvolvingSim 实例
+    if is_t0:
+        print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
+    else:
+        print(f"📊 {action} {code} {shares}股@{price}")
 
     result = _call_evolving(method, code, shares, price)
-    if result is None or not result[0]:
+    if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
+        _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
         return False
 
-    contract = result[1]
+    ok, contract = result
+    if not ok:
+        print(f"❌ {method} {code} {shares}股@{price} → 下单失败: {contract}")
+        _write_intent_for_failed(code, action, shares, price, reason=f'下单失败: {contract}')
+        return False
+
     print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
+
+    # 6. _write_order 写入订单（成功）
     _write_order(code, action, shares, price, contract, 'pending')
 
+    # 7. 做T：挂配对反方向单 → 新 EvolvingSim 实例
     if is_t0 and pair_price is not None:
         p_result = _call_evolving(pair_method, code, shares, pair_price)
-        if p_result is not None and p_result[0]:
-            print(f"   ✅ 配对{pair_method} {code} {shares}股@{pair_price} 合同:{p_result[1]}")
-            _write_order(code, pair_action, shares, pair_price, p_result[1], 'pending')
+        p_contract = None
+        p_ok = False
+        if p_result is not None:
+            p_ok, p_contract = p_result
+            if p_ok:
+                print(f"   ✅ 配对{pair_method}挂单 {code} {shares}股@{pair_price} 合同:{p_contract}")
+            else:
+                print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}: {p_contract}")
         else:
-            print(f"   ⚠️ 配对{pair_method}失败")
+            print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}")
+
+        if p_ok:
+            _write_order(code, pair_action, shares, pair_price, p_contract, 'pending')
+            print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
+        else:
+            print(f"❌ 配对{pair_method}挂单失败，不写入订单文件")
 
     return True
 
