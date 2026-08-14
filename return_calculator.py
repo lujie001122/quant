@@ -14,12 +14,12 @@ return_calculator.py — 总资产收益率计算
 """
 
 from datetime import date
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import math
 
 
 # ═══════════════════════════════════════════════════════
-# 收益率计算
+# 收益率计算（核心红线：所有收益率以总资产为分母）
 # ═══════════════════════════════════════════════════════
 
 def calc_total_return(initial_value: float, final_value: float) -> float:
@@ -44,6 +44,75 @@ def calc_annual_return(initial_value: float, final_value: float,
     if years <= 0:
         return 0.0
     return ((final_value / initial_value) ** (1 / years) - 1) * 100
+
+
+def calc_daily_return(prev_total_asset: float, curr_total_asset: float) -> float:
+    """
+    日收益率（以总资产为分母，避免卖出后虚高）。
+    核心红线：严禁以持仓市值为分母计算收益率。
+
+    参数:
+      prev_total_asset: 前一交易日总资产
+      curr_total_asset: 当前交易日总资产
+
+    返回:
+      日收益率（小数，如 0.01 = 1%）
+    """
+    if prev_total_asset <= 0:
+        return 0.0
+    return (curr_total_asset - prev_total_asset) / prev_total_asset
+
+
+def calc_position_return(position: Dict[str, Any],
+                         current_price: float,
+                         total_asset: float) -> float:
+    """
+    单标的真实收益率（含已实现盈亏，以总资产为分母）。
+    不同于 profit_pct（基于持仓成本），此函数反映标的对总资产的贡献。
+
+    参数:
+      position: 持仓字典 {shares, entry_avg_cost, avg_cost, realized_pnl, ...}
+      current_price: 当前市场价格
+      total_asset: 总资产（用于计算占比）
+
+    返回:
+      该标的占总资产的收益率（小数）
+    """
+    if total_asset <= 0:
+        return 0.0
+    shares = position.get("shares", 0)
+    entry_cost = position.get("entry_avg_cost", 0) or position.get("avg_cost", 0)
+    realized_pnl = position.get("realized_pnl", 0) or 0.0
+
+    if shares > 0 and entry_cost > 0:
+        # 未实现盈亏 + 已实现盈亏，除以总资产
+        unrealized = (current_price - entry_cost) * shares
+        return (unrealized + realized_pnl) / total_asset
+    elif realized_pnl != 0:
+        return realized_pnl / total_asset
+    return 0.0
+
+
+def calc_total_asset_return(state_center: Any) -> float:
+    """
+    总资产收益率（基于 state_center 的持仓和账户信息）。
+
+    参数:
+      state_center: 状态中心模块（含 portfolio.json 数据）
+
+    返回:
+      总资产收益率（小数）
+    """
+    try:
+        pf = state_center.load_portfolio()
+        account = pf.get("account", {})
+        total_asset = account.get("total_asset", 0)
+        initial_capital = account.get("initial_capital", 0)
+        if total_asset > 0 and initial_capital > 0:
+            return (total_asset - initial_capital) / initial_capital
+    except Exception:
+        pass
+    return 0.0
 
 
 # ═══════════════════════════════════════════════════════

@@ -153,24 +153,31 @@ def _check_recent_sell(
         t_date = t.get("date", "")
         t_action = t.get("action", "")
         t_type = t.get("trade_type", "")
+        t_reason = t.get("reason", "")
         if t_date and (t_action in ("sell", "liquidate", "reduce") or "卖出" in str(t_action)):
             try:
                 td = datetime.strptime(t_date, "%Y-%m-%d").date()
                 today_d = datetime.strptime(today, "%Y-%m-%d").date()
                 days_ago = (today_d - td).days
                 if 0 <= days_ago <= SELL_COOLDOWN_DAYS:
-                    recent_sell_dates.append((t_date, days_ago))
+                    recent_sell_dates.append((t_date, days_ago, t_reason))
             except (ValueError, TypeError):
                 continue
 
     if recent_sell_dates:
         most_recent = min(recent_sell_dates, key=lambda x: x[1])
+        sell_reason = most_recent[2] if len(most_recent) > 2 else ""
+
+        # 区分卖出类型：止盈卖出后买入不降权，止损卖出后买入降权
+        if "take_profit" in sell_reason or "止盈" in sell_reason or "趋势止盈" in sell_reason:
+            return None  # 止盈卖出后的买入信号不降权，允许二次入场
+
         return {
             "rule": "recent_sell",
             "action": "downgrade",
-            "reason": f"近期卖出({most_recent[0]}, {most_recent[1]}天前), "
+            "reason": f"近期卖出({most_recent[0]}, {most_recent[1]}天前, 原因:{sell_reason}), "
                       f"冷静期内({SELL_COOLDOWN_DAYS}天), 暂不买入",
-            "detail": {"recent_sells": recent_sell_dates},
+            "detail": {"recent_sells": [(s[0], s[1]) for s in recent_sell_dates]},
         }
 
     return None

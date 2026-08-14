@@ -1,0 +1,21 @@
+{
+  "order_id": "20260814_159516_B_buy_1786685626452",
+  "code": "159516",
+  "action": "buy",
+  "direction": "买入",
+  "shares": 9500,
+  "price": 1.378,
+  "pair_price": 0.0,
+  "status": "revoked",
+  "filled_shares": 0,
+  "avg_fill_price": 0.0,
+  "reason": "RSI建仓通道",
+  "source": "strategy",
+  "confidence": 0.9,
+  "broker_order_id": "",
+  "created_at": "2026-08-14 13:33:46",
+  "updated_at": "2026-08-14 13:33:57",
+  "expires_at": "2026-08-14 13:38:46",
+  "error_message": "",
+  "retry_count": 0
+}

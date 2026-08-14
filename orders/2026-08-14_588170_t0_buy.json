@@ -1,0 +1,21 @@
+{
+  "order_id": "20260814_588170_B_t0_1786685626452",
+  "code": "588170",
+  "action": "t0_buy",
+  "direction": "买入",
+  "shares": 1000,
+  "price": 0.918,
+  "pair_price": 0.928,
+  "status": "revoked",
+  "filled_shares": 0,
+  "avg_fill_price": 0.0,
+  "reason": "做T买入",
+  "source": "t0",
+  "confidence": 1.0,
+  "broker_order_id": "",
+  "created_at": "2026-08-14 13:33:46",
+  "updated_at": "2026-08-14 13:33:57",
+  "expires_at": "2026-08-14 13:38:46",
+  "error_message": "",
+  "retry_count": 0
+}

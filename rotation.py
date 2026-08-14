@@ -525,6 +525,9 @@ def run_rotation(force_write=False):
 
     # 7. --force 模式：自动写入 etf_pool.json
     if force_write and all_picks:
+        # ═══ 记录旧选池，用于清理被移除标的的挂单 ═══
+        old_pool_codes = list(current_pool_codes)
+
         pool_out = {
             "codes": all_picks,
             "names": {c: results[c]["name"] for c in all_picks},
@@ -539,7 +542,90 @@ def run_rotation(force_write=False):
             json.dump(pool_out, f, ensure_ascii=False, indent=2)
         print(f"  🔧 --force: 已写入 {pool_path} ({len(all_picks)} 只ETF)")
 
+        # ═══ 清理被移除标的的未成交挂单 ═══
+        removed_codes = set(old_pool_codes) - set(all_picks)
+        if removed_codes:
+            print(f"\n{'─' * 60}")
+            print(f"  【轮动清理】移除 {len(removed_codes)} 只标的: {removed_codes}")
+            cleanup_removed_symbols(old_pool_codes, all_picks, results)
+
     return output
+
+
+# ═══════════════════════════════════════════════════════
+#  轮动清理：选池后自动撤单被移除标的的未成交挂单
+# ═══════════════════════════════════════════════════════
+
+def cleanup_removed_symbols(old_pool, new_pool,
+                            results=None):
+    """
+    轮动选池后自动清理被移除标的的未成交挂单。
+
+    参数:
+      old_pool: 旧选池代码列表
+      new_pool: 新选池代码列表
+      results: 轮动扫描结果（可选，用于日志）
+
+    返回:
+      {cancelled: int, skipped: int, errors: list}
+    """
+    removed = set(old_pool) - set(new_pool)
+    result = {"cancelled": 0, "skipped": 0, "errors": []}
+
+    if not removed:
+        return result
+
+    for symbol in removed:
+        try:
+            # 尝试使用 order_manager 撤单
+            from order_manager import OrderManager
+            om = OrderManager()
+            pending = om.get_pending_orders(symbol)
+            if pending:
+                for order in pending:
+                    try:
+                        om.cancel_order(order.order_id)
+                        print(f"  🔄 轮动移除 {symbol}，已撤单 {order.order_id}")
+                        result["cancelled"] += 1
+                    except Exception as e:
+                        print(f"  ⚠ 撤单失败 {order.order_id}: {e}")
+                        result["errors"].append(str(e))
+            else:
+                print(f"  ℹ 轮动移除 {symbol}，无未成交挂单")
+                result["skipped"] += 1
+        except ImportError:
+            # order_manager 不可用时，通过文件系统清理
+            try:
+                import os as _os
+                orders_dir = _os.path.join(_DIR, "orders")
+                if _os.path.exists(orders_dir):
+                    cancelled_local = 0
+                    for fname in _os.listdir(orders_dir):
+                        if fname.endswith(".json") and symbol in fname:
+                            fpath = _os.path.join(orders_dir, fname)
+                            try:
+                                import json as _json
+                                with open(fpath, "r") as f:
+                                    od = _json.load(f)
+                                if od.get("status") == "pending":
+                                    od["status"] = "revoked"
+                                    od["revoke_reason"] = f"轮动移除 {symbol}"
+                                    with open(fpath, "w") as f:
+                                        _json.dump(od, f, ensure_ascii=False)
+                                    cancelled_local += 1
+                                    print(f"  🔄 轮动移除 {symbol}，标记已撤单 {fname}")
+                            except Exception:
+                                pass
+                    result["cancelled"] = cancelled_local
+                    if cancelled_local == 0:
+                        result["skipped"] += 1
+                else:
+                    result["skipped"] += 1
+            except Exception as e:
+                print(f"  ⚠ 清理失败 {symbol}: {e}")
+                result["errors"].append(str(e))
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════

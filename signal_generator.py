@@ -287,6 +287,15 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         _position_ratio_val = pos.shares * price / TOTAL_FUND if pos.has_position else 0
         _position_capped = pos.has_position and _position_ratio_val >= 0.50
 
+        # ═══════════════════════════════════════════════════════
+        # 信号优先级规则（prd 系统优化方案2 漏洞三）
+        #
+        # 优先级: 止盈止损 > 主策略信号 > 做T信号
+        # - 止盈/止损信号：最高优先级，不受仓位上限约束，必须立即执行
+        # - 主策略信号：建仓/加仓/减仓等，需通过仓位上限和资金管理检查
+        # - 做T信号：最低优先级，被止盈止损抢占时降级为配对挂单
+        # - 做T与主策略信号冲突时，主策略信号优先
+        # ═══════════════════════════════════════════════════════
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         if stop_actions:
             for sig_name, sig_type in stop_actions:

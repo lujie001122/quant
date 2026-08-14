@@ -186,6 +186,52 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
 
 
+def fetch_klines_daily_arrays(code, sid):
+    """
+    获取日K线，返回拆分数组格式（供 rotation.py 使用）。
+
+    参数:
+      code: ETF 代码
+      sid: 交易所代码 (如 sh515880)
+
+    返回:
+      {closes, highs, lows, volumes} 或 None
+    """
+    klines = fetch_klines_daily(code)
+    if not klines:
+        return None
+    return {
+        "closes": [k["close"] for k in klines],
+        "highs": [k["high"] for k in klines],
+        "lows": [k["low"] for k in klines],
+        "volumes": [k["volume"] for k in klines],
+        "dates": [k["date"] for k in klines],
+    }
+
+
+def calc_max_drawdown(closes):
+    """
+    计算最大回撤（%），从收盘价序列。
+
+    参数:
+      closes: 收盘价序列
+
+    返回:
+      最大回撤百分比
+    """
+    if not closes or len(closes) < 2:
+        return 0.0
+    peak = closes[0]
+    max_dd = 0.0
+    for val in closes:
+        if val > peak:
+            peak = val
+        dd = (peak - val) / peak * 100 if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+    return round(max_dd, 2)
+
+
 def fetch_klines_daily_df(code, start="20250101", end="20261231", adjust="qfq"):
     """获取日K线返回 pandas DataFrame"""
     import pandas as pd
@@ -259,97 +305,20 @@ def fetch_klines_5min(code, today=None):
 
 
 # ============================================================
-# 技术指标（修正版）
+# 技术指标 — 从 factors/ 重新导出（消除重复代码）
 # ============================================================
 
-def calc_ma(closes, period):
-    if len(closes) < period:
-        return None
-    return sum(closes[-period:]) / period
+# 基础指标
+from factors.indicators import calc_ma
+from factors.indicators import calc_rsi_wilder
+from factors.indicators import dynamic_spacing
+from factors.indicators import calc_5min_indicators
 
-def calc_rsi_wilder(closes, period=14):
-    if len(closes) < period + 1:
-        return None
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        diff = closes[i] - closes[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    for i in range(period, len(gains)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-    if avg_loss == 0: return 100.0
-    rs = avg_gain / avg_loss
-    return round(100 - 100 / (1 + rs), 2)
-
-def calc_atr(klines, period=14):
-    if len(klines) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(klines)):
-        k_prev, k_curr = klines[i - 1], klines[i]
-        tr = max(k_curr["high"] - k_curr["low"],
-                 abs(k_curr["high"] - k_prev["close"]),
-                 abs(k_curr["low"] - k_prev["close"]))
-        trs.append(tr)
-    if len(trs) < period: return None
-    atr = sum(trs[:period]) / period
-    for i in range(period, len(trs)):
-        atr = (atr * (period - 1) + trs[i]) / period
-    return round(atr, 4)
-
-def calc_macd(closes, fast=12, slow=26, sig=9):
-    """SMA-init MACD — 与 backtest_5etf_1m.py 完全一致"""
-    if len(closes) < slow + sig:
-        return None, None, None, "数据不足"
-    e12 = sum(closes[:fast]) / fast
-    e26 = sum(closes[:slow]) / slow
-    difs = []
-    for i in range(len(closes)):
-        if i < fast:
-            difs.append(e12 - e26)
-            continue
-        e12 = closes[i] * (2/(fast+1)) + e12 * (1 - 2/(fast+1))
-        if i < slow:
-            difs.append(e12 - e26)
-            continue
-        e26 = closes[i] * (2/(slow+1)) + e26 * (1 - 2/(slow+1))
-        difs.append(e12 - e26)
-    e9 = difs[slow]
-    deas = []
-    for d in difs[slow+1:]:
-        e9 = d * (2/(sig+1)) + e9 * (1 - 2/(sig+1))
-        deas.append(e9)
-    if len(deas) < 2:
-        return None, None, None, "数据不足"
-    d_now, d_prev = difs[-1], difs[-2]
-    e_now, e_prev = deas[-1], deas[-2]
-    h_now  = 2 * (d_now - e_now)
-    h_prev = 2 * (d_prev - e_prev)
-    if   d_now > e_now and d_prev <= e_prev: s = "金叉"
-    elif d_now < e_now and d_prev >= e_prev: s = "死叉"
-    elif d_now > e_now and h_now > h_prev:   s = "红柱放大"
-    elif d_now > e_now and h_now < h_prev:   s = "红柱缩短"
-    elif d_now < e_now and h_now < h_prev:   s = "绿柱放大"
-    elif d_now < e_now and h_now > h_prev:   s = "绿柱缩短"
-    else: s = "震荡"
-    return round(d_now, 4), round(e_now, 4), round(h_now, 4), s
-
-
-def calc_ao(highs, lows, short=5, long=34):
-    """Awesome Oscillator: SMA5(median) - SMA34(median), median=(H+L)/2"""
-    if len(highs) < long: return None, None
-    medians = [(h+l)/2 for h,l in zip(highs, lows)]
-    sma5 = sum(medians[-short:]) / short
-    sma34 = sum(medians[-long:]) / long
-    ao_now = sma5 - sma34
-    # AO 5 bars ago
-    sma5_5 = sum(medians[-short-5:-5]) / short if len(medians) >= long+5 else sma5
-    sma34_5 = sum(medians[-long-5:-5]) / long if len(medians) >= long+5 else sma34
-    ao_5ago = sma5_5 - sma34_5
-    return ao_now, ao_5ago
+# 独立因子
+from factors.rsi import calc_rsi
+from factors.macd import calc_macd
+from factors.atr import calc_atr
+from factors.ao import calc_ao
 
 def calc_vol_ratio_120min(volumes, period=20):
     if len(volumes) < period + 1:
@@ -358,79 +327,103 @@ def calc_vol_ratio_120min(volumes, period=20):
     return round(volumes[-1] / avg_vol, 2)
 
 
-def calc_5min_indicators(klines_5min):
-    """基于5分钟K线计算日内分时指标
-    返回: {
-        "rsi_5min": Wilder RSI(14) on 5min closes,
-        "macd_5min_dif/dea/bar/status": MACD(5,34,5) on 5min closes,
-        "vol_ratio_5min": 当前5分钟量 / 过去20根均量,
-        "day_high/day_low/day_pct": 当日最高/最低/涨跌幅
-    }
-    数据不足时返回 None 对应字段
+# calc_5min_indicators 和 dynamic_spacing 已从 factors.indicators 导入（上方第270-271行）
+# 此处不再重复定义
+
+
+# ============================================================
+# 数据有效性校验（降级数据验证）
+# ============================================================
+
+def validate_market_data(data, code=None):
     """
-    if not klines_5min or len(klines_5min) < 14:
-        return None
+    验证行情数据有效性，防止降级数据格式不一致导致策略计算错误。
 
-    closes = [k["close"] for k in klines_5min]
-    volumes = [k["volume"] for k in klines_5min]
-    highs = [k["high"] for k in klines_5min]
-    lows = [k["low"] for k in klines_5min]
+    参数:
+      data: 行情数据字典，须包含 price/volume 字段
+      code: ETF代码（可选，用于日志）
 
-    # 5分钟 RSI(14) — Wilder 平滑
-    rsi_5min = calc_rsi_wilder(closes, 14)
+    返回:
+      (is_valid: bool, reason: str)
+    """
+    source = f"({code})" if code else ""
 
-    # 5分钟 MACD(5, 34, 5) — 日内快参数
-    dif5, dea5, bar5, status5 = calc_macd(closes, fast=5, slow=34, sig=5)
+    # 检查1: 数据非空
+    if data is None:
+        return False, f"数据为空{source}"
 
-    # 5分钟量比: 当前5分钟量 / 过去20根均量
-    vol_ratio_5min = None
-    if len(volumes) >= 21:
-        avg_vol_20 = sum(volumes[-21:-1]) / 20
-        if avg_vol_20 > 0:
-            vol_ratio_5min = round(volumes[-1] / avg_vol_20, 2)
+    # 检查2: 价格有效性
+    price = data.get("price", 0)
+    try:
+        price = float(price)
+    except (ValueError, TypeError):
+        return False, f"价格无法解析{source}"
+    if price <= 0:
+        return False, f"价格异常({price}){source}"
 
-    # 当日最高/最低/涨跌幅
-    if len(klines_5min) >= 2:
-        day_open = klines_5min[0]["open"]
-        day_high = max(highs)
-        day_low = min(lows)
-        day_close = closes[-1]
-        day_pct = round((day_close - day_open) / day_open * 100, 2) if day_open > 0 else 0
+    # 检查3: 成交量有效性
+    volume = data.get("volume", 0)
+    try:
+        volume = float(volume)
+    except (ValueError, TypeError):
+        volume = 0
+    if volume < 0:
+        return False, f"成交量异常({volume}){source}"
+
+    # 检查4: 最高/最低价一致性
+    high = data.get("high", price)
+    low = data.get("low", price)
+    try:
+        high = float(high)
+        low = float(low)
+    except (ValueError, TypeError):
+        return True, f"通过（high/low不可解析，跳过一致性检查）{source}"
+
+    if low > high:
+        return False, f"最低价({low})>最高价({high})，数据异常{source}"
+
+    # 检查5: 涨跌幅合理性（单日涨跌超20%视为异常）
+    pct_change = data.get("pct_change", 0)
+    try:
+        pct_change = float(pct_change)
+    except (ValueError, TypeError):
+        pct_change = 0
+    if abs(pct_change) > 20:
+        return False, f"涨跌幅异常({pct_change}%){source}"
+
+    return True, f"数据有效{source}"
+
+
+def validate_klines_data(klines, code=None):
+    """
+    验证K线数据有效性。
+
+    参数:
+      klines: K线数组 [{open, close, high, low, volume}, ...]
+      code: ETF代码（可选）
+
+    返回:
+      (is_valid, reason)
+    """
+    source = f"({code})" if code else ""
+
+    if klines is None or (hasattr(klines, '__len__') and len(klines) == 0):
+        return False, f"K线数据为空{source}"
+
+    if isinstance(klines, dict):
+        closes = klines.get("closes", [])
     else:
-        day_open = klines_5min[0]["open"] if klines_5min else 0
-        day_high = day_open
-        day_low = day_open
-        day_close = closes[-1] if closes else 0
-        day_pct = 0
+        closes = [k.get("close", 0) for k in klines]
 
-    # 5分钟 ATR(14) — 基于5分钟K线，用于做T配对挂单
-    atr_5min = calc_atr(klines_5min, 14)
+    if len(closes) < 14:
+        return False, f"K线数据不足(需≥14,实际{len(closes)}){source}"
 
-    # 5分钟 MA20 斜率 — 用于做T趋势过滤
-    ma20_5min_slope = None
-    if len(closes) >= 20:
-        ma20_now = sum(closes[-20:]) / 20
-        ma20_5ago = sum(closes[-25:-5]) / 20 if len(closes) >= 25 else None
-        if ma20_5ago and ma20_5ago > 0:
-            ma20_5min_slope = round((ma20_now - ma20_5ago) / ma20_5ago, 6)
+    # 检查价格是否有效
+    for c in closes:
+        try:
+            if float(c) <= 0:
+                return False, f"K线收盘价含非正值{source}"
+        except (ValueError, TypeError):
+            return False, f"K线收盘价无法解析{source}"
 
-    return {
-        "rsi_5min": rsi_5min,
-        "macd_5min_status": status5,
-        "macd_5min_dif": dif5,
-        "macd_5min_dea": dea5,
-        "macd_5min_bar": bar5,
-        "vol_ratio_5min": vol_ratio_5min,
-        "atr_5min": atr_5min,
-        "ma20_5min_slope": ma20_5min_slope,
-        "day_high": day_high,
-        "day_low": day_low,
-        "day_pct": day_pct,
-    }
-
-def dynamic_spacing(atr, price, base_spacing):
-    if atr is None or price == 0:
-        return base_spacing
-    atr_pct = atr / price
-    adjusted = 0.6 * base_spacing + 0.4 * atr_pct
-    return round(max(base_spacing * 0.5, min(base_spacing * 2.0, adjusted)), 4)
+    return True, f"K线数据有效{source}"
