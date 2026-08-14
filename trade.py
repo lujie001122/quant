@@ -438,7 +438,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     time.sleep(2)  # 撤单和下单之间间隔
     result = _call_evolving(method, code, shares, price, e=e)
     if result is None:
-        print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
+        print(f"❌ {method} {code} {shares}股@{price} → EvolvingSim返回None（可能是AppleScript卡死或网络断连）")
         _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
         return False
 
