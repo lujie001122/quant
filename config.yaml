@@ -119,3 +119,21 @@ signal:
   t0_sell_half_ratio: 0.10  # 半仓做T卖出比例
   t0_sell_full_ratio: 0.20  # 全仓做T卖出比例
   before_11: "11:00"        # 做T最早时间
+
+# ── 执行器配置 ──
+broker_type: "sim"             # sim=回测, real=实盘(EvolvingSim)
+
+# ── 订单管理配置 ──
+order:
+  timeout_seconds: 300         # 订单超时时间(秒), 超时自动撤单
+  max_retries: 3              # 最大重试次数
+  retry_interval: 5           # 重试间隔(秒)
+
+# ── AI 信号配置 ──
+ai_signal:
+  enabled: false               # 是否启用 AI 信号
+  model: "claude-sonnet-4-20250514"
+  confidence_threshold: 0.65   # 置信度阈值, 低于此值丢弃
+  max_tokens: 1024
+  temperature: 0.3
+  request_timeout: 30          # API 请求超时(秒)
