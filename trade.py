@@ -393,10 +393,10 @@ def _is_continuous_auction():
 def _unified_trade(action, code, shares, price, pair_price=None):
     """统一买卖做T流程：
     1. 校验100倍数
-    2. 一个实例：_sync_entrust + _revoke_all（合并共用）
+    2. 一个实例 e：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
     3. 写 intent 文件（防重复）
-    4. buy/sell 新实例：下单主单
-    5. 做T 新实例：挂配对反方向单
+    4. buy/sell（复用 e 实例）
+    5. 做T：挂配对反方向单（复用 e 实例）
     6. _write_order 写入订单（成功时 pending，失败时 failed）
     """
     # 1. 校验100倍数
@@ -404,11 +404,11 @@ def _unified_trade(action, code, shares, price, pair_price=None):
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
-    # 2. 一个实例：_sync_entrust + _revoke_all 合并共用
-    e_sync = EvolvingSim()
+    # 2. 一个实例：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
+    e = EvolvingSim()
     orders = _load_today_orders()
-    _sync_entrust_to_orders(e=e_sync, orders=orders)
-    _revoke_all(e=e_sync, orders=orders)
+    _sync_entrust_to_orders(e=e, orders=orders)
+    _revoke_all(e=e, orders=orders)
 
     # 3. 写 intent 文件（下单前，防跨 cron 重复）
     _write_intent(code, action, shares, price)
@@ -429,13 +429,14 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         pair_method = 'buy'
         pair_action = 't0_buy'
 
-    # 5. 下单主单 → 新 EvolvingSim 实例
+    # 5. 下单主单 → 复用 e 实例
     if is_t0:
         print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
     else:
         print(f"📊 {action} {code} {shares}股@{price}")
 
-    result = _call_evolving(method, code, shares, price)
+    time.sleep(2)  # 撤单和下单之间间隔
+    result = _call_evolving(method, code, shares, price, e=e)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
         _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
@@ -452,9 +453,10 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     # 6. _write_order 写入订单（成功）
     _write_order(code, action, shares, price, contract, 'pending')
 
-    # 7. 做T：挂配对反方向单 → 新 EvolvingSim 实例
+    # 7. 做T：挂配对反方向单 → 复用 e 实例
     if is_t0 and pair_price is not None:
-        p_result = _call_evolving(pair_method, code, shares, pair_price)
+        time.sleep(2)  # 两次调用之间间隔
+        p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
         p_contract = None
         p_ok = False
         if p_result is not None:
