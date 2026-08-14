@@ -30,7 +30,7 @@
       },
       "shares": 174200,
       "avg_cost": 0.751,
-      "current_price": 0.735,
+      "current_price": 0.742,
       "entry_avg_cost": 0.759
     },
     "515880": {
@@ -63,7 +63,7 @@
       },
       "shares": 19200,
       "avg_cost": 0.65,
-      "current_price": 0.682,
+      "current_price": 0.69,
       "entry_avg_cost": 0.65
     },
     "588170": {
@@ -94,9 +94,9 @@
           "t0_count": 0
         }
       },
-      "shares": 34300,
-      "avg_cost": 1.026,
-      "current_price": 1.011,
+      "shares": 27500,
+      "avg_cost": 1.029,
+      "current_price": 1.021,
       "entry_avg_cost": 1.033
     },
     "159532": {
@@ -165,7 +165,7 @@
       },
       "shares": 21600,
       "avg_cost": 0.882,
-      "current_price": 1.062,
+      "current_price": 1.074,
       "entry_avg_cost": 0.882
     },
     "159611": {
@@ -261,47 +261,47 @@
       "name": "中证全指ETF",
       "shares": 21600,
       "avg_cost": 0.882,
-      "current_price": 1.062,
-      "market_price": 1.062,
-      "market_value": 22939.2,
-      "pnl": 3882.28,
-      "pnl_pct": 20.38
+      "current_price": 1.074,
+      "market_price": 1.074,
+      "market_value": 23198.4,
+      "pnl": 4141.48,
+      "pnl_pct": 21.74
     },
     "159516": {
       "name": "半导体设备ETF",
       "shares": 193500,
       "avg_cost": 0.751,
-      "current_price": 0.735,
-      "market_price": 0.735,
-      "market_value": 142222.5,
-      "pnl": -3104.14,
-      "pnl_pct": -2.14
+      "current_price": 0.742,
+      "market_price": 0.742,
+      "market_value": 143577.0,
+      "pnl": -1749.64,
+      "pnl_pct": -1.2
     },
     "588170": {
       "name": "科创半导体ETF",
-      "shares": 36100,
-      "avg_cost": 1.026,
-      "current_price": 1.011,
-      "market_price": 1.011,
-      "market_value": 36497.1,
-      "pnl": -536.44,
-      "pnl_pct": -1.45
+      "shares": 28900,
+      "avg_cost": 1.029,
+      "current_price": 1.021,
+      "market_price": 1.021,
+      "market_value": 29506.9,
+      "pnl": -219.03,
+      "pnl_pct": -0.74
     },
     "515880": {
       "name": "通信ETF",
       "shares": 19200,
       "avg_cost": 0.65,
-      "current_price": 0.682,
-      "market_price": 0.682,
-      "market_value": 13094.4,
-      "pnl": 622.05,
-      "pnl_pct": 4.98
+      "current_price": 0.69,
+      "market_price": 0.69,
+      "market_value": 13248.0,
+      "pnl": 775.65,
+      "pnl_pct": 6.22
     }
   },
   "account": {
-    "total_asset": 215917.54,
-    "cash": 1164.34,
-    "market_value": 214753.2
+    "total_asset": 218002.25,
+    "cash": 8471.95,
+    "market_value": 209530.3
   },
-  "last_updated": "2026-08-14 16:23"
+  "last_updated": "2026-08-14 17:29"
 }
