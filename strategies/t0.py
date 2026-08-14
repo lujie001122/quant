@@ -10,6 +10,7 @@ T0Strategy — 做T配对策略
 
 from strategies.base import BaseStrategy
 from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time, TOTAL_FUND
+from money_manager import calc_t0_pair_price
 from datetime import datetime
 
 
@@ -111,7 +112,7 @@ class T0Strategy(BaseStrategy):
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_price = round(price + atr_5m * 1.1, 3)
+                    pair_price = calc_t0_pair_price(price, atr_5m, True)  # P2-10: 统一使用 money_manager
                     pair_shares = int(pos.shares * 0.30 / 100) * 100
                     if pair_shares >= 100 and pair_price > 0:
                         spread = (pair_price - price) * pair_shares
@@ -134,7 +135,7 @@ class T0Strategy(BaseStrategy):
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_price = round(price - atr_5m * 1.1, 3)
+                    pair_price = calc_t0_pair_price(price, atr_5m, False)  # P2-10: 统一使用 money_manager
                     pair_shares = int(pos.shares * 0.30 / 100) * 100
                     if pair_shares >= 100 and pair_price > 0:
                         spread = (price - pair_price) * pair_shares

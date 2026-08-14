@@ -33,7 +33,7 @@ from position_info import (
 
 
 class RiskManager:
-    """风险管理器 — 统一处理止损、仓位上限、日亏损限额"""
+    """风险管理器 — 统一处理止损、仓位上限、日亏损限额、连续亏损熔断"""
 
     def __init__(self, state_center=None):
         # 延迟导入 state_center，避免循环依赖
@@ -42,11 +42,84 @@ class RiskManager:
             state_center = StateCenter.get_instance()
         self._state = state_center
         self.MAX_DAILY_LOSS_PCT = 0.05  # 单日最大亏损5%
+        self.MAX_CONSECUTIVE_LOSS_DAYS = 3  # 连续亏损3天熔断
+        self.MIN_DAILY_LOSS_PCT = 0.01  # 日亏损>1%才计入连续亏损
         self.daily_pnl = 0.0
+        # 连续亏损追踪
+        self.consecutive_loss_days = 0
+        self.last_pnl_date = None
+        self._circuit_breaker_active = False
+        self._circuit_breaker_reason = ""
 
-    # ══════════════════════════════════════════════
-    # 1. 止损检查
-    # ══════════════════════════════════════════════
+    def record_daily_pnl(self, today_str, pnl_amount=None):
+        """记录每日盈亏，更新连续亏损计数
+
+        参数:
+          today_str: 日期字符串 "YYYY-MM-DD"
+          pnl_amount: 当日盈亏金额（None 则从 state_center 获取）
+        """
+        if pnl_amount is None:
+            pnl_amount = self._state.get_daily_pnl()
+
+        if self.last_pnl_date == today_str:
+            return  # 同一天不重复记录
+
+        total_asset = self._state.get_total_asset()
+        if total_asset <= 0:
+            return
+
+        loss_pct = abs(pnl_amount) / total_asset if pnl_amount < 0 else 0
+
+        if loss_pct >= self.MIN_DAILY_LOSS_PCT:
+            self.consecutive_loss_days += 1
+        else:
+            self.consecutive_loss_days = 0
+
+        self.last_pnl_date = today_str
+
+        # 更新熔断状态
+        if self.consecutive_loss_days >= self.MAX_CONSECUTIVE_LOSS_DAYS:
+            self._circuit_breaker_active = True
+            self._circuit_breaker_reason = (
+                f"连续{self.consecutive_loss_days}天亏损"
+                f"(日亏损>{self.MIN_DAILY_LOSS_PCT:.0%})，"
+                f"触发熔断保护"
+            )
+        else:
+            self._circuit_breaker_active = False
+            self._circuit_breaker_reason = ""
+
+    def check_consecutive_loss(self):
+        """检查连续亏损熔断状态
+
+        返回:
+          (blocked: bool, reason: str)
+        """
+        if self._circuit_breaker_active:
+            return True, self._circuit_breaker_reason
+        return False, ""
+
+    def reset_circuit_breaker(self):
+        """重置熔断状态（手动恢复或盈利日后自动重置）"""
+        self._circuit_breaker_active = False
+        self._circuit_breaker_reason = ""
+        self.consecutive_loss_days = 0
+        self.last_pnl_date = None
+
+    def get_consecutive_loss_info(self):
+        """获取连续亏损状态信息"""
+        return {
+            "consecutive_loss_days": self.consecutive_loss_days,
+            "circuit_breaker_active": self._circuit_breaker_active,
+            "circuit_breaker_reason": self._circuit_breaker_reason,
+            "last_pnl_date": self.last_pnl_date,
+            "max_consecutive_loss_days": self.MAX_CONSECUTIVE_LOSS_DAYS,
+            "min_daily_loss_pct": self.MIN_DAILY_LOSS_PCT,
+        }
+
+    # ═══════════════════════════════════════════════
+    # 5. 综合工具
+    # ═══════════════════════════════════════════════
 
     def check_stop_loss(self, pos, t, price, today_str):
         """评估止盈止损信号（同 strategy.evaluate_stop 完全一致）
