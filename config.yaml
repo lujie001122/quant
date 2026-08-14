@@ -1,0 +1,121 @@
+# ============================================================
+# ETF 量化交易系统配置文件
+# 统一管理所有硬编码参数
+# ============================================================
+
+# ── 资金管理 ──
+total_fund: 220000          # 总资金池
+max_per_etf: 44000          # 单只ETF上限
+dead_ratio: 0.6             # 底仓比例
+active_ratio: 0.4           # 活动仓比例
+
+# ── 交易频率 ──
+max_daily_buys: 1           # 每天最多1次买入(正常)
+max_daily_t0: 2             # 每天最多2次做T(正常)
+atr_high_threshold: 0.05    # ATR>5%时放宽限制(2买3T)
+
+# ── 网格参数 ──
+grid_buy_levels: 5          # 买入网格档数
+grid_sell_levels: 3         # 卖出网格档数
+grid_tolerance: 0.15        # 网格触达容差(相对于spacing的比例)
+inverted_weights: [0.20, 0.25, 0.30, 0.35, 0.40]  # 倒金字塔权重
+
+# ── 冷却期 ──
+cooldown_days: 2            # 清仓后冷静期(天)
+
+# ── 防御标的 ──
+defense_code: "159611"      # 防御标的: 电力ETF
+
+# ── 止损参数 ──
+stop_loss:
+  avg_cost_pct: 0.12        # 均价止损12%
+  hard_stop_pct: 0.20       # 硬止损20%(从峰值回撤)
+  breakeven_trigger: 0.10   # 浮盈10%激活保本止盈
+  breakeven_margin: 0.02    # 回落至成本+2%清仓
+
+# ── 止盈参数 ──
+profit_take:
+  hard_take_profit: 0.30    # 硬止盈30%(基准价*1.30)
+  trailing_8pct: 0.05       # 8%后移动止盈: 成本+5%
+  trailing_15pct: 0.05      # 15%后移动止盈: 峰值回撤5%
+  trend_profit_ratio: 0.10  # 趋势止盈10%活动仓
+  sell_active_ratio: 0.05   # 破MA5卖5%活动仓
+
+# ── 建仓通道参数 ──
+entry:
+  rsi_min: 40               # 建仓RSI最低要求
+  rsi_minimal: 30           # 试探建仓RSI最低要求
+  test_cap_rsi: 35          # Test抄底RSI阈值
+  dip_pct: -0.03            # 逆势补仓跌幅阈值(跌超3%)
+  add_count_limit: 5        # 补仓次数上限
+  position_cap: 0.50        # 单只ETF仓位上限50%
+
+# ── 做T参数 ──
+t0:
+  rsi_extreme_buy: 25       # RSI极端买入阈值(直接满分)
+  rsi_buy_max: 45           # RSI买入上限(<45才做T买入)
+  rsi_extreme_sell: 75      # RSI极端卖出阈值(直接满分)
+  rsi_sell_min: 55          # RSI卖出下限(>55才做T卖出)
+  pair_atr_multiplier: 1.1  # 配对挂单ATR乘数
+  pair_ratio: 0.30          # 做T30%持仓数量
+  min_spread: 200           # 最小价差(元)才挂配对单
+  ma20_slope_buy_cap: -0.005   # 下降趋势斜率<-0.5%禁止T买入
+  ma20_slope_sell_cap: 0.003   # 上升趋势斜率>0.3%禁止T卖出
+  min_hour: 11              # 11点前不做T
+
+# ── 趋势跟踪参数 ──
+trend:
+  empty_days_threshold: 10  # 空仓>10天触发趋势跟踪通道
+  ma20_slope_period: 5      # MA20斜率计算偏移
+
+# ── 网格重置参数 ──
+grid_reset:
+  upper_levels: 4           # 上行N档重置
+  lower_levels: 6           # 下行N档重置
+
+# ── 回测参数 ──
+backtest:
+  trade_start: "2021-08-01"
+  trade_end: "2026-07-27"
+  fee: 5                    # 手续费(元/笔)
+  slippage_pct: 0.001       # 滑点比例
+  risk_free_rate: 0.02      # 无风险利率(夏普比率)
+  periods:
+    "5y": ["2021-08-01", "2026-07-27"]
+    "3y": ["2023-08-01", "2026-07-27"]
+    "2y": ["2024-08-01", "2026-07-27"]
+    "1y": ["2025-08-01", "2026-07-27"]
+    "6m": ["2026-01-27", "2026-07-27"]
+    "3m": ["2026-04-27", "2026-07-27"]
+
+# ── 行情数据参数 ──
+market_data:
+  api_delay: 1              # akshare调用间隔(秒)
+  ma_periods: [5, 10, 20]   # MA周期
+  rsi_period: 14            # RSI周期
+  atr_period: 14            # ATR周期
+  macd_fast: 12             # MACD快线
+  macd_slow: 26             # MACD慢线
+  macd_signal: 9            # MACD信号线
+  macd_5min_fast: 5         # 5分钟MACD快线
+  macd_5min_slow: 34        # 5分钟MACD慢线
+  macd_5min_signal: 5       # 5分钟MACD信号线
+  ao_short: 5               # AO短周期
+  ao_long: 34               # AO长周期
+  vol_ratio_period: 20      # 量比周期
+  vol_ratio_5min_period: 20 # 5分钟量比周期
+  kline_limit: 1200         # K线获取条数
+  fetch_retries: 3          # 数据获取重试次数
+  dynamic_spacing:
+    weight_base: 0.6        # 基础间距权重
+    weight_atr: 0.4         # ATR间距权重
+    min_factor: 0.5         # 最小因子
+    max_factor: 2.0         # 最大因子
+
+# ── 信号生成参数 ──
+signal:
+  max_retries: 3            # 下单重试次数
+  retry_timeout: 120        # 下单超时(秒)
+  t0_sell_half_ratio: 0.10  # 半仓做T卖出比例
+  t0_sell_full_ratio: 0.20  # 全仓做T卖出比例
+  before_11: "11:00"        # 做T最早时间
