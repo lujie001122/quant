@@ -6,7 +6,7 @@
 """
 import json, urllib.request, re, logging
 from datetime import datetime
-from tracker import get_tracked_with_keywords
+from state_center import get_tracked_with_keywords
 
 logger = logging.getLogger("sentiment_check")
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(levelname)s: %(message)s")

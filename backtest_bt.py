@@ -41,7 +41,7 @@ _DEFAULT_CODES = {
     "000725": {"name": "京东方A", "sid": "sz000725"},
 }
 
-from tracker import get_code_map
+from state_center import get_code_map
 
 CODES = get_code_map()
 # 保留 000725 用于 --000725 模式

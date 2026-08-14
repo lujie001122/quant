@@ -32,9 +32,45 @@ from strategy import (
     evaluate_stop, resolve_stop_signal,
     evaluate_entry, evaluate_t0, evaluate_t0_execute,
     evaluate_grid_signals, check_grid_reset, compute_grid_table,
-    _parse_position_ratio, _get_position_shares, check_defense,
+    check_defense,
     DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE,
 )
+
+# ── 状态中心（执行层瘦身：订单管理、同步、intent、错误检测等） ──
+from state_center import (
+    # 持仓信息
+    get_position_shares as _get_position_shares,
+    # 订单管理
+    load_today_orders as _load_today_orders,
+    load_intent_files as _load_intent_files,
+    intent_to_dedup_key as _intent_to_dedup_key,
+    sync_entrust_to_orders as _sync_entrust_to_orders,
+    check_pending_orders as _check_pending_orders,
+    # 工具函数
+    trade_type_to_mode as _trade_type_to_mode,
+    get_signal_direction as _get_signal_direction,
+    signal_direction as _signal_direction,
+    detect_error_type as _detect_error_type,
+    build_retry_cmd as _build_retry_cmd,
+    parse_position_ratio as _parse_position_ratio,
+    # intent 清理
+    cleanup_intent_files as _cleanup_intent_files,
+    cleanup_intent_force as _cleanup_intent_force,
+    cleanup_old_intent_files as _cleanup_old_intent_files,
+)
+
+
+def _write_intent_for_sg(code, mode, direction):
+    """signal_generator 写 intent 文件（兜底，trade.py 内部已写）。
+    同 cron 内后续信号去重用。
+    适配 state_center.write_intent 的签名。
+    """
+    if mode == 't0':
+        action = 't0_buy' if direction == '买入' else 't0_sell'
+    else:
+        action = 'buy' if direction == '买入' else 'sell'
+    from state_center import write_intent
+    write_intent(code, action, direction, mode=mode)
 
 # ============================================================
 # 一、配置(仅 signal_generator 独有的常量)
@@ -490,344 +526,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
 
 # ============================================================
-# 三、执行层 — 持久化 + 异常处理 + 告警推送
+# 三、执行层 — 所有函数已移至 state_center.py
+# 包括: _load_today_orders, _load_intent_files, _intent_to_dedup_key,
+#       _write_intent_for_sg, _sync_entrust_to_orders, _check_pending_orders,
+#       _detect_error_type, _signal_direction, _build_retry_cmd,
+#       _cleanup_intent_files, _cleanup_intent_force, _cleanup_old_intent_files
+# 统一从 state_center 导入，见文件顶部 import 段。
 # ============================================================
-
-# ─── 订单管理（orders/ 目录） ────────────────────────────────────────
-
-def _load_today_orders():
-    """从 orders/ 目录加载今日所有订单，返回 {filename: order_dict}"""
-    orders_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders')
-    if not os.path.exists(orders_dir):
-        return {}
-    today = datetime.now().strftime('%Y%m%d')
-    orders = {}
-    for fname in os.listdir(orders_dir):
-        if fname.startswith(today) and fname.endswith('.json'):
-            try:
-                with open(os.path.join(orders_dir, fname)) as f:
-                    order = json.load(f)
-                orders[fname] = order
-            except (json.JSONDecodeError, IOError):
-                pass
-    return orders
-
-
-def _load_intent_files():
-    """从 orders/intent/ 目录加载今日所有 intent 文件，返回 {filename: intent_dict}"""
-    intent_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders', 'intent')
-    if not os.path.exists(intent_dir):
-        return {}
-    today = datetime.now().strftime('%Y%m%d')
-    intents = {}
-    for fname in os.listdir(intent_dir):
-        if fname.startswith(today) and fname.endswith('.json'):
-            try:
-                with open(os.path.join(intent_dir, fname)) as f:
-                    intent = json.load(f)
-                intents[fname] = intent
-            except (json.JSONDecodeError, IOError):
-                pass
-    return intents
-
-
-def _intent_to_dedup_key(intent):
-    """从 intent 文件推导 dedup 三元组 (code, mode, direction)。
-    intent['action'] 可以是 'buy'/'sell'/'t0_buy'/'t0_sell'。
-    """
-    code = intent.get('code', '')
-    action = intent.get('action', '')
-    direction = intent.get('direction', '')
-    if 't0_' in action:
-        mode = 't0'
-    else:
-        mode = 'buy_sell'
-    if not direction:
-        direction = '买入' if 'buy' in action else '卖出'
-    return (code, mode, direction)
-
-
-def _write_intent_for_sg(code, mode, direction):
-    """signal_generator 写 intent 文件（兜底，trade.py 内部已写）。
-    同 cron 内后续信号去重用。
-    """
-    intent_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders', 'intent')
-    os.makedirs(intent_dir, exist_ok=True)
-    today = datetime.now().strftime('%Y%m%d')
-    # 用 mode+direction 拼出 action 名称
-    if mode == 't0':
-        action = 't0_buy' if direction == '买入' else 't0_sell'
-    else:
-        action = 'buy' if direction == '买入' else 'sell'
-    intent_path = os.path.join(intent_dir, f'{today}_{code}_{action}.json')
-    intent = {
-        'code': code,
-        'action': action,
-        'direction': direction,
-        'mode': mode,
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    }
-    try:
-        with open(intent_path, 'w') as f:
-            json.dump(intent, f, ensure_ascii=False, indent=2)
-    except IOError:
-        pass
-
-
-def _trade_type_to_mode(action):
-    """将 action 字段映射为 mode: 'buy_sell' | 't0'
-    action 是 trade_type 值: 'buy'/'sell'/'liquidate'/'reduce' → 'buy_sell'; 't0' → 't0'
-    """
-    if action == "t0":
-        return "t0"
-    return "buy_sell"
-
-
-def _get_signal_direction(trade_type, action):
-    """从信号 trade_type 和 action 推导方向: '买入' | '卖出' | 'unknown'"""
-    if trade_type == "buy":
-        return "买入"
-    if trade_type in ("sell", "liquidate", "reduce"):
-        return "卖出"
-    if trade_type == "t0":
-        if "买入" in action:
-            return "买入"
-        if "卖出" in action:
-            return "卖出"
-    return "unknown"
-
-
-def _sync_entrust_to_orders():
-    """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
-    将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
-    """
-    try:
-        from evolving.evolving import EvolvingSim
-        e = EvolvingSim()
-        # getEntrust('today', False) 返回今日全部委托(含已成交、已撤单)
-        ent = e.getEntrust('today', False)
-        time.sleep(2)
-    except Exception as e:
-        print(f"[_sync_entrust] ⚠️ EvolvingSim 调用失败: {e}")
-        return
-
-    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
-        print(f"[_sync_entrust] ⚠️ getEntrust 返回异常，跳过同步")
-        return
-
-    # 构建同花顺委托索引: {code: {direction: status}}
-    # row[2]=code, row[4]=direction, row[5]=status, row[10]=contract
-    ths_map = {}
-    for row in ent['data']:
-        if not row or len(row) <= 10:
-            continue
-        code = row[2]
-        direction = row[4]
-        status = row[5]
-        if code not in ths_map:
-            ths_map[code] = {}
-        ths_map[code][direction] = status
-
-    # 遍历本地 pending 订单，同步同花顺状态
-    orders = _load_today_orders()
-    orders_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders')
-    updated = 0
-
-    for fname, order in orders.items():
-        if order.get('status') != 'pending':
-            continue
-        code = order.get('code', '')
-        direction = order.get('direction', '')
-        if code not in ths_map or direction not in ths_map[code]:
-            continue
-        ths_status = ths_map[code][direction]
-
-        new_status = None
-        if ths_status in ('已成交', '全部成交', '部分成交'):
-            new_status = 'filled'
-        elif ths_status in ('已撤单', '已撤销', '废单'):
-            new_status = 'revoked'
-
-        if new_status:
-            order_path = os.path.join(orders_dir, fname)
-            try:
-                order['status'] = new_status
-                order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                with open(order_path, 'w') as f:
-                    json.dump(order, f, ensure_ascii=False, indent=2)
-                updated += 1
-                print(f"[_sync_entrust] {code} {direction} pending→{new_status} (同花顺:{ths_status})")
-            except (IOError, json.JSONDecodeError) as e:
-                print(f"[_sync_entrust] ⚠️ 更新 {fname} 失败: {e}")
-
-    if updated:
-        print(f"[_sync_entrust] 同步完成: {updated} 笔订单状态已更新")
-
-
-def _check_pending_orders(mode=None, sync_entrust=True):
-    """检查 orders/ 目录中今日的挂单状态，同步同花顺委托状态。
-    mode: 'buy_sell' | 't0' | None=全部
-    sync_entrust: 是否同步同花顺委托状态（默认 True）。_unified_trade 内部已有同步，
-                  调用方可传 False 避免重复同步。
-    返回: (pending_map, filled_codes)
-      pending_map: {code: direction} 今日未成交的挂单（受 mode 过滤）
-      filled_codes: set of (code, mode, direction) 今日已成交/已挂单 + intent 文件 + failed 订单（去重用）
-    """
-    # ── 同步同花顺委托状态，更新本地订单文件 ──
-    if sync_entrust:
-        _sync_entrust_to_orders()
-
-    orders = _load_today_orders()
-    pending_map = {}
-    filled_codes = set()
-
-    # 1. 收集订单文件的 filled/pending
-    for fname, order in orders.items():
-        code = order.get('code', '')
-        direction = order.get('direction', '')
-        status = order.get('status', '')
-        action = order.get('action', '')
-        order_mode = 't0' if 't0_' in action else 'buy_sell'
-
-        # filled_codes 不受 mode 过滤，全部收集（去重用）
-        if status in ('filled', 'pending', 'failed'):
-            filled_codes.add((code, order_mode, direction))
-
-        # pending_map 受 mode 过滤
-        if mode and order_mode != mode:
-            continue
-
-        if status == 'pending':
-            pending_map[code] = direction
-
-    # 2. 收集 intent 文件（下单前写入的意图记录，防同 cron 内重复）
-    intents = _load_intent_files()
-    for fname, intent in intents.items():
-        intent_key = _intent_to_dedup_key(intent)
-        filled_codes.add(intent_key)
-        print(f"[_check_pending] intent 去重: {intent_key} (来源:{fname})")
-
-    return pending_map, filled_codes
-
-
-def _detect_error_type(stdout, stderr, returncode, exit_reason=None):
-    """从 subprocess 输出中检测错误类型。
-    返回 (error_type, detail)
-    error_type: 'tonghuashun_disconnect' | 'not_filled' | 'timeout' | 'other'
-    """
-    combined = (stdout or "") + "\n" + (stderr or "")
-
-    if exit_reason == "timeout":
-        return "timeout", "下单超时(120s)"
-
-    # 同花顺断连特征
-    if "连接同花顺失败" in combined or "EvolvingSim 连接失败" in combined or "同花顺" in combined:
-        return "tonghuashun_disconnect", "同花顺断连"
-
-    # 下单成功但持仓未变 → 未成交
-    if "下单成功但持仓未变" in combined or "期望增量" in combined:
-        return "not_filled", "下单未成交(增量确认失败)"
-
-    if returncode != 0:
-        return "other", f"退出码={returncode}"
-
-    return None, None
-
-
-def _signal_direction(sig):
-    """从信号判定交易方向：'买入' | '卖出'"""
-    trade_type = sig.get("trade_type", "")
-    action = sig.get("action", "")
-
-    if trade_type in ("buy", "t0"):
-        return "买入" if "买入" in action else "卖出"
-    if trade_type in ("sell", "liquidate", "reduce"):
-        return "卖出"
-    return None
-
-
-def _build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
-    """构建重试命令字符串"""
-    if trade_type in ("buy", "sell", "liquidate", "reduce"):
-        return f"python3 trade.py {trade_type if trade_type in ('buy','sell') else 'sell'} {code} {shares} {price:.3f}"
-    elif trade_type == "t0":
-        t0_pair = sig.get("t0_pair")
-        if t0_pair:
-            pair_price = t0_pair.get("pair_price", 0)
-            pair_shares = t0_pair.get("shares", 0)
-            if "买入" in sig.get("action", ""):
-                return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
-            else:
-                return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
-        else:
-            # 无配对做T：降级为普通买卖重试命令
-            if "买入" in sig.get("action", ""):
-                return f"python3 trade.py buy {code} {shares} {price:.3f}"
-            else:
-                return f"python3 trade.py sell {code} {shares} {price:.3f}"
-    return ""
-
-
-def _cleanup_intent_files():
-    """收盘后清理订单意图文件。当日 15:00 后调用，删除所有 intent 文件。
-    非 15:00 后则跳过（保留盘中去重保护）。
-    """
-    from datetime import datetime
-    now = datetime.now()
-    # 只在 15:00 后清理（含非交易日，兜底）
-    if now.hour < 15:
-        return
-
-    intent_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders', 'intent')
-    if not os.path.exists(intent_dir):
-        return
-
-    today = now.strftime('%Y%m%d')
-    removed = 0
-    for fname in os.listdir(intent_dir):
-        if fname.startswith(today) and fname.endswith('.json'):
-            try:
-                os.remove(os.path.join(intent_dir, fname))
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        print(f"[_cleanup_intent] 清理 {removed} 个 intent 文件（收盘后）")
-
-
-def _cleanup_intent_force():
-    """无条件清理所有 intent 文件（用于 revoke_all 或手动清理）。"""
-    intent_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders', 'intent')
-    if not os.path.exists(intent_dir):
-        return
-    removed = 0
-    for fname in os.listdir(intent_dir):
-        if fname.endswith('.json'):
-            try:
-                os.remove(os.path.join(intent_dir, fname))
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        print(f"[_cleanup_intent_force] 清理 {removed} 个 intent 文件")
-
-
-def _cleanup_old_intent_files():
-    """清理非今日的 intent 文件（残留清理）。"""
-    intent_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'orders', 'intent')
-    if not os.path.exists(intent_dir):
-        return
-    today = datetime.now().strftime('%Y%m%d')
-    removed = 0
-    for fname in os.listdir(intent_dir):
-        if fname.endswith('.json') and not fname.startswith(today):
-            try:
-                os.remove(os.path.join(intent_dir, fname))
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        print(f"[_cleanup_old_intent] 清理 {removed} 个过期 intent 文件")
 
 
 def execute_signals(result, mode=None):

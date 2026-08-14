@@ -13,7 +13,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from tracker import get_etfs_config, get_code_map
+from state_center import get_etfs_config, get_code_map
 
 ETFS = get_etfs_config(fund_per_etf=44000)
 CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}

@@ -31,7 +31,8 @@ ORDERS_DIR = os.path.join(SCRIPT_DIR, 'orders')
 INTENT_DIR = os.path.join(ORDERS_DIR, 'intent')
 
 from evolving.evolving import EvolvingSim
-from tracker import get_code_map
+# note: tracker.py 的导入保留向后兼容，实际已通过 state_center 统一
+from state_center import get_code_map
 
 CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
