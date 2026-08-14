@@ -391,32 +391,17 @@ def _is_continuous_auction():
 # ─── 统一买卖做T入口 ───────────────────────────────────────────────────
 
 def _unified_trade(action, code, shares, price, pair_price=None):
-    """统一买卖做T流程：
-    1. 校验100倍数
-    2. 一个实例：_sync_entrust + _revoke_all（合并共用）
-    3. 写 intent 文件（防重复）
-    4. buy/sell 新实例：下单主单
-    5. 做T 新实例：挂配对反方向单
-    6. _write_order 写入订单（成功时 pending，失败时 failed）
+    """
+    下单：校验 → EvolvingSim → 写订单。跟 __main__2 一样简单。
     """
     # 1. 校验100倍数
     _validate_shares(shares)
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
-    # 2. 一个实例：_sync_entrust + _revoke_all 合并共用
-    e_sync = EvolvingSim()
-    orders = _load_today_orders()
-    _sync_entrust_to_orders(e=e_sync, orders=orders)
-    _revoke_all(e=e_sync, orders=orders)
-
-    # 3. 写 intent 文件（下单前，防跨 cron 重复）
-    _write_intent(code, action, shares, price)
-
-    # 4. 做T：检查连续竞价
+    # 2. 做T：检查连续竞价
     if is_t0 and not _is_continuous_auction():
         print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
-        _write_intent_for_failed(code, action, shares, price, reason='非连续竞价时段')
         return False
 
     # 确定 EvolvingSim 方法名和配对方向
@@ -429,7 +414,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         pair_method = 'buy'
         pair_action = 't0_buy'
 
-    # 5. 下单主单 → 新 EvolvingSim 实例
+    # 3. 下单主单 → EvolvingSim
     if is_t0:
         print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
     else:
@@ -438,21 +423,19 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     result = _call_evolving(method, code, shares, price)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败")
-        _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
         return False
 
     ok, contract = result
     if not ok:
         print(f"❌ {method} {code} {shares}股@{price} → 下单失败: {contract}")
-        _write_intent_for_failed(code, action, shares, price, reason=f'下单失败: {contract}')
         return False
 
     print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
 
-    # 6. _write_order 写入订单（成功）
+    # 4. _write_order 写入订单
     _write_order(code, action, shares, price, contract, 'pending')
 
-    # 7. 做T：挂配对反方向单 → 新 EvolvingSim 实例
+    # 5. 做T：挂配对反方向单
     if is_t0 and pair_price is not None:
         p_result = _call_evolving(pair_method, code, shares, pair_price)
         p_contract = None
@@ -469,8 +452,8 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         if p_ok:
             _write_order(code, pair_action, shares, pair_price, p_contract, 'pending')
             print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
-        else:
-            print(f"❌ 配对{pair_method}挂单失败，不写入订单文件")
+
+    return True
 
     return True
 
@@ -498,7 +481,13 @@ def do_t0_sell(code, shares, price, pair_price=None):
 
 
 # ─── main ──────────────────────────────────────────────────────────────
-
+if __name__ == '__main__2':
+    print(_call_evolving('buy','159516',100,0.8))
+    print(_call_evolving('sell', '159516', 200, 0.8))
+    print(_call_evolving('buy', '159516', 300, 0.8))
+    print(_call_evolving('sell', '159516', 400, 0.8))
+    print(_call_evolving('buy', '159516', 500, 0.8))
+    print(_call_evolving('sell', '159516', 600, 0.8))
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         print(__doc__)
