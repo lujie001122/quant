@@ -404,11 +404,11 @@ def _unified_trade(action, code, shares, price, pair_price=None):
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
-    # 2. 一个实例：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
-    e = EvolvingSim()
+    # 2. sync+revoke 合并复用，buy/sell 用新实例
+    e_sync = EvolvingSim()
     orders = _load_today_orders()
-    _sync_entrust_to_orders(e=e, orders=orders)
-    _revoke_all(e=e, orders=orders)
+    _sync_entrust_to_orders(e=e_sync, orders=orders)
+    _revoke_all(e=e_sync, orders=orders)
 
     # 3. 写 intent 文件（下单前，防跨 cron 重复）
     _write_intent(code, action, shares, price)
@@ -436,7 +436,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         print(f"📊 {action} {code} {shares}股@{price}")
 
     time.sleep(2)  # 撤单和下单之间间隔
-    result = _call_evolving(method, code, shares, price, e=e)
+    result = _call_evolving(method, code, shares, price)
     if result is None:
         print(f"❌ {method} {code} {shares}股@{price} → EvolvingSim返回None（可能是AppleScript卡死或网络断连）")
         _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
