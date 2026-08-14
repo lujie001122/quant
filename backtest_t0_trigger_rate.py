@@ -20,7 +20,7 @@ from collections import defaultdict
 # 从 market_data 和 strategy 导入共享函数
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from market_data import calc_rsi_wilder, calc_macd, calc_atr, fetch_klines_5min
-from strategy import t0_buy_score, t0_sell_score
+from strategies.rsi_macd import t0_buy_score, t0_sell_score
 
 
 def _extract_date(time_str):

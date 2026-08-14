@@ -11,7 +11,7 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 0.741,
+      "peak_price": 0.742,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
@@ -77,7 +77,7 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 1.018,
+      "peak_price": 1.021,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
@@ -116,7 +116,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 56.67,
+      "prev_rsi": 57.26,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [
         "2026-08-12",
@@ -160,7 +160,7 @@
       "daily_trade_log": {
         "2026-08-14": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 1
         }
       },
       "shares": 21600,
@@ -185,7 +185,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 44.54,
+      "prev_rsi": 44.26,
       "prev_macd_status": "死叉",
       "liquidate_dates": [
         "2026-08-13",
@@ -233,7 +233,7 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 0.352,
+      "peak_price": 0.351,
       "breakeven_activated": true,
       "below_ma20_count": 0,
       "below_ma20_date": null,
@@ -250,7 +250,7 @@
           "t0_count": 0
         }
       },
-      "shares": 12200,
+      "shares": 9900,
       "avg_cost": 0.332,
       "current_price": 0.357,
       "entry_avg_cost": 0.0
@@ -303,5 +303,5 @@
     "cash": 1164.34,
     "market_value": 214753.2
   },
-  "last_updated": "2026-08-14 14:31"
+  "last_updated": "2026-08-14 15:01"
 }

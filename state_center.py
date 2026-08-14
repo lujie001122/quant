@@ -15,6 +15,7 @@ state_center.py — 统一状态中心
 
 用法：
   from state_center import (
+      SubAccount, StateCenter, get_main_position, get_t0_position,
       get_tracked_codes, get_code_map, get_etfs_config,
       load_portfolio, save_portfolio,
       get_position_shares, get_position_info,
@@ -31,6 +32,63 @@ import os
 import sys
 import time
 from datetime import datetime
+
+# ====================================================================
+# 〇、子账户模型（做T与主策略逻辑隔离）
+# ====================================================================
+
+class SubAccount:
+    """逻辑子账户 — 持仓与资金隔离"""
+    def __init__(self, name: str):
+        self.name = name  # "main" 或 "t0"
+        self.positions = {}  # symbol -> {volume, avg_cost, realized_pnl}
+        self.cash = 0.0
+
+
+class StateCenter:
+    """全局状态中心 — 管理主策略与做T两个逻辑子账户"""
+    _instance = None
+
+    def __init__(self):
+        self.main_account = SubAccount("main")
+        self.t0_account = SubAccount("t0")
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def get_position(self, symbol: str, account: str = "main"):
+        """获取指定子账户的持仓信息"""
+        if account == "main":
+            return self.main_account.positions.get(symbol)
+        else:
+            return self.t0_account.positions.get(symbol)
+
+    def set_position(self, symbol: str, pos: dict, account: str = "main"):
+        """设置指定子账户的持仓"""
+        if account == "main":
+            self.main_account.positions[symbol] = pos
+        else:
+            self.t0_account.positions[symbol] = pos
+
+    def get_account(self, account: str = "main") -> SubAccount:
+        """获取子账户对象"""
+        if account == "t0":
+            return self.t0_account
+        return self.main_account
+
+
+def get_main_position(code: str):
+    """便捷函数：获取主策略子账户持仓"""
+    return StateCenter.get_instance().get_position(code, account="main")
+
+
+def get_t0_position(code: str):
+    """便捷函数：获取做T子账户持仓"""
+    return StateCenter.get_instance().get_position(code, account="t0")
+
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────
 _DIR = os.path.dirname(os.path.abspath(__file__))

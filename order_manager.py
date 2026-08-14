@@ -11,6 +11,7 @@ order_manager.py — 订单管理器
   order = om.submit_order(intent)
   om.cancel_order(order.order_id)
   orders = om.query_orders(code="159516")
+  t0_orders = om.query_orders_by_account("t0")
 
 Phase 4: 从 state_center.py 的订单管理逻辑提取，形成独立订单管理层。
          与现有 orders/ 目录文件格式兼容。
@@ -52,6 +53,7 @@ class Order:
     expires_at: str = ""           # 超时时间
     error_message: str = ""
     retry_count: int = 0
+    account: str = "main"         # "main" 或 "t0"，逻辑子账户标识
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -136,6 +138,9 @@ class OrderManager:
             datetime.now() + timedelta(seconds=self.timeout_seconds)
         ).strftime("%Y-%m-%d %H:%M:%S")
 
+        # 根据 intent 的 trade_type 自动设置子账户
+        account = "t0" if (intent.trade_type == "t0" or "t0" in action) else "main"
+
         order = Order(
             order_id=order_id,
             code=intent.code,
@@ -149,6 +154,7 @@ class OrderManager:
             confidence=intent.confidence,
             broker_order_id=broker_order_id,
             expires_at=expires_at,
+            account=account,
         )
 
         # 保存到内存和磁盘
@@ -338,6 +344,20 @@ class OrderManager:
             if order.status in ("filled", "pending", "failed"):
                 filled.add((order.code, order.action, order.direction))
         return filled
+
+    def query_orders_by_account(self, account: str) -> List[Order]:
+        """按子账户过滤订单
+
+        参数:
+          account: "main" 或 "t0"
+
+        返回:
+          List[Order]: 属于该子账户的订单列表
+        """
+        return sorted(
+            [o for o in self._orders.values() if o.account == account],
+            key=lambda o: o.created_at,
+        )
 
     # ══════════════════════════════════════════════════
     # intent 文件管理

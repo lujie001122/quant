@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from money_manager import MoneyManager
 from risk_manager import RiskManager
 from signal_cleaner import clean_signals
-from strategy import PositionInfo
+from position_info import PositionInfo
 
 
 # ═══════════════════════════════════════════════════════

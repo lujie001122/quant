@@ -18,6 +18,7 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 # tracker.py 提供标准ETF名称
 import tracker
 from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr, fetch_klines_daily_arrays, calc_max_drawdown
+from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
 
 # ═══════════════════════════════════════════════════════
 #  20只ETF候选池 (原硬编码)
@@ -553,6 +554,137 @@ def run_rotation(force_write=False):
 
 
 # ═══════════════════════════════════════════════════════
+#  轮动再准入管理 (RotationManager)
+# ═══════════════════════════════════════════════════════
+
+class RotationManager:
+    """
+    管理被轮动移出标的的再准入规则。
+
+    被移出的标的进入观察期（默认5个交易日），观察期内不可重新纳入；
+    观察期结束后需满足连续N日条件（价格>MA20、RSI>40）方可再准入。
+    """
+
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, observe_days=None):
+        # 避免单例重复初始化
+        if hasattr(self, "_initialized"):
+            return
+        self._initialized = True
+        self.removed_history = {}  # symbol -> {removed_at, observe_until}
+        self.OBSERVE_DAYS = observe_days if observe_days is not None else 5
+
+    @classmethod
+    def reset_instance(cls):
+        """重置单例（仅用于测试）"""
+        cls._instance = None
+
+    # ── 移出记录 ──────────────────────────────────────────
+    def mark_removed(self, symbol, date_str):
+        """
+        记录标的被移出，设置观察期结束日期。
+
+        参数:
+          symbol: ETF 代码
+          date_str: 移出日期 (YYYY-MM-DD)
+        """
+        from datetime import timedelta
+        removed_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        observe_until_dt = removed_dt + timedelta(days=self.OBSERVE_DAYS)
+        self.removed_history[symbol] = {
+            "removed_at": date_str,
+            "observe_until": observe_until_dt.strftime("%Y-%m-%d"),
+        }
+        print(f"  🕐 轮动移除 {symbol}，观察期至 {observe_until_dt.strftime('%Y-%m-%d')}")
+
+    # ── 再准入检查 ────────────────────────────────────────
+    def should_re_add(self, symbol, current_date):
+        """
+        检查标的是否可重新纳入轮动池。
+
+        规则:
+          1. 不在 removed_history 中 → True（从未被移出）
+          2. 当前日期 < observe_until → False（观察期内）
+          3. 观察期过后 → 调用 check_conditions 连续3日条件检查
+
+        参数:
+          symbol: ETF 代码
+          current_date: 当前日期 (YYYY-MM-DD)
+
+        返回:
+          bool
+        """
+        if symbol not in self.removed_history:
+            return True
+
+        record = self.removed_history[symbol]
+        observe_until = record["observe_until"]
+
+        if current_date < observe_until:
+            return False
+
+        # 观察期已过，检查是否满足再准入条件
+        ok = self.check_conditions(symbol, days=3)
+        if ok:
+            # 满足条件，清除移出记录
+            del self.removed_history[symbol]
+        return ok
+
+    # ── 条件检查 ──────────────────────────────────────────
+    def check_conditions(self, symbol, days=3):
+        """
+        检查标的是否满足重新纳入条件：
+          - 最近 days 天收盘价均 > MA20
+          - 最近 days 天 RSI(14) 均 > 40（未超卖）
+
+        参数:
+          symbol: ETF 代码
+          days: 需要连续满足的天数
+
+        返回:
+          bool
+        """
+        # 获取 sid
+        sid = _auto_sid(symbol)
+        kline = fetch_klines_daily_arrays(symbol, sid)
+        if kline is None:
+            return False
+
+        closes = kline["closes"]
+        if len(closes) < 20 + days:
+            return False
+
+        # 逐日检查最近 days 天
+        for i in range(1, days + 1):
+            subset = closes[:-i] if i > 1 else closes
+            # 取最后 len(subset) 天的数据用于计算
+            daily_closes = closes[:len(closes) - i + 1] if i > 1 else closes
+
+            # 修正：取到倒数第i天为止的数据
+            daily_closes = closes[:len(closes) - i + 1]
+
+            close_i = daily_closes[-1]
+            ma20_i = _calc_ma(daily_closes, 20)
+            rsi_i = _calc_rsi(daily_closes, 14)
+
+            if ma20_i is None or rsi_i is None:
+                return False
+
+            if close_i <= ma20_i:
+                return False
+            if rsi_i <= 40:
+                return False
+
+        return True
+
+
+# ═══════════════════════════════════════════════════════
 #  轮动清理：选池后自动撤单被移除标的的未成交挂单
 # ═══════════════════════════════════════════════════════
 
@@ -574,6 +706,12 @@ def cleanup_removed_symbols(old_pool, new_pool,
 
     if not removed:
         return result
+
+    # 记录被移出标的到 RotationManager 观察期
+    rm = RotationManager()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    for symbol in removed:
+        rm.mark_removed(symbol, today_str)
 
     for symbol in removed:
         try:

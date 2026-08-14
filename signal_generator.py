@@ -26,15 +26,48 @@ from market_data import (
     ETFS,
 )
 
-# ── 策略判定 ──
-from strategy import (
+# ── 持仓信息模型 + 常量 ──
+from position_info import (
     PositionInfo,
-    evaluate_stop, resolve_stop_signal,
-    evaluate_entry, evaluate_t0, evaluate_t0_execute,
-    evaluate_grid_signals, check_grid_reset, compute_grid_table,
-    check_defense,
     DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE,
 )
+
+# ── 策略判定 ──
+from strategies.rsi_macd import (
+    is_auction_time,
+    t0_buy_score, t0_sell_score,
+    _compute_stop_loss_price, _compute_breakeven_price, _compute_trailing_stop,
+    _parse_position_ratio, _get_position_shares,
+    check_defense,
+)
+from strategies.grid import (
+    evaluate_grid_signals, check_grid_reset, compute_grid_table,
+)
+from strategies.rsi_macd import RSIMACDStrategy
+from strategies.t0 import T0Strategy
+
+_rsi_macd_strategy = RSIMACDStrategy()
+_t0_strategy = T0Strategy()
+
+
+def evaluate_stop(pos, t, price, today_str):
+    return _rsi_macd_strategy.evaluate_stop(pos, t, price, today_str)
+
+
+def resolve_stop_signal(pos, stop_actions):
+    return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
+
+
+def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
+    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
+
+
+def evaluate_t0(t, pos, price, today_str, atr_pct):
+    return _t0_strategy.evaluate_t0(t, pos, price, today_str, atr_pct)
+
+
+def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True):
+    return _t0_strategy.evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0)
 
 # ── 状态中心（执行层瘦身：订单管理、同步、intent、错误检测等） ──
 from state_center import (

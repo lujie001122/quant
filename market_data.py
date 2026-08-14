@@ -9,9 +9,12 @@
 
 import akshare as ak
 import json
+import logging
 import time
 import urllib.request
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from state_center import get_etfs_config, get_code_map
 
@@ -160,8 +163,12 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             except (ValueError, IndexError):
                 continue
         if klines:
+            # 数据源标识: 腾讯主源
+            for k in klines:
+                k["source"] = "tencent"
             return klines
     except Exception as e:
+        logger.warning(f"{code} 腾讯接口失败: {e}, 降级为akshare")
         print(f"[WARN] {code} 腾讯接口失败: {e}, 降级为akshare")
 
     # 降级: akshare
@@ -181,6 +188,10 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
                 "pct": float(row["涨跌幅"]),
             })
         if klines:
+            # 数据源标识: akshare降级源
+            logger.warning(f"{code} 使用降级数据源 akshare，指标计算可能偏差")
+            for k in klines:
+                k["source"] = "akshare"
             return klines
     except Exception as e2:
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
@@ -295,11 +306,13 @@ def fetch_klines_5min(code, today=None):
                     "time": item[0],
                     "open": o, "close": c, "high": h, "low": l,
                     "volume": v, "amount": amt,
+                    "source": "tencent",
                 })
             except (ValueError, IndexError):
                 continue
         return klines
     except Exception as e:
+        logger.warning(f"{code} 5分钟K线获取失败: {e}")
         print(f"[WARN] {code} 5分钟K线获取失败: {e}")
         return []
 
@@ -334,6 +347,40 @@ def calc_vol_ratio_120min(volumes, period=20):
 # ============================================================
 # 数据有效性校验（降级数据验证）
 # ============================================================
+
+def validate_and_align_data(data, source_type, code=None):
+    """
+    校验行情数据有效性并记录数据源类型。
+
+    参数:
+      data: K线数组 [{open, close, high, low, volume, ...}, ...]
+      source_type: 数据源标识 ("sina" / "tencent" / "akshare")
+      code: ETF代码（可选，用于日志）
+
+    返回:
+      (is_valid, reason)
+    """
+    tag = f"({code})" if code else ""
+
+    # 检查1: 数据非空
+    if data is None or (hasattr(data, '__len__') and len(data) == 0):
+        return False, f"数据为空{tag}"
+
+    # 检查2: 价格有效性 (>0)
+    for i, k in enumerate(data):
+        close_val = k.get("close", 0)
+        try:
+            close_val = float(close_val)
+        except (ValueError, TypeError):
+            return False, f"第{i}条K线收盘价无法解析{tag}"
+        if close_val <= 0:
+            return False, f"第{i}条K线收盘价非正({close_val}){tag}"
+
+    # 检查3: 降级源警告
+    if source_type == "akshare":
+        logger.warning(f"{code} 使用降级数据源 akshare，指标计算可能偏差" if code else "使用降级数据源 akshare，指标计算可能偏差")
+
+    return True, f"数据有效 source={source_type}{tag}"
 
 def validate_market_data(data, code=None):
     """

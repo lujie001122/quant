@@ -8,15 +8,58 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
   - 每只ETF资金=总资金20%, 按比例下单
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
+
+═══════════════════════════════════════════════════════════════════
+  回测 vs 实盘 差异点（不重构，仅记录）
+═══════════════════════════════════════════════════════════════════
+1. 撮合引擎:
+   - 回测: backtrader broker 模拟撮合，next()内下单即成交
+   - 实盘: executor.SimBroker/RealBroker，通过同花顺委托下单
+
+2. 挂单与撤单:
+   - 回测: 无挂单检查，order提交后立即撮合，不存在撤单→重挂流程
+   - 实盘: order_manager 维护挂单状态，有撤单→重挂机制（轮动撤单等）
+
+3. Intent 去重:
+   - 回测: 无 intent 文件去重机制，每根K线独立决策
+   - 实盘: decision_engine → order_manager 写入 orders/intent/*.json 做去重，
+           避免同一信号重复下单
+
+4. 滑点与成交价:
+   - 回测: SLIPPAGE_PCT (0.1%) 模拟滑点，按收盘价×(1±slippage)估算
+   - 实盘: 依赖同花顺实际成交价，无显式滑点参数
+
+5. 信号生成链路:
+   - 回测: 直接调用 strategies.rsi_macd 的 evaluate_entry/evaluate_stop
+           （简化路径，指标由 backtrader 内置计算）
+   - 实盘: signal_generator.generate_signals() → decision_engine.decide()
+           → order_manager.create_order() → executor.execute()
+           （完整链路，含信号清洗、风控、仓位管理）
+═══════════════════════════════════════════════════════════════════
 """
 import sys
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
 
-# Phase 3: 引用 market_data + strategy 模块
+# Phase 3: 引用 market_data + position_info + strategies 模块
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr, fetch_klines_daily_df
-from strategy import evaluate_stop, evaluate_entry, PositionInfo, resolve_stop_signal
+from position_info import PositionInfo
+from strategies.rsi_macd import RSIMACDStrategy
+
+_rsi_macd_strategy = RSIMACDStrategy()
+
+
+def evaluate_stop(pos, t, price, today_str):
+    return _rsi_macd_strategy.evaluate_stop(pos, t, price, today_str)
+
+
+def resolve_stop_signal(pos, stop_actions):
+    return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
+
+
+def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
+    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
 
 # ═══════════════════════════════════════════════
 #  Config

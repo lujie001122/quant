@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
 """
-策略判定模块 (向后兼容层)
+PositionInfo 类 + 模块级常量
 
-Phase 3 重构后，所有策略逻辑已拆分到 strategies/ 目录:
-  - strategies/rsi_macd.py: RSI+MACD 建仓/止损
-  - strategies/t0.py: 做T配对
-  - strategies/grid.py: 网格加仓减仓
-  - strategies/base.py: 抽象基类
-
-本文件作为向后兼容层，重新导出所有函数和类，
-保持 signal_generator.py 和 backtest_bt.py 的现有 import 不变。
+Phase 3 重构后从 strategy.py 迁移至此。
+PositionInfo 是共享状态模型，所有策略模块和回测引擎都依赖它。
 """
 
-from datetime import datetime
-
 # ═══════════════════════════════════════════════
-# PositionInfo 类（共享状态模型，保留在此处）
+# 模块级常量
 # ═══════════════════════════════════════════════
 
 TOTAL_FUND = 220000
@@ -155,8 +147,8 @@ class PositionInfo:
         self.liquidate_dates.append(date_str)
         self.empty_days = 0
         try:
-            from datetime import timedelta as _td
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            from datetime import datetime as _dt, timedelta as _td
+            dt = _dt.strptime(date_str, "%Y-%m-%d")
             self.cooldown_until = (dt + _td(days=COOLDOWN_DAYS)).strftime("%Y-%m-%d")
         except Exception:
             self.cooldown_until = None
@@ -240,57 +232,3 @@ class PositionInfo:
         self.avg_cost = data.get("avg_cost", self.avg_cost)
         self.current_price = data.get("current_price", self.current_price)
         self.entry_avg_cost = data.get("entry_avg_cost", 0.0)
-
-
-# ═══════════════════════════════════════════════
-# 重新导出所有模块级函数 (向后兼容)
-# ═══════════════════════════════════════════════
-
-from strategies.rsi_macd import (
-    is_auction_time,
-    t0_buy_score,
-    t0_sell_score,
-    _compute_stop_loss_price,
-    _compute_breakeven_price,
-    _compute_trailing_stop,
-    _parse_position_ratio,
-    _get_position_shares,
-    check_defense,
-)
-
-from strategies.grid import (
-    evaluate_grid_signals,
-    check_grid_reset,
-    compute_grid_table,
-)
-
-
-# ═══════════════════════════════════════════════
-# 实例化策略对象 + 包装为模块级函数
-# ═══════════════════════════════════════════════
-
-from strategies.rsi_macd import RSIMACDStrategy
-from strategies.t0 import T0Strategy
-
-_rsi_macd_strategy = RSIMACDStrategy()
-_t0_strategy = T0Strategy()
-
-
-def evaluate_stop(pos, t, price, today_str):
-    return _rsi_macd_strategy.evaluate_stop(pos, t, price, today_str)
-
-
-def resolve_stop_signal(pos, stop_actions):
-    return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
-
-
-def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
-    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
-
-
-def evaluate_t0(t, pos, price, today_str, atr_pct):
-    return _t0_strategy.evaluate_t0(t, pos, price, today_str, atr_pct)
-
-
-def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True):
-    return _t0_strategy.evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0)

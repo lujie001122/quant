@@ -168,16 +168,39 @@ def _check_recent_sell(
         most_recent = min(recent_sell_dates, key=lambda x: x[1])
         sell_reason = most_recent[2] if len(most_recent) > 2 else ""
 
-        # 区分卖出类型：止盈卖出后买入不降权，止损卖出后买入降权
+        # 区分卖出类型：止盈卖出后买入不降权，止损/策略卖出后买入降权
         if "take_profit" in sell_reason or "止盈" in sell_reason or "趋势止盈" in sell_reason:
             return None  # 止盈卖出后的买入信号不降权，允许二次入场
 
+        # 止损卖出 → 置信度 × 0.7
+        if "stop_loss" in sell_reason or "止损" in sell_reason:
+            confidence = sig.get("confidence", 1.0) or 1.0
+            sig["confidence"] = round(confidence * 0.7, 4)
+            return {
+                "rule": "recent_sell",
+                "action": "downgrade",
+                "reason": "近期有止损卖出，买入信号置信度下调",
+                "warning": "近期有止损卖出，买入信号置信度下调",
+                "detail": {
+                    "recent_sells": [(s[0], s[1]) for s in recent_sell_dates],
+                    "sell_reason": sell_reason,
+                    "confidence_multiplier": 0.7,
+                },
+            }
+
+        # 其他策略卖出（sell_signal / 策略卖出）→ 置信度 × 0.85
+        confidence = sig.get("confidence", 1.0) or 1.0
+        sig["confidence"] = round(confidence * 0.85, 4)
         return {
             "rule": "recent_sell",
             "action": "downgrade",
-            "reason": f"近期卖出({most_recent[0]}, {most_recent[1]}天前, 原因:{sell_reason}), "
-                      f"冷静期内({SELL_COOLDOWN_DAYS}天), 暂不买入",
-            "detail": {"recent_sells": [(s[0], s[1]) for s in recent_sell_dates]},
+            "reason": "近期有策略卖出，买入信号置信度适度下调",
+            "warning": "近期有策略卖出，买入信号置信度适度下调",
+            "detail": {
+                "recent_sells": [(s[0], s[1]) for s in recent_sell_dates],
+                "sell_reason": sell_reason,
+                "confidence_multiplier": 0.85,
+            },
         }
 
     return None
