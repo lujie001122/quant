@@ -17,8 +17,8 @@ def _load_config():
     """从 config.yaml 加载配置，返回合并后的默认值"""
     _DEFAULTS = {
         'total_fund': 220000,
-        'dead_ratio': 0.6,
-        'active_ratio': 0.4,
+        'dead_ratio': 0.0,      # 极限方案C: 取消底仓锁
+        'active_ratio': 1.0,    # 极限方案C: 全部活动
         'grid_buy_levels': 5,
         'grid_sell_levels': 3,
         'max_daily_buys': 1,
@@ -41,9 +41,9 @@ def _load_config():
         _DEFAULTS['defense_code'] = cfg.get('defense_code', _DEFAULTS['defense_code'])
         _DEFAULTS['cooldown_days'] = cfg.get('cooldown_days', _DEFAULTS['cooldown_days'])
         _DEFAULTS['inverted_weights'] = cfg.get('inverted_weights', _DEFAULTS['inverted_weights'])
-        _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 44000)
-        _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 0.50)
-        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.12)
+        _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 极限方案C: 100%
+        _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 极限方案C
+        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)  # 极限方案C
     except Exception:
         pass
     return _DEFAULTS

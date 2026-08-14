@@ -136,30 +136,22 @@ class RiskManager:
         if not pos.has_position:
             return stop_actions
 
-        # ── 保本止盈: 浮盈≥10%激活, 回落到成本+2%清仓 ──
-        if pos.entry_cost > 0:
-            profit_pct = (price - pos.entry_cost) / pos.entry_cost
-            if profit_pct >= 0.10 - 0.0001:
-                pos.breakeven_activated = True
-            if pos.breakeven_activated and price <= pos.entry_cost * 1.02:
-                stop_actions.append((f"保本止盈(avg={pos.entry_cost:.3f}→现价{price:.3f})", "breakeven_stop"))
+        # ── 均价止损20%: 从买入均价跌20%无条件清仓(极限方案C: 放宽) ──
+        if pos.entry_cost > 0 and price <= pos.entry_cost * 0.80:
+            stop_actions.append((f"均价止损20%(avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
 
-        # ── 均价止损12%: 从买入均价跌12%无条件清仓 ──
-        if pos.entry_cost > 0 and price <= pos.entry_cost * 0.88:
-            stop_actions.append((f"均价止损12%(avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_12pct"))
-
-        # ── 硬止盈30%: base_price*1.30 ──
-        if pos.base_price and price >= pos.base_price * 1.30:
-            stop_actions.append((f"硬止盈30%(基准{pos.base_price:.3f}→现价{price:.3f})", "liquidate_30pct"))
+        # ── 硬止盈60%: base_price*1.60(极限方案C) ──
+        if pos.base_price and price >= pos.base_price * 1.60:
+            stop_actions.append((f"硬止盈60%(基准{pos.base_price:.3f}→现价{price:.3f})", "liquidate_60pct"))
 
         # ── 移动止盈 ──
         if pos.trailing_stop_price > 0 and price <= pos.trailing_stop_price:
             label = "移动止盈8%(成本+5%)" if not pos.reached_15pct else "移动止盈15%(峰值回撤5%)"
             stop_actions.append((f"{label}:触线{pos.trailing_stop_price:.3f}", "liquidate_trailing"))
 
-        # ── 硬止损20%: 从价格峰值回撤20%清仓 ──
-        if pos.peak_price > 0 and price < pos.peak_price * 0.80:
-            stop_actions.append((f"硬止损20%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_20pct"))
+        # ── 硬止损25%: 从价格峰值回撤25%清仓(极限方案C: 放宽) ──
+        if pos.peak_price > 0 and price < pos.peak_price * 0.75:
+            stop_actions.append((f"硬止损25%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_25pct"))
 
         # Level 1a: 连续2天破MA20 → 减30%总仓
         if t["ma20"] and pos.stop_level == 0:
@@ -214,8 +206,8 @@ class RiskManager:
 
         # 优先级: 清仓 > 减仓 > 卖活动仓
         for sig_name, sig_type in stop_actions:
-            if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct",
-                            "avg_stop_12pct", "hard_stop_20pct", "breakeven_stop"):
+            if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct",
+                            "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
                 return sig_name
         for sig_name, sig_type in stop_actions:
             if sig_type in ("reduce_30pct_all",):
@@ -273,32 +265,8 @@ class RiskManager:
     # ═══════════════════════════════════════════════
 
     def check_daily_loss_limit(self, order_intent=None) -> Tuple[bool, str]:
-        """检查当日亏损是否已达上限（P0 修复：实际生效）
-
-        从 state_center 获取当日盈亏，与总资产比较。
-        如果亏损比例超过 MAX_DAILY_LOSS_PCT (5%)，阻断所有交易。
-
-        参数:
-          order_intent: OrderIntent 对象（可选，用于日志）
-
-        返回:
-          (ok: bool, reason: str)
-        """
-        daily_loss = self._state.get_daily_pnl()
-        total_asset = self._state.get_total_asset()
-
-        if total_asset <= 0:
-            return True, "总资产未初始化，跳过检查"
-
-        loss_rate = abs(daily_loss) / total_asset if daily_loss < 0 else 0
-
-        if loss_rate >= self.MAX_DAILY_LOSS_PCT:
-            code_str = f"({order_intent.code})" if order_intent else ""
-            return False, (
-                f"当日亏损已达{loss_rate:.2%}，超过{self.MAX_DAILY_LOSS_PCT:.2%}限额，"
-                f"暂停交易{code_str}"
-            )
-        return True, "通过"
+        """检查当日亏损是否已达上限（极限方案C: 取消日亏损限额，始终通过）"""
+        return True, "极限方案C: 日亏损限额已取消"
 
     def check_order(self, order_intent) -> Tuple[bool, str]:
         """统一风控入口（P0 修复）
@@ -339,52 +307,8 @@ class RiskManager:
 
     @staticmethod
     def is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct=None, prev_close=None):
-        """检查当日是否超过日亏损限额
-
-        参数:
-          positions: {code: PositionInfo, ...}
-          realtime: {code: {price, open, ...}, ...}
-          today_str: "YYYY-MM-DD"
-          max_loss_pct: 日亏损限额 (默认5%)
-          prev_close: {code: prev_close_price} 昨日收盘价（用于计算开盘基准）
-        返回:
-          (is_hit: bool, loss_pct: float, reason: str)
-        """
-        if max_loss_pct is None:
-            max_loss_pct = MAX_DAILY_LOSS_PCT
-
-        total_morning_value = 0.0
-        total_current_value = 0.0
-
-        for code, pos in positions.items():
-            if not pos.has_position:
-                continue
-            rt = realtime.get(code, {})
-            price = rt.get("price", 0)
-            if price <= 0:
-                continue
-            total_current_value += pos.shares * price
-
-            # P0 修复：使用开盘价作为基准，而非持仓成本
-            # 日亏损 = 今日开盘市值 - 当前市值（反映当日真实亏损）
-            open_price = rt.get("open", 0)
-            if open_price > 0:
-                total_morning_value += pos.shares * open_price
-            elif prev_close and code in prev_close:
-                # 降级：使用昨日收盘价近似开盘价
-                total_morning_value += pos.shares * prev_close[code]
-            else:
-                # 最终降级：使用当前价格（无开盘数据时跳过该标的）
-                total_morning_value += pos.shares * price
-
-        if total_morning_value <= 0:
-            return False, 0.0, ""
-
-        loss_pct = (total_morning_value - total_current_value) / total_morning_value
-        if loss_pct > max_loss_pct:
-            return True, loss_pct * 100, f"日亏损{loss_pct*100:.1f}%超过限额{max_loss_pct*100:.0f}%"
-
-        return False, loss_pct * 100, ""
+        """检查当日是否超过日亏损限额（极限方案C: 已取消，始终返回 False）"""
+        return False, 0.0, ""
 
 
 # ═══════════════════════════════════════════════

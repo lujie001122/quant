@@ -5,9 +5,9 @@
 
 # ── 资金管理 ──
 total_fund: 220000          # 总资金池
-max_per_etf: 44000          # 单只ETF上限
-dead_ratio: 0.6             # 底仓比例
-active_ratio: 0.4           # 活动仓比例
+max_per_etf: 220000         # 单只ETF上限(极限方案C: 100%)
+dead_ratio: 0.0             # 底仓比例(极限方案C: 取消底仓锁)
+active_ratio: 1.0           # 活动仓比例(极限方案C: 全部活动)
 
 # ── 交易频率 ──
 max_daily_buys: 1           # 每天最多1次买入(正常)
@@ -28,16 +28,16 @@ defense_code: "159611"      # 防御标的: 电力ETF
 
 # ── 止损参数 ──
 stop_loss:
-  avg_cost_pct: 0.12        # 均价止损12%
-  hard_stop_pct: 0.20       # 硬止损20%(从峰值回撤)
-  breakeven_trigger: 0.10   # 浮盈10%激活保本止盈
+  avg_cost_pct: 0.20        # 均价止损20%(极限方案C: 放宽)
+  hard_stop_pct: 0.25       # 硬止损25%(从峰值回撤, 极限方案C)
+  breakeven_trigger: 0.30   # 浮盈30%激活保本止盈(极限方案C: 大幅提高门槛)
   breakeven_margin: 0.02    # 回落至成本+2%清仓
 
 # ── 止盈参数 ──
 profit_take:
-  hard_take_profit: 0.30    # 硬止盈30%(基准价*1.30)
-  trailing_8pct: 0.05       # 8%后移动止盈: 成本+5%
-  trailing_15pct: 0.05      # 15%后移动止盈: 峰值回撤5%
+  hard_take_profit: 0.60    # 硬止盈60%(极限方案C: 大幅提高)
+  trailing_8pct: 0.10       # 8%后移动止盈: 成本+10%(极限方案C)
+  trailing_15pct: 0.08      # 15%后移动止盈: 峰值回撤8%(极限方案C)
   trend_profit_ratio: 0.10  # 趋势止盈10%活动仓
   sell_active_ratio: 0.05   # 破MA5卖5%活动仓
 
@@ -48,7 +48,7 @@ entry:
   test_cap_rsi: 35          # Test抄底RSI阈值
   dip_pct: -0.03            # 逆势补仓跌幅阈值(跌超3%)
   add_count_limit: 5        # 补仓次数上限
-  position_cap: 0.50        # 单只ETF仓位上限50%
+  position_cap: 1.00        # 单只ETF仓位上限100%(极限方案C)
 
 # ── 做T参数 ──
 t0:

@@ -99,8 +99,8 @@ class MoneyManager:
 
     @staticmethod
     def get_confirm_entry_ratio(pos):
-        """获取确认加仓比例 (分批2=60%)"""
-        return 0.60
+        """获取确认加仓比例 (极限方案C: 100%全仓)"""
+        return 1.00
 
     @staticmethod
     def get_build_ratio(pos):
@@ -112,7 +112,7 @@ class MoneyManager:
         if pos.build_phase == 0:
             return 0.30  # 首笔30%
         elif pos.build_phase == 1:
-            return 0.70  # 确认70%
+            return 1.00  # 确认100%(极限方案C)
         else:
             return None  # 已完成建仓
 
@@ -139,20 +139,17 @@ class MoneyManager:
 
     @staticmethod
     def rebalance_dead_active(pos):
-        """重新计算底仓/活动仓 (DEAD_RATIO = 60% / ACTIVE_RATIO = 40%)"""
-        pos.dead_shares = int(pos.shares * DEAD_RATIO)
-        pos.active_shares = pos.shares - pos.dead_shares
-        if pos.active_shares == 0 and pos.shares > 0:
-            pos.active_shares = int(pos.shares * ACTIVE_RATIO)
+        """重新计算底仓/活动仓 (极限方案C: 取消拆分, 全为活动仓)"""
+        pos.dead_shares = 0
+        pos.active_shares = pos.shares
         return pos.dead_shares, pos.active_shares
 
     @staticmethod
     def get_available_active_shares(pos):
-        """获取可用于卖出的活动仓股数"""
+        """获取可用于卖出的活动仓股数 (极限方案C: 全部可卖)"""
         if not pos.has_position:
             return 0
-        pos.rebalance_dead_active(pos)  # 确保是最新的
-        return pos.active_shares
+        return pos.shares
 
     @staticmethod
     def calc_grid_buy_shares(pos, grid_weight, fund, price, round_lot=100):

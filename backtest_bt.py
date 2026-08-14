@@ -423,29 +423,23 @@ class ETFStrategy(bt.Strategy):
             if has_pos:
                 if price > ps["peak_price"]: ps["peak_price"] = price
 
-                # 保本止盈: 浮盈≥10%后激活, 价格回落到成本+2%时清仓
-                pp = (price - avg) / avg if avg > 0 else 0
-                if pp >= 0.10 - 0.0001:
-                    ps["breakeven_activated"] = True
-                if ps["breakeven_activated"] and avg > 0 and price <= avg * 1.02:
-                    self._close(d, f"保本止盈 avg={avg:.3f} price={price:.3f}")
+                # ── 极限方案C: 取消保本止盈 ──
+                # (保本止盈已移除，保留注释以标记)
+
+                # 均价止损20%(极限方案C)
+                if avg > 0 and price <= avg * 0.80:
+                    self._close(d, f"均价止损20% avg={avg:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 
-                # 均价止损12%
-                if avg > 0 and price <= avg * 0.88:
-                    self._close(d, f"均价止损12% avg={avg:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 硬止盈30%
-                if ps["base"] > 0 and price >= ps["base"] * 1.30:
-                    self._close(d, f"硬止盈30% base={ps['base']:.3f}")
+                # 硬止盈60%(极限方案C)
+                if ps["base"] > 0 and price >= ps["base"] * 1.60:
+                    self._close(d, f"硬止盈60% base={ps['base']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 
                 # 移动止盈(8%后不改线，15%后再设)
-                # pp 已在保本止盈中计算
+                pp = (price - avg) / avg if avg > 0 else 0
                 if pp >= 0.08 - 0.0001 and not ps["reached_8"]:
                     ps["reached_8"] = True
                 if pp >= 0.15 - 0.0001 and not ps["reached_15"]:
@@ -459,9 +453,9 @@ class ETFStrategy(bt.Strategy):
                     self._full_liquidate_state(ps, date_str)
                     continue
 
-                # 硬止损20%: 价格从峰值回撤20%
-                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.80:
-                    self._close(d, f"硬止损20% peak={ps['peak_price']:.3f}")
+                # 硬止损25%: 价格从峰值回撤25%(极限方案C)
+                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                    self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 

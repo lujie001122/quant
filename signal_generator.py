@@ -324,7 +324,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         if stop_actions:
             for sig_name, sig_type in stop_actions:
-                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_30pct", "avg_stop_12pct", "hard_stop_20pct", "breakeven_stop"):
+                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct", "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
                     action = "清仓"
                     position_ratio = "100%"
                     reason = sig_name
