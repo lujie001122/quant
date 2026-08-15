@@ -33,6 +33,10 @@ stop_loss:
   breakeven_trigger: 0.30   # 浮盈30%激活保本止盈(极限方案C: 大幅提高门槛)
   breakeven_margin: 0.02    # 回落至成本+2%清仓
 
+# ── 风险控制 ──
+risk:
+  max_daily_loss_pct: 0.05  # 日亏损限额5%
+
 # ── 止盈参数 ──
 profit_take:
   hard_take_profit: 0.60    # 硬止盈60%(极限方案C: 大幅提高)
@@ -49,6 +53,7 @@ entry:
   dip_pct: -0.03            # 逆势补仓跌幅阈值(跌超3%)
   add_count_limit: 5        # 补仓次数上限
   position_cap: 1.00        # 单只ETF仓位上限100%(极限方案C)
+  confirm_entry_ratio: 1.00 # 确认加仓比例(极限方案C: 100%全仓)
 
 # ── 做T参数 ──
 t0:

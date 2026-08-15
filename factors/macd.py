@@ -5,7 +5,6 @@ factors/macd.py — MACD 指标计算
 从 market_data.py 提取的纯计算函数，无IO依赖。
 """
 
-from typing import Optional, Tuple
 
 
 def calc_macd(closes, fast=12, slow=26, sig=9):

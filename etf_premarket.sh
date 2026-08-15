@@ -1,5 +1,6 @@
 #!/bin/bash
 # ETF 盘前信号 — macOS
+# P3-3: 使用新管线 signal_generator → decision_engine → executor
 source /Users/lujie/Documents/code/quant/.venv/bin/activate
 SCRIPTS=/Users/lujie/Documents/code/quant
 
@@ -8,16 +9,16 @@ echo ""
 
 # 舆情
 echo "🔍 舆情扫描"
-python "$SCRIPTS/sentiment_check.py" 2>/dev/null
+python3 "$SCRIPTS/sentiment_check.py" 2>/dev/null
 echo ""
 
-# 信号
-python "$SCRIPTS/signal_generator.py" 2>/dev/null | python3 -c "
+# 信号（新管线：decision_engine 内部调用 signal_generator + 决策引擎）
+python3 "$SCRIPTS/decision_engine.py" 2>/dev/null | python3 -c "
 import sys, json, math
 t = sys.stdin.read()
-s = t.find('{')
-e = t.rfind('}') + 1
-if s < 0:
+s = t.rfind('{')
+e = t.rfind('}') + 1 if s >= 0 else -1
+if s < 0 or e <= s:
     print('⚠️ 信号生成失败')
     sys.exit()
 d = json.loads(t[s:e])

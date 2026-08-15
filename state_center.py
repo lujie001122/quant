@@ -14,23 +14,21 @@ state_center.py — 统一状态中心
   - 行情数据获取辅助
 
 用法：
-  from state_center import (
-      SubAccount, StateCenter, get_main_position, get_t0_position,
-      get_main_cash, get_t0_cash,
-      get_tracked_codes, get_code_map, get_etfs_config,
-      load_portfolio, save_portfolio,
-      get_position_shares, get_position_info,
-      load_today_orders, load_intent_files,
-      intent_to_dedup_key, write_intent, cleanup_intent_files,
-      check_pending_orders, sync_entrust_to_orders, revoke_all,
-      trade_type_to_mode, get_signal_direction, signal_direction,
-      # build_retry_cmd,  # [注释] retry_cmd 不再使用
-  )
+  # from state_center import (
+  #     SubAccount, StateCenter, get_main_position, get_t0_position,
+  #     get_main_cash, get_t0_cash,
+  #     get_tracked_codes, get_code_map, get_etfs_config,
+  #     load_portfolio, save_portfolio,
+  #     get_position_shares, get_position_info,
+  #     load_today_orders, load_intent_files,
+  #     intent_to_dedup_key, write_intent, cleanup_intent_files,
+  #     check_pending_orders, sync_entrust_to_orders, revoke_all,
+  #     trade_type_to_mode, get_signal_direction, signal_direction,
+  # )
 """
 
 import json
 import os
-import sys
 import time
 from datetime import datetime
 
@@ -39,12 +37,117 @@ from datetime import datetime
 # ====================================================================
 
 class SubAccount:
-    """逻辑子账户 — 持仓与资金隔离"""
+    """逻辑子账户 — 持仓与资金隔离，支持独立盈亏追踪
+
+    P3-1: 增强 SubAccount，增加 realized_pnl、total_commission、
+          持仓成本基追踪、按标的盈亏汇总等能力。
+    """
+
     def __init__(self, name: str):
         self.name = name  # "main" 或 "t0"
-        self.positions = {}  # symbol -> {volume, avg_cost, realized_pnl}
+        self.positions = {}  # symbol -> {shares, avg_cost, market_value}
         self.cash = 0.0
         self.initial_cash = 0.0  # 初始现金（用于盈亏计算）
+        self.realized_pnl = 0.0  # 已实现盈亏
+        self.total_commission = 0.0  # 累计手续费
+        self.trade_count = 0  # 成交笔数
+        self._cost_basis = {}  # symbol -> total_cost（内部追踪）
+
+    def get_market_value(self, prices: dict = None) -> float:
+        """计算持仓市值。prices 为 {symbol: price} 实时价映射。"""
+        if prices is None:
+            prices = {}
+        mv = 0.0
+        for sym, pos in self.positions.items():
+            price = prices.get(sym, pos.get("avg_cost", 0))
+            mv += pos.get("shares", 0) * price
+        return mv
+
+    def get_total_equity(self, prices: dict = None) -> float:
+        """总权益 = cash + 持仓市值"""
+        return self.cash + self.get_market_value(prices)
+
+    def get_unrealized_pnl(self, prices: dict = None) -> float:
+        """浮动盈亏 = 持仓市值 - 持仓成本"""
+        if prices is None:
+            prices = {}
+        pnl = 0.0
+        for sym, pos in self.positions.items():
+            shares = pos.get("shares", 0)
+            cost = self._cost_basis.get(sym, pos.get("avg_cost", 0) * shares)
+            price = prices.get(sym, pos.get("avg_cost", 0))
+            pnl += shares * price - cost
+        return pnl
+
+    def record_trade(self, symbol: str, shares: int, price: float,
+                     commission: float = 0.0, is_buy: bool = True):
+        """记录一笔成交，更新持仓、成本和已实现盈亏"""
+        old_shares = self.positions.get(symbol, {}).get("shares", 0)
+        old_cost = self._cost_basis.get(symbol, 0.0)
+
+        if is_buy:
+            new_shares = old_shares + shares
+            new_cost = old_cost + shares * price + commission
+            self._cost_basis[symbol] = new_cost
+            avg_cost = new_cost / new_shares if new_shares > 0 else 0.0
+            self.positions[symbol] = {
+                "shares": new_shares,
+                "avg_cost": avg_cost,
+            }
+            self.cash -= (shares * price + commission)
+        else:
+            # 卖出：按比例减少成本基
+            if old_shares > 0 and old_cost > 0:
+                sold_cost = old_cost * (shares / old_shares)
+                self.realized_pnl += (shares * price - commission) - sold_cost
+                new_shares = old_shares - shares
+                if new_shares <= 0:
+                    self.positions.pop(symbol, None)
+                    self._cost_basis.pop(symbol, None)
+                else:
+                    self._cost_basis[symbol] = old_cost - sold_cost
+                    avg_cost = (old_cost - sold_cost) / new_shares
+                    self.positions[symbol] = {
+                        "shares": new_shares,
+                        "avg_cost": avg_cost,
+                    }
+            else:
+                self.realized_pnl += shares * price - commission
+                self.positions.pop(symbol, None)
+            self.cash += (shares * price - commission)
+
+        self.total_commission += commission
+        self.trade_count += 1
+
+    def to_dict(self) -> dict:
+        """序列化为 dict"""
+        return {
+            "name": self.name,
+            "cash": self.cash,
+            "initial_cash": self.initial_cash,
+            "realized_pnl": self.realized_pnl,
+            "total_commission": self.total_commission,
+            "trade_count": self.trade_count,
+            "positions": dict(self.positions),
+        }
+
+    def get_pnl_breakdown(self, prices: dict = None) -> dict:
+        """返回按标的的盈亏明细"""
+        if prices is None:
+            prices = {}
+        result = {}
+        for sym, pos in self.positions.items():
+            shares = pos.get("shares", 0)
+            cost = self._cost_basis.get(sym, pos.get("avg_cost", 0) * shares)
+            price = prices.get(sym, pos.get("avg_cost", 0))
+            unrealized = shares * price - cost
+            result[sym] = {
+                "shares": shares,
+                "cost_basis": cost,
+                "market_value": shares * price,
+                "unrealized_pnl": unrealized,
+            }
+        return result
 
 
 class StateCenter:
@@ -81,6 +184,15 @@ class StateCenter:
             return self.t0_account
         return self.main_account
 
+    # P3-1: 别名，方便代码可读性
+    @property
+    def main(self) -> SubAccount:
+        return self.main_account
+
+    @property
+    def t0(self) -> SubAccount:
+        return self.t0_account
+
     # ── 现金管理（做T与主策略现金池隔离）──
     def get_cash(self, account: str = "main") -> float:
         """获取指定子账户的可用现金"""
@@ -107,8 +219,15 @@ class StateCenter:
         return total - initial
 
     def get_total_asset(self) -> float:
-        """获取总资产（现金 + 持仓市值）"""
-        return self.get_total_cash()  # 简化版，实际需加持仓市值
+        """获取总资产（现金 + main/T0 全部持仓市值）"""
+        total = self.get_total_cash()
+        pf = load_portfolio()
+        positions = pf.get("positions", {})
+        for code, pos in positions.items():
+            shares = pos.get("shares", 0)
+            price = pos.get("current_price", 0)
+            total += shares * price
+        return total
 
     def sync_from_portfolio(self, portfolio_data: dict):
         """从 portfolio.json 同步账户状态到 StateCenter"""

@@ -15,8 +15,8 @@ from datetime import datetime
 # ── 项目根目录 ──────────────────────────────────────────
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
-# tracker.py 提供标准ETF名称
-import tracker
+# state_center 提供标准ETF名称（替代 tracker.py）
+from state_center import get_code_map as _get_code_map
 from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr, fetch_klines_daily_arrays, calc_max_drawdown
 from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
 
@@ -103,7 +103,7 @@ def get_scan_targets():
     #    ETF_CANDIDATES 中的名称已是标准名称，不覆盖
     #    只对非候选池标的（etf_pool/portfolio 来源）使用 tracker 标准名称
     try:
-        code_map = tracker.get_code_map()
+        code_map = _get_code_map()
         for code in targets:
             if code not in ETF_CANDIDATES and code in code_map:
                 targets[code]["name"] = code_map[code]["name"]

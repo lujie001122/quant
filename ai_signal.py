@@ -15,9 +15,8 @@ Phase 4: 独立 AI 信号源，与策略信号互补。
 
 import json
 import os
-import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from decision_engine import OrderIntent
 

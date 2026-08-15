@@ -13,18 +13,31 @@
   3. 底仓/活动仓再平衡
 
 用法:
-  from money_manager import MoneyManager
-  mm = MoneyManager()
-  shares = mm.calc_position_size(fund, ratio, price)
-  mm.update_build_phase(pos, price, tech)
+  # from money_manager import MoneyManager
+  # mm = MoneyManager()
+  # shares = mm.calc_position_size(fund, ratio, price)
+  # mm.update_build_phase(pos, price, tech)
 """
 
-import math
-
 # 从 position_info 导入统一常量
-from position_info import TOTAL_FUND, DEAD_RATIO, ACTIVE_RATIO, MAX_PER_ETF
+from position_info import TOTAL_FUND
+
+import os
+import yaml
 
 MIN_SHARES = 100  # 最小交易单位
+
+# P3-4: 从 config.yaml 读取确认加仓比例
+def _load_entry_config() -> dict:
+    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    try:
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get('entry', {})
+    except Exception:
+        return {}
+
+_entry_config = _load_entry_config()
 
 
 class MoneyManager:
@@ -99,8 +112,8 @@ class MoneyManager:
 
     @staticmethod
     def get_confirm_entry_ratio(pos):
-        """获取确认加仓比例 (极限方案C: 100%全仓)"""
-        return 1.00
+        """获取确认加仓比例（P3-4: 从 config.yaml 读取，兜底 1.00）"""
+        return _entry_config.get('confirm_entry_ratio', 1.00)
 
     @staticmethod
     def get_build_ratio(pos):
@@ -112,7 +125,7 @@ class MoneyManager:
         if pos.build_phase == 0:
             return 0.30  # 首笔30%
         elif pos.build_phase == 1:
-            return 1.00  # 确认100%(极限方案C)
+            return _entry_config.get('confirm_entry_ratio', 1.00)  # P3-4: 确认比例从 config 读取
         else:
             return None  # 已完成建仓
 

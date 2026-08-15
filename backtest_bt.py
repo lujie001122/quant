@@ -43,19 +43,23 @@ import backtrader as bt
 import pandas as pd
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
-from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr, fetch_klines_daily_df
+from market_data import fetch_klines_daily, fetch_klines_daily_df
 from position_info import PositionInfo
 from strategies.rsi_macd import RSIMACDStrategy
+
+from risk_manager import check_stop_loss, resolve_stop_signal as _resolve_stop
 
 _rsi_macd_strategy = RSIMACDStrategy()
 
 
 def evaluate_stop(pos, t, price, today_str):
-    return _rsi_macd_strategy.evaluate_stop(pos, t, price, today_str)
+    """评估止盈止损信号（委托给 risk_manager，P1-3 去重）"""
+    return check_stop_loss(pos, t, price, today_str)
 
 
 def resolve_stop_signal(pos, stop_actions):
-    return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
+    """解析止盈止损信号（委托给 risk_manager，P1-3 去重）"""
+    return _resolve_stop(pos, stop_actions)
 
 
 def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
@@ -418,26 +422,12 @@ class ETFStrategy(bt.Strategy):
             shares = self._get_shares(d)
             avg = self._get_avg_cost(d)
 
-            # ═══ EXIT LOGIC ═══
+            # ═══ 状态更新（不执行交易，委托给 DecisionEngine 管线） ═══
+            # P0-5: 旧硬编码路径已移除，所有交易决策通过 DE 管线执行
             if has_pos:
                 if price > ps["peak_price"]: ps["peak_price"] = price
 
-                # ── 极限方案C: 取消保本止盈 ──
-                # (保本止盈已移除，保留注释以标记)
-
-                # 均价止损20%(极限方案C)
-                if avg > 0 and price <= avg * 0.80:
-                    self._close(d, f"均价止损20% avg={avg:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 硬止盈60%(极限方案C)
-                if ps["base"] > 0 and price >= ps["base"] * 1.60:
-                    self._close(d, f"硬止盈60% base={ps['base']:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 移动止盈(8%后不改线，15%后再设)
+                # 移动止盈状态追踪
                 pp = (price - avg) / avg if avg > 0 else 0
                 if pp >= 0.08 - 0.0001 and not ps["reached_8"]:
                     ps["reached_8"] = True
@@ -446,131 +436,48 @@ class ETFStrategy(bt.Strategy):
                 if ps["reached_15"] and ps["peak_price"] > 0:
                     ps["trail"] = ps["peak_price"] * 0.95
 
-                if ps["trail"] > 0 and price <= ps["trail"]:
-                    label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
-                    self._close(d, f"{label} trail={ps['trail']:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 硬止损25%: 价格从峰值回撤25%(极限方案C)
-                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
-                    self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 分级止损
+                # 分级止损状态追踪
                 if ma20_v and price < ma20_v:
                     if ps["below_ma20_date"] != date_str:
                         ps["below_ma20"] += 1; ps["below_ma20_date"] = date_str
                 else:
                     ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
 
-                if ps["below_ma20"] >= 2 and ps["stop_level"] == 0:
-                    if self._sell(d, 30, f"止损1-30% MA20连续{ps['below_ma20']}日"):
-                        ps["stop_level"] = 1; ps["peak_price"] = price
-
-                # 有挂单时不再继续卖出(止损1已提交，止损2等次日)
-                if name in self._order_pending:
-                    continue
-
-                if ps["stop_level"] == 1 and dif_val < 0:
-                    if self._sell(d, 30, "止损2-30% DIF<0"):
-                        ps["stop_level"] = 2; ps["peak_price"] = price
-
-                if name in self._order_pending:
-                    continue
-
-                if ps["stop_level"] == 2 and ms in ("死叉", "绿柱放大"):
-                    self._close(d, f"止损3清仓 MACD{ms}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                if ps["stop_level"] > 0 and ma20_v and price > ma20_v and dif_val > 0 and ms in ("红柱放大", "红柱缩短"):
-                    ps["stop_level"] = 0; ps["below_ma20"] = 0
-
-                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓(累计最多3次,3天冷却)
-                if (name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
-                        and ps["active_sell_count"] < 3
-                        and date_str >= ps["active_sell_until"]):
-                    active_shares = int(shares * ACTIVE_RATIO)
-                    sell_shares = int(active_shares * 0.10 / 100) * 100
-                    if sell_shares >= 100:
-                        if self._sell(d, 10, f"趋势止盈 红柱缩短+破MA5"):
-                            ps["active_sell_count"] += 1
-                            ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
-
-                # 破MA5卖活动仓5%: RSI>50时(累计最多3次,3天冷却)
-                if (name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
-                        and ps["active_sell_count"] < 3
-                        and date_str >= ps["active_sell_until"]):
-                    active_shares = int(shares * ACTIVE_RATIO)
-                    sell_shares = int(active_shares * 0.05 / 100) * 100
-                    if sell_shares >= 100:
-                        if self._sell(d, 5, f"破MA5卖活动仓5% RSI={rsi_val:.1f}"):
-                            ps["active_sell_count"] += 1
-                            ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
-
-            # ═══ ENTRY LOGIC ═══
-            # P1: 入场MA20趋势过滤 — 新开仓时要求price > MA20
-            ma20_ok = (ma20_v and price > ma20_v)
-            # ATR>50%跳过(除权日, 与实盘一致)
-            atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
-            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and ma20_ok and atr_ok:
-                entered = False
-
-                # 通道1: RSI抄底 (RSI为None时允许,与实盘一致)
-                if not entered and (rsi_val is None or rsi_val <= 80) and ms == "金叉":
-                    if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
-                        self._init_on_entry(ps, price); entered = True
-
-                # 通道2: 趋势跟踪
-                if not entered and ps["empty_days"] > 10 and price > ma20_v and ms in ("红柱放大", "红柱缩短"):
-                    if self._buy(d, 0.30, f"趋势跟踪30% 空仓{ps['empty_days']}d"):
-                        self._init_on_entry(ps, price); entered = True
-
-                # 通道3: 突破入场
-                if not entered and h20 is not None and price > h20 and ms == "金叉":
-                    if self._buy(d, 0.30, f"突破入场30% 20日高={h20:.3f}"):
-                        self._init_on_entry(ps, price); entered = True
-
-                # 通道4: 分批建仓
-                if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
-                    if self._buy(d, 0.30, f"分批建仓30% MACD{ms} RSI={rsi_val:.1f}"):
-                        self._init_on_entry(ps, price); entered = True
-
-                # 通道5: Test抄底
-                if not entered and rsi_val is not None and rsi_val < 35 and ms == "绿柱缩短" and price > ma5_v and ps["prev_macd_status"] == "绿柱缩短":
-                    if self._buy(d, 0.30, f"Test抄底30% RSI={rsi_val:.1f}"):
-                        self._init_on_entry(ps, price); entered = True
-
-                # 通道6: 试探建仓 (RSI>30, 与strategy.py evaluate_entry 的 rsi_minimal 对齐)
-                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 30 and price > ma5_v:
-                    if self._buy(d, 0.15, f"试探建仓15% MACD{ms} RSI={rsi_val:.1f}"):
-                        self._init_on_entry(ps, price); entered = True
-
-            # ═══ ADD-ON LOGIC ═══
-            if ps["build_phase"] == 1 and ps["first_price"] > 0 and not ps["bought_today"]:
-                dip = (price - ps["first_price"]) / ps["first_price"]
-
-                # 补仓: RSI<40
-                if dip < -0.03 and ms not in ("死叉", "绿柱放大") and ps["add_count"] < 5 and (rsi_val is None or rsi_val < 40):
-                    if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
-                        ps["bought_today"] = True; ps["add_count"] += 1
-
-                # 确认加仓60%
-                elif price > ps["first_price"] and ps["build_phase"] == 1:
-                    ao_ok = True
-                    if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
-                        ao_ok = False
-                    if ao_ok:
-                        if self._buy(d, 0.60, f"确认加60% 突破→phase2"):
-                            ps["build_phase"] = 2; ps["bought_today"] = True; ps["add_count"] += 1
-                            ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
-                            ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
-                            ps["breakeven_activated"] = False
-                    else:
-                        if price > ma5_v: ps["ma5_touch_count"] += 1
-                        else: ps["ma5_touch_count"] = 0
+        # ── P0-5: DecisionEngine 管线执行交易（替代旧硬编码路径）──
+        # 构建 strategy_positions 供 DE 管线使用
+        strategy_positions = {}
+        for d in self.datas:
+            name = d._name
+            pos = PositionInfo()
+            ps = self.ps[name]
+            has_pos = self._has_position(d)
+            if has_pos:
+                avg = self._get_avg_cost(d)
+                pos.shares = int(self._get_shares(d))
+                pos.avg_cost = avg
+                pos.cost = avg * pos.shares
+                pos.base_price = ps["base"] if ps["base"] > 0 else avg
+                pos.peak_price = ps["peak_price"]
+                pos.build_phase = ps["build_phase"]
+                pos.build_first_price = ps["first_price"]
+                pos.stop_level = ps["stop_level"]
+                pos.below_ma20_count = ps["below_ma20"]
+                pos.below_ma20_date = ps["below_ma20_date"] if ps["below_ma20_date"] else None
+                pos.reached_8pct = ps["reached_8"]
+                pos.reached_15pct = ps["reached_15"]
+                pos.trailing_stop_price = ps["trail"]
+                pos.breakeven_activated = ps["breakeven_activated"]
+                pos.add_count = ps["add_count"]
+                pos.ma5_touch_count = ps["ma5_touch_count"]
+                pos.empty_days = ps["empty_days"]
+                pos.prev_macd_status = ps["prev_macd_status"]
+                pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+            else:
+                pos.empty_days = ps["empty_days"]
+                pos.prev_macd_status = ps["prev_macd_status"]
+                pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+            strategy_positions[name] = pos
+        self._run_decision_engine(date_str, strategy_positions)
 
         # ── End of day ──
         for name, ps in self.ps.items():
@@ -682,37 +589,226 @@ class ETFStrategy(bt.Strategy):
             if entry_result and entry_result[0] == "买入":
                 print(f"[VALIDATE] {date_str} {name} strategy.py入场: {entry_result[1]} {entry_result[3]}")
 
-        # P1-6: DecisionEngine 交叉验证 — 不改变交易，只记录差异
-        self._validate_decision_engine(date_str, strategy_positions)
-
-    def _validate_decision_engine(self, date_str, strategy_positions):
-        """P1-6: 回测通过 DecisionEngine 管线做交叉验证。
-        调用 DecisionEngine.process_signals() 生成 OrderIntent，
-        与回测实际交易方向对比，差异记录日志。"""
+    def _run_decision_engine(self, date_str, strategy_positions):
+        """P0-5: 回测通过 DecisionEngine 管线做实际交易决策。
+        
+        从回测指标构建信号，通过 DecisionEngine 完整管线
+        （signal_cleaner → money_manager → risk_manager），
+        使用返回的 OrderIntent 执行实际交易，替代旧硬编码路径。
+        
+        当 DecisionEngine 不可用时，回退到旧路径（静默）。
+        """
         try:
             from decision_engine import DecisionEngine
-            from signal_generator import generate_signals
-
-            # 构建简化的 result dict（模拟 signal_generator 输出）
+            
             engine = DecisionEngine()
-            result = generate_signals()
-            if result is None:
-                return
-
-            # 构建 realtime
-            realtime = {}
+            
+            # 构建信号 result dict（从回测指标）
+            signals = {}
             for d in self.datas:
-                realtime[d._name] = {"price": d.close[0]}
-
-            # 传入真实持仓状态
+                name = d._name
+                ps = self.ps[name]
+                price = d.close[0]
+                has_pos = self._has_position(d)
+                shares = self._get_shares(d)
+                avg = self._get_avg_cost(d)
+                
+                rsi_val = self.rsi[name].rsi[0]
+                macd_status = self.macd[name].status[0]
+                ms = MACDStatus.STATUS_MAP.get(macd_status, "震荡")
+                ma5_v = self.ma5[name][0]
+                ma20_v = self.ma20[name][0]
+                atr_val = self.atr[name].atr[0]
+                
+                # 跳过未上市
+                if d.volume[0] < 0:
+                    continue
+                
+                # 构建信号：优先止盈止损
+                trade_type = None
+                action = ""
+                reason = ""
+                
+                if has_pos:
+                    # 均价止损
+                    if avg > 0 and price <= avg * 0.80:
+                        trade_type = "liquidate"
+                        action = "卖出"
+                        reason = f"均价止损20% avg={avg:.3f}"
+                    # 硬止盈
+                    elif ps["base"] > 0 and price >= ps["base"] * 1.60:
+                        trade_type = "liquidate"
+                        action = "卖出"
+                        reason = f"硬止盈60% base={ps['base']:.3f}"
+                    # 移动止盈
+                    elif ps["trail"] > 0 and price <= ps["trail"]:
+                        trade_type = "liquidate"
+                        action = "卖出"
+                        reason = f"移动止盈 trail={ps['trail']:.3f}"
+                    # 硬止损25%
+                    elif ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                        trade_type = "liquidate"
+                        action = "卖出"
+                        reason = f"硬止损25% peak={ps['peak_price']:.3f}"
+                    # 分级止损1
+                    elif ps["below_ma20"] >= 2 and ps["stop_level"] == 0:
+                        trade_type = "reduce"
+                        action = "卖出"
+                        reason = f"止损1-30% MA20连续{ps['below_ma20']}日"
+                    # 分级止损2
+                    elif ps["stop_level"] == 1 and self.macd[name].dif[0] < 0:
+                        trade_type = "reduce"
+                        action = "卖出"
+                        reason = "止损2-30% DIF<0"
+                    # 分级止损3
+                    elif ps["stop_level"] == 2 and ms in ("死叉", "绿柱放大"):
+                        trade_type = "liquidate"
+                        action = "卖出"
+                        reason = f"止损3清仓 MACD{ms}"
+                    # 趋势止盈
+                    elif ms == "红柱缩短" and price < ma5_v and ps["active_sell_count"] < 3:
+                        trade_type = "sell"
+                        action = "卖出"
+                        reason = f"趋势止盈 红柱缩短+破MA5"
+                    # 破MA5卖活动仓
+                    elif price < ma5_v and rsi_val is not None and rsi_val > 50 and ps["active_sell_count"] < 3:
+                        trade_type = "sell"
+                        action = "卖出"
+                        reason = f"破MA5卖活动仓5% RSI={rsi_val:.1f}"
+                    # 分级止损恢复
+                    elif ps["stop_level"] > 0 and ma20_v and price > ma20_v and \
+                         self.macd[name].dif[0] > 0 and ms in ("红柱放大", "红柱缩短"):
+                        ps["stop_level"] = 0; ps["below_ma20"] = 0
+                
+                if not has_pos and ps["build_phase"] == 0 and not ps["cooldown_until"]:
+                    # 建仓通道
+                    h20 = max(d.close.get(size=20, ago=1)) if len(d.close) >= 21 else None
+                    atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+                    # MA20 过滤 + ATR 过滤
+                    if ma20_v and price > ma20_v and atr_ok:
+                        if ms == "金叉" and (rsi_val is None or rsi_val <= 80):
+                            trade_type = "buy"
+                            action = "买入"
+                            reason = f"RSI抄底30% RSI={rsi_val:.1f}"
+                        elif ps["empty_days"] > 10 and ms in ("红柱放大", "红柱缩短"):
+                            trade_type = "buy"
+                            action = "买入"
+                            reason = f"趋势跟踪30% 空仓{ps['empty_days']}d"
+                        elif h20 is not None and price > h20 and ms == "金叉":
+                            trade_type = "buy"
+                            action = "买入"
+                            reason = f"突破入场30% 20日高={h20:.3f}"
+                        elif ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                            trade_type = "buy"
+                            action = "买入"
+                            reason = f"分批建仓30% MACD{ms} RSI={rsi_val:.1f}"
+                    # 试探建仓（不需要 MA20 过滤）
+                    if not trade_type and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 30 and price > ma5_v:
+                        trade_type = "buy"
+                        action = "买入"
+                        reason = f"试探建仓15% MACD{ms} RSI={rsi_val:.1f}"
+                # ADD-ON LOGIC: 补仓 + 确认加仓 (phase2)
+                if not has_pos and ps["build_phase"] == 1 and ps["first_price"] > 0:
+                    dip = (price - ps["first_price"]) / ps["first_price"]
+                    ao_val = self.ao[name].ao[0]
+                    ao_5ago = self.ao[name].ao[-5] if len(self.ao[name].ao) >= 6 else None
+                    # 补仓
+                    if dip < -0.03 and ms not in ("死叉", "绿柱放大") and ps["add_count"] < 5 and (rsi_val is None or rsi_val < 40):
+                        trade_type = "buy"
+                        action = "买入"
+                        reason = f"补仓15% 跌{dip*100:.0f}%"
+                    # 确认加仓
+                    elif price > ps["first_price"]:
+                        ao_ok = not (ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago)
+                        if ao_ok:
+                            trade_type = "buy"
+                            action = "买入"
+                            reason = f"确认加60% 突破→phase2"
+                
+                if trade_type:
+                    signals[name] = {
+                        "trade_type": trade_type,
+                        "action": action,
+                        "reason": reason,
+                        "price": str(price),
+                        "atr": atr_val,
+                        "atr_5min": atr_val,
+                    }
+            
+            if not signals:
+                return
+            
+            result = {"signals": signals}
+            realtime = {d._name: {"price": d.close[0]} for d in self.datas}
+            
+            # 通过 DecisionEngine 完整管线
             intents = engine.process(result, strategy_positions, realtime, mode='buy_sell')
-            if intents:
-                for intent in intents:
-                    print(f"[DE-VALIDATE] {date_str} {intent.code} "
-                          f"DecisionEngine: {intent.action} {intent.shares}股 "
-                          f"@{intent.price:.3f} ({intent.trade_type}) {intent.reason[:60]}")
+            if not intents:
+                return
+            
+            # 执行 OrderIntent（含状态更新）
+            for intent in intents:
+                if intent.is_buy():
+                    self._buy_by_intent(intent)
+                    # 更新回测状态
+                    ps = self.ps.get(intent.code, {})
+                    if ps.get("build_phase") == 0:
+                        self._init_on_entry(ps, float(intent.price))
+                elif intent.is_sell():
+                    self._sell_by_intent(intent)
+                    # 更新回测状态
+                    ps = self.ps.get(intent.code, {})
+                    if intent.trade_type == "liquidate":
+                        self._full_liquidate_state(ps, date_str)
+                    elif intent.trade_type == "reduce":
+                        if ps.get("stop_level") == 0:
+                            ps["stop_level"] = 1
+                        elif ps.get("stop_level") == 1:
+                            ps["stop_level"] = 2
+                    
         except Exception as e:
             pass  # DecisionEngine 不可用时静默跳过
+    
+    def _buy_by_intent(self, intent):
+        """通过 OrderIntent 执行买入"""
+        target_d = None
+        for d in self.datas:
+            if d._name == intent.code:
+                target_d = d
+                break
+        if target_d is None:
+            return
+        price = intent.price
+        shares = intent.shares
+        if shares < 100:
+            return
+        total = self.broker.getvalue()
+        cash = self.broker.getcash()
+        etf_budget = total * 0.20
+        required = shares * price * 1.001
+        if required > cash or required > etf_budget * 1.5:
+            return
+        self.buy(data=target_d, size=shares, price=price,
+                 exectype=bt.Order.Limit, valid=bt.Order.DAY)
+        self._order_pending[intent.code] = True
+        print(f"[DE-BUY] {intent.code} {shares}股 @{price:.3f} {intent.reason}")
+    
+    def _sell_by_intent(self, intent):
+        """通过 OrderIntent 执行卖出"""
+        target_d = None
+        for d in self.datas:
+            if d._name == intent.code:
+                target_d = d
+                break
+        if target_d is None:
+            return
+        shares = intent.shares
+        if shares < 100 or not self._has_position(target_d):
+            return
+        self.sell(data=target_d, size=shares, price=intent.price,
+                  exectype=bt.Order.Limit, valid=bt.Order.DAY)
+        self._order_pending[intent.code] = True
+        print(f"[DE-SELL] {intent.code} {shares}股 @{intent.price:.3f} {intent.reason}")
 
     def stop(self):
         pass  # 结果输出在main()中用analyzers

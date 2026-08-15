@@ -14,7 +14,7 @@ factors/ — 指标计算因子模块
   - dynamic_spacing: 动态网格间距
 """
 
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 
 
 # ═══════════════════════════════════════════════════════

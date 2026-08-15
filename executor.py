@@ -21,13 +21,12 @@ executor.py — 交易执行器
 Phase 4: 从 trade.py 提取抽象层，为回测和实盘提供统一接口。
 """
 
-import json
 import os
 import sys
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from order_manager import Order
 
@@ -612,6 +611,40 @@ class SignalExecutor:
         from state_center import write_intent
         write_intent(code, action, direction, mode=mode)
 
+    def _calc_limit_price(self, code, trade_type, action, signal_price, live_price):
+        """P1-1: 限价计算 — 买低卖高原则，消除重复代码
+        
+        买入：限价 = min(信号价, 实时价)，确保挂进
+        卖出：限价 = max(信号价, 实时价)，确保挂进
+        """
+        is_buy = (trade_type == "buy"
+                  or (trade_type == "t0" and "买入" in action))
+        is_sell = (trade_type in ("sell", "liquidate", "reduce")
+                   or (trade_type == "t0" and "卖出" in action))
+
+        if live_price > 0:
+            if is_buy:
+                if signal_price > 0 and live_price < signal_price:
+                    price = live_price
+                    print(f"[EXECUTE] {code} 买入限价修正: 信号价={signal_price:.3f} > 当前价={live_price:.3f}, 使用当前价={price:.3f}")
+                else:
+                    price = signal_price if signal_price > 0 else live_price
+                    print(f"[EXECUTE] {code} 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 买入限价={price:.3f}")
+            elif is_sell:
+                if signal_price > 0 and live_price > signal_price:
+                    price = live_price
+                    print(f"[EXECUTE] {code} 卖出限价修正: 信号价={signal_price:.3f} < 当前价={live_price:.3f}, 使用当前价={price:.3f}")
+                else:
+                    price = signal_price if signal_price > 0 else live_price
+                    print(f"[EXECUTE] {code} 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 卖出限价={price:.3f}")
+            else:
+                price = signal_price if signal_price > 0 else live_price
+                print(f"[EXECUTE] {code} 未知方向(trade_type={trade_type}), 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 兜底限价={price:.3f}")
+        else:
+            price = signal_price
+            print(f"[EXECUTE] {code} 实时价获取失败，兜底用信号价={signal_price:.3f}")
+        return price
+
     def execute_signals(self, result, mode=None):
         """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
 
@@ -741,37 +774,10 @@ class SignalExecutor:
             live = live_quotes.get(code, {})
             live_price = live.get("price", 0.0) if live else 0.0
 
-            # 下单限价方向修正
-            is_buy_direction = (
-                trade_type == "buy"
-                or (trade_type == "t0" and "买入" in action)
+            # 下单限价方向修正 (P1-1: 提取为辅助方法，消除重复)
+            price = self._calc_limit_price(
+                code, trade_type, action, signal_price, live_price
             )
-            is_sell_direction = (
-                trade_type in ("sell", "liquidate", "reduce")
-                or (trade_type == "t0" and "卖出" in action)
-            )
-
-            if live_price > 0:
-                if is_buy_direction:
-                    if signal_price > 0 and live_price < signal_price:
-                        price = live_price
-                        print(f"[EXECUTE] {code} 买入限价修正: 信号价={signal_price:.3f} > 当前价={live_price:.3f}, 使用当前价={price:.3f}")
-                    else:
-                        price = signal_price if signal_price > 0 else live_price
-                        print(f"[EXECUTE] {code} 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 买入限价={price:.3f}")
-                elif is_sell_direction:
-                    if signal_price > 0 and live_price > signal_price:
-                        price = live_price
-                        print(f"[EXECUTE] {code} 卖出限价修正: 信号价={signal_price:.3f} < 当前价={live_price:.3f}, 使用当前价={price:.3f}")
-                    else:
-                        price = signal_price if signal_price > 0 else live_price
-                        print(f"[EXECUTE] {code} 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 卖出限价={price:.3f}")
-                else:
-                    price = signal_price if signal_price > 0 else live_price
-                    print(f"[EXECUTE] {code} 未知方向(trade_type={trade_type}), 信号价={signal_price:.3f}, 当前价={live_price:.3f}, 兜底限价={price:.3f}")
-            else:
-                price = signal_price
-                print(f"[EXECUTE] {code} 实时价获取失败，兜底用信号价={signal_price:.3f}")
 
             if price <= 0:
                 print(f"[EXECUTE] ⚠️ {code} 价格无效(信号={signal_price_str}, 实时={live_price})，跳过")

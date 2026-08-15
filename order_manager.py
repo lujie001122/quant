@@ -20,57 +20,12 @@ Phase 4: 从 state_center.py 的订单管理逻辑提取，形成独立订单管
 import json
 import os
 import time
-from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from decision_engine import OrderIntent
+from datatypes import Order, OrderIntent  # P3-2: 统一从 datatypes 导入
 
-
-# ═══════════════════════════════════════════════════════
-# 数据类
-# ═══════════════════════════════════════════════════════
-
-@dataclass
-class Order:
-    """订单 — 完整的订单状态机"""
-    order_id: str
-    code: str
-    action: str                    # 'buy', 'sell', 't0_buy', 't0_sell'
-    direction: str                 # '买入', '卖出'
-    shares: int
-    price: float
-    pair_price: float = 0.0       # 做T配对价
-    status: str = "pending"       # pending, filled, partially_filled, revoked, failed, expired
-    filled_shares: int = 0
-    avg_fill_price: float = 0.0
-    reason: str = ""
-    source: str = "strategy"
-    confidence: float = 1.0
-    broker_order_id: str = ""     # 券商返回的订单ID
-    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    updated_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    expires_at: str = ""           # 超时时间
-    error_message: str = ""
-    retry_count: int = 0
-    account: str = "main"         # "main" 或 "t0"，逻辑子账户标识
-
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-    def is_active(self) -> bool:
-        """是否处于活跃状态（pending/partially_filled）"""
-        return self.status in ("pending", "partially_filled")
-
-    def is_done(self) -> bool:
-        """是否已终态"""
-        return self.status in ("filled", "revoked", "failed", "expired")
-
-    def is_buy(self) -> bool:
-        return 'buy' in self.action and 'sell' not in self.action
-
-    def is_sell(self) -> bool:
-        return 'sell' in self.action
+# P3-2: Order 和 OrderIntent 已提取到 datatypes.py，此处仅保留兼容导入
 
 
 # ═══════════════════════════════════════════════════════

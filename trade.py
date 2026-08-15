@@ -22,7 +22,6 @@ import sys
 import os
 import json
 import time
-import subprocess
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,8 +30,14 @@ ORDERS_DIR = os.path.join(SCRIPT_DIR, 'orders')
 INTENT_DIR = os.path.join(ORDERS_DIR, 'intent')
 
 from evolving.evolving import EvolvingSim
-# note: tracker.py 的导入保留向后兼容，实际已通过 state_center 统一
-from state_center import get_code_map
+from state_center import (
+    get_code_map,
+    load_today_orders,
+    sync_entrust_to_orders,
+    write_order as _write_order,
+    update_order_status,
+    cleanup_intent_force,
+)
 
 CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
@@ -177,137 +182,13 @@ def _write_intent_for_failed(code, action, shares, price, reason='failed'):
         print(f"  ⚠️ failed intent 文件写入失败: {e}")
 
 
-def _write_order(code, action, shares, price, contract, status='pending'):
-    """写订单到 orders/ 目录。"""
-    os.makedirs(ORDERS_DIR, exist_ok=True)
-    today = datetime.now().strftime('%Y%m%d')
-    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
-
-    order = {
-        'code': code,
-        'action': action,
-        'shares': shares,
-        'price': price,
-        'contract': contract,
-        'status': status,
-        'direction': '买入' if 'buy' in action else '卖出',
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    }
-
-    try:
-        with open(order_path, 'w') as f:
-            json.dump(order, f, ensure_ascii=False, indent=2)
-    except IOError as e:
-        print(f"  ⚠️ 订单持久化失败: {e}")
-
-
-def _update_order_status(code, action, new_status):
-    """更新 orders/ 中订单的状态。"""
-    today = datetime.now().strftime('%Y%m%d')
-    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
-
-    if not os.path.exists(order_path):
-        print(f"  ⚠️ 订单文件不存在: {order_path}")
-        return
-
-    try:
-        with open(order_path, 'r') as f:
-            order = json.load(f)
-        order['status'] = new_status
-        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(order_path, 'w') as f:
-            json.dump(order, f, ensure_ascii=False, indent=2)
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"  ⚠️ 更新订单状态失败: {e}")
+# _write_order 和 _update_order_status 已从 state_center 导入，不再重复定义
 
 
 # ─── 从 signal_generator.py 复制：_load_today_orders + _sync_entrust_to_orders ──
-
-def _load_today_orders():
-    """从 orders/ 目录加载今日所有订单，返回 {filename: order_dict}"""
-    if not os.path.exists(ORDERS_DIR):
-        return {}
-    today = datetime.now().strftime('%Y%m%d')
-    orders = {}
-    for fname in os.listdir(ORDERS_DIR):
-        if fname.startswith(today) and fname.endswith('.json'):
-            try:
-                with open(os.path.join(ORDERS_DIR, fname)) as f:
-                    order = json.load(f)
-                orders[fname] = order
-            except (json.JSONDecodeError, IOError):
-                pass
-    return orders
-
-
-def _sync_entrust_to_orders(e=None, orders=None):
-    """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
-    将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
-    （从 signal_generator.py 复制过来）
-    e: 可选复用的 EvolvingSim 实例，None 则自建
-    orders: 可选预加载的今日订单 {filename: order_dict}，None 则自加载
-    """
-    own_e = e is None
-    if own_e:
-        e = EvolvingSim()
-    try:
-        ent = e.getEntrust('today', False)
-        time.sleep(2)
-    except Exception as ex:
-        print(f"[_sync_entrust] ⚠️ EvolvingSim 调用失败: {ex}")
-        return
-
-    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
-        print(f"[_sync_entrust] ⚠️ getEntrust 返回异常，跳过同步")
-        return
-
-    # 构建同花顺委托索引: {code: {direction: status}}
-    ths_map = {}
-    for row in ent['data']:
-        if not row or len(row) <= 10:
-            continue
-        code = row[2]
-        direction = row[4]
-        status = row[5]
-        if code not in ths_map:
-            ths_map[code] = {}
-        ths_map[code][direction] = status
-
-    # 遍历本地 pending 订单，同步同花顺状态
-    if orders is None:
-        orders = _load_today_orders()
-    updated = 0
-
-    for fname, order in orders.items():
-        if order.get('status') != 'pending':
-            continue
-        code = order.get('code', '')
-        direction = order.get('direction', '')
-        if code not in ths_map or direction not in ths_map[code]:
-            continue
-        ths_status = ths_map[code][direction]
-
-        new_status = None
-        if ths_status in ('已成交', '全部成交', '部分成交'):
-            new_status = 'filled'
-        elif ths_status in ('已撤单', '已撤销', '废单'):
-            new_status = 'revoked'
-
-        if new_status:
-            order_path = os.path.join(ORDERS_DIR, fname)
-            try:
-                order['status'] = new_status
-                order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                with open(order_path, 'w') as f:
-                    json.dump(order, f, ensure_ascii=False, indent=2)
-                updated += 1
-                print(f"[_sync_entrust] {code} {direction} pending→{new_status} (同花顺:{ths_status})")
-            except (IOError, json.JSONDecodeError) as ex:
-                print(f"[_sync_entrust] ⚠️ 更新 {fname} 失败: {ex}")
-
-    if updated:
-        print(f"[_sync_entrust] 同步完成: {updated} 笔订单状态已更新")
+# P2-3: 已统一从 state_center 导入，不再重复定义
+_load_today_orders = load_today_orders
+_sync_entrust_to_orders = sync_entrust_to_orders
 
 
 # ─── 全撤 ──────────────────────────────────────────────────────────────
@@ -358,25 +239,9 @@ def _revoke_all(e=None, orders=None):
 def revoke_all():
     """公开接口：全撤所有买卖委托。"""
     result = _revoke_all()
-    # 清理 intent 文件（撤单后无需保留意图）
-    _cleanup_intent_trade()
+    # 清理 intent 文件（撤单后无需保留意图），使用 state_center 统一函数
+    cleanup_intent_force()
     return result
-
-
-def _cleanup_intent_trade():
-    """清理 intent 文件（trade.py 侧）。"""
-    if not os.path.exists(INTENT_DIR):
-        return
-    removed = 0
-    for fname in os.listdir(INTENT_DIR):
-        if fname.endswith('.json'):
-            try:
-                os.remove(os.path.join(INTENT_DIR, fname))
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        print(f"🧹 清理 {removed} 个 intent 文件")
 
 
 # ─── 连续竞价判断 ──────────────────────────────────────────────────────

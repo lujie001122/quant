@@ -19,46 +19,14 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from datatypes import OrderIntent  # P3-2: 统一从 datatypes 导入
+
 from money_manager import MoneyManager
 from risk_manager import RiskManager
 from signal_cleaner import clean_signals
 from position_info import PositionInfo
 
-
-# ═══════════════════════════════════════════════════════
-# 数据类
-# ═══════════════════════════════════════════════════════
-
-@dataclass
-class OrderIntent:
-    """交易意图 — 决策引擎输出，订单管理器输入"""
-    code: str
-    action: str                     # '买入', '卖出'
-    trade_type: str                 # 'buy', 'sell', 't0', 'liquidate', 'reduce'
-    direction: str                  # '买入', '卖出'
-    price: float
-    shares: int
-    pair_price: float = 0.0        # 做T配对挂单价
-    reason: str = ""
-    confidence: float = 1.0        # 0-1 置信度
-    source: str = "strategy"       # 'strategy', 'ai', 'grid', 't0'
-    signal_price: float = 0.0     # 原始信号价
-    live_price: float = 0.0       # 实时价
-    atr_5min: float = 0.0         # 5分钟ATR（做T用）
-    fund: float = 0.0             # 分配资金
-    timestamp: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-    def is_buy(self) -> bool:
-        return self.direction == '买入'
-
-    def is_sell(self) -> bool:
-        return self.direction == '卖出'
-
-    def is_t0(self) -> bool:
-        return self.trade_type == 't0'
+# P3-2: OrderIntent 已提取到 datatypes.py，此处保留别名以向后兼容
 
 
 # ═══════════════════════════════════════════════════════
@@ -527,3 +495,58 @@ def process_signals(result, positions=None, realtime=None, portfolio_data=None, 
 def signal_to_intent(code, sig, positions=None, realtime=None):
     """快捷函数: 单个信号 → OrderIntent"""
     return _engine._signal_to_intent(code, sig, positions, realtime)
+
+
+# ═══════════════════════════════════════════════════════
+# CLI — P3-3: 新管线入口
+# ═══════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    import sys
+    import json as _json
+
+    execute_mode = None
+    for arg in sys.argv[1:]:
+        if arg == "--execute":
+            execute_mode = None
+        elif arg.startswith("--execute="):
+            execute_mode = arg.split("=", 1)[1].strip().lower()
+            if execute_mode not in ("buy_sell", "t0"):
+                print(f"[WARN] 无效 --execute 值: {execute_mode}, 使用全部模式")
+                execute_mode = None
+        elif arg in ("--help", "-h"):
+            print(__doc__)
+            print("  可选参数: --execute[=buy_sell|t0]  执行交易信号")
+            sys.exit(0)
+
+    try:
+        from signal_generator import generate_signals
+        result = generate_signals()
+
+        if result is None:
+            print("[decision_engine] ✗ 信号生成失败")
+            sys.exit(1)
+
+        # 输出信号摘要
+        signals = result.get("signals", {})
+        actionable = sum(1 for s in signals.values() if s.get("trade_type"))
+        print(f"[decision_engine] 信号: {len(signals)} 只, {actionable} 个可执行")
+
+        if execute_mode is not None:
+            # 新管线: signal → decision_engine → executor
+            intents = process_signals(result, mode=execute_mode)
+            print(f"[decision_engine] 决策: {len(intents)} 个交易意图")
+
+            if intents:
+                from executor import execute_signals as _exec_signals
+                _exec_signals(result, mode=execute_mode)
+                print(f"[decision_engine] ✅ 执行完成")
+            else:
+                print("[decision_engine] 无交易意图，跳过执行")
+
+        # 输出 JSON 供外部解析
+        _json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
+
+    except Exception as e:
+        print(f"[decision_engine] ❌ 错误: {e}", file=sys.stderr)
+        sys.exit(1)

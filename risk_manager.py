@@ -24,12 +24,29 @@
 
 from datetime import datetime
 from typing import Tuple
+import yaml
+import os
 
 # 从 position_info 导入统一常量
 from position_info import (
-    TOTAL_FUND, MAX_POSITION_RATIO, MAX_DAILY_LOSS_PCT,
-    DEAD_RATIO, ACTIVE_RATIO,
+    TOTAL_FUND, MAX_POSITION_RATIO, MAX_DAILY_LOSS_PCT, AVG_COST_STOP_PCT,
+    PositionInfo,
 )
+
+# 延迟导入 state_center 函数（在 check_order 中使用，避免循环依赖）
+from state_center import get_position_info
+
+# P1-4: 从 config.yaml 读取风险管理参数
+def _load_risk_config():
+    config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    try:
+        with open(config_path, 'r') as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg
+    except Exception:
+        return {}
+
+_risk_config = _load_risk_config()
 
 
 class RiskManager:
@@ -41,9 +58,13 @@ class RiskManager:
             from state_center import StateCenter
             state_center = StateCenter.get_instance()
         self._state = state_center
-        self.MAX_DAILY_LOSS_PCT = 0.05  # 单日最大亏损5%
-        self.MAX_CONSECUTIVE_LOSS_DAYS = 3  # 连续亏损3天熔断
-        self.MIN_DAILY_LOSS_PCT = 0.01  # 日亏损>1%才计入连续亏损
+        # P1-4: 从 config.yaml 读取参数（硬编码为兜底）
+        stop_loss = _risk_config.get('stop_loss', {})
+        risk = _risk_config.get('risk', {})
+        self.avg_cost_stop_pct = stop_loss.get('avg_cost_pct', AVG_COST_STOP_PCT)
+        self.max_daily_loss_pct = risk.get('max_daily_loss_pct', MAX_DAILY_LOSS_PCT)
+        self.MAX_CONSECUTIVE_LOSS_DAYS = 3
+        self.MIN_DAILY_LOSS_PCT = 0.01
         self.daily_pnl = 0.0
         # 连续亏损追踪
         self.consecutive_loss_days = 0
@@ -288,10 +309,8 @@ class RiskManager:
 
         # 2. 仓位上限检查（买入信号）
         if hasattr(order_intent, 'is_buy') and order_intent.is_buy():
-            from state_center import get_position_info
             pos_data = get_position_info(order_intent.code)
             if pos_data.get("shares", 0) > 0:
-                from position_info import PositionInfo
                 pos = PositionInfo()
                 pos.shares = pos_data.get("shares", 0)
                 pos.avg_cost = pos_data.get("avg_cost", 0.0)
