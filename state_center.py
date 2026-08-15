@@ -24,7 +24,7 @@ state_center.py — 统一状态中心
       intent_to_dedup_key, write_intent, cleanup_intent_files,
       check_pending_orders, sync_entrust_to_orders, revoke_all,
       trade_type_to_mode, get_signal_direction, signal_direction,
-      build_retry_cmd, detect_error_type,
+      # build_retry_cmd,  # [注释] retry_cmd 不再使用
   )
 """
 
@@ -787,7 +787,9 @@ def detect_error_type(stdout, stderr, returncode, exit_reason=None):
         return "tonghuashun_disconnect", "同花顺断连"
 
     if "下单成功但持仓未变" in combined or "期望增量" in combined:
-        return "not_filled", "下单未成交(增量确认失败)"
+        # [注释] 增量确认不再使用，直接 fall through 到 other
+        pass
+        # return "not_filled", "下单未成交(增量确认失败)"
 
     if returncode != 0:
         return "other", f"退出码={returncode}"
@@ -795,26 +797,27 @@ def detect_error_type(stdout, stderr, returncode, exit_reason=None):
     return None, None
 
 
-def build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
-    """构建重试命令字符串"""
-    if trade_type in ("buy", "sell", "liquidate", "reduce"):
-        return f"python3 trade.py {trade_type if trade_type in ('buy','sell') else 'sell'} {code} {shares} {price:.3f}"
-    elif trade_type == "t0":
-        t0_pair = sig.get("t0_pair")
-        if t0_pair:
-            pair_price = t0_pair.get("pair_price", 0)
-            pair_shares = t0_pair.get("shares", 0)
-            if "买入" in sig.get("action", ""):
-                return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
-            else:
-                return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
-        else:
-            if "买入" in sig.get("action", ""):
-                return f"python3 trade.py buy {code} {shares} {price:.3f}"
-            else:
-                return f"python3 trade.py sell {code} {shares} {price:.3f}"
-    return ""
-
+# [注释] retry_cmd 不再使用
+# def build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
+#     """构建重试命令字符串"""
+#     if trade_type in ("buy", "sell", "liquidate", "reduce"):
+#         return f"python3 trade.py {trade_type if trade_type in ('buy','sell') else 'sell'} {code} {shares} {price:.3f}"
+#     elif trade_type == "t0":
+#         t0_pair = sig.get("t0_pair")
+#         if t0_pair:
+#             pair_price = t0_pair.get("pair_price", 0)
+#             pair_shares = t0_pair.get("shares", 0)
+#             if "买入" in sig.get("action", ""):
+#                 return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+#             else:
+#                 return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
+#         else:
+#             if "买入" in sig.get("action", ""):
+#                 return f"python3 trade.py buy {code} {shares} {price:.3f}"
+#             else:
+#                 return f"python3 trade.py sell {code} {shares} {price:.3f}"
+#     return ""
+# 
 
 def parse_position_ratio(ratio_str):
     """从 position_ratio 字符串中提取比例(0-1浮点数)

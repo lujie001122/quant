@@ -1,11 +1,11 @@
 {
   "code": "159516",
   "action": "sell",
-  "shares": 12800,
-  "price": 0.741,
-  "contract": "6202967069",
-  "status": "filled",
+  "shares": 100,
+  "price": 10.0,
+  "contract": "6204204185",
+  "status": "revoked",
   "direction": "卖出",
-  "created_at": "2026-08-14 10:20:51",
-  "updated_at": "2026-08-14 10:20:58"
+  "created_at": "2026-08-14 23:39:47",
+  "updated_at": "2026-08-14 23:39:52"
 }

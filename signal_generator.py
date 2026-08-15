@@ -88,7 +88,7 @@ from state_center import (
     get_signal_direction as _get_signal_direction,
     signal_direction as _signal_direction,
     detect_error_type as _detect_error_type,
-    build_retry_cmd as _build_retry_cmd,
+    # build_retry_cmd as _build_retry_cmd,  # [注释] retry_cmd 不再使用
     parse_position_ratio as _parse_position_ratio,
     # intent 清理
     cleanup_intent_files as _cleanup_intent_files,
