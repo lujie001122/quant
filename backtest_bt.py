@@ -96,7 +96,6 @@ CODES["000725"] = _DEFAULT_CODES["000725"]
 
 def fetch_daily(code, sid):
     """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily"""
-    import pandas as pd
     klines = fetch_klines_daily(code)
     if not klines:
         return None

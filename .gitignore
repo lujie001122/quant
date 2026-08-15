@@ -7,3 +7,5 @@ __pycache__/
 backup/
 plans/
 orders/
+.idea/
+.DS_Store

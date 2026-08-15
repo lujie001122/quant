@@ -81,7 +81,7 @@
 
 - Python 3.11 + macOS
 - 同花顺客户端 + EvolvingSim
-- 依赖：backtrader, akshare, evolving
+- 依赖：backtrader, akshare, evolving, pandas, numpy, yaml
 
 ## 安装
 
@@ -231,3 +231,18 @@ cron → signal_generator.py --execute
 - 回测引用 strategy，验证 +20.61% 无退化
 - 删除废弃文件 intraday_t_once.py
 - 做T MA20斜率放宽 0.1%→0.3%（买）/0.5%（卖）
+
+## .gitignore 说明
+
+```
+.venv/          # Python 虚拟环境
+__pycache__/    # Python 缓存
+*.pyc           # 编译文件
+.env            # 环境变量（含敏感信息）
+.hermes/        # Hermes Agent 配置目录
+backup/         # 备份文件
+plans/          # 计划文档
+orders/         # 订单记录（每日生成）
+.idea/          # PyCharm IDE 配置
+.DS_Store       # macOS 系统文件
+```
