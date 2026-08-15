@@ -395,9 +395,10 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     1. 校验100倍数
     2. 一个实例 e：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
     3. 写 intent 文件（防重复）
-    4. buy/sell（复用 e 实例）
-    5. 做T：挂配对反方向单（复用 e 实例）
-    6. _write_order 写入订单（成功时 pending，失败时 failed）
+    4. buy/sell（复用 e 实例）→ 调用后直接认为成交成功，不检查返回值
+    5. EvolvingSim 返回 None → AppleScript debug → "Begin failed" 则杀同花顺重启
+    6. 做T：挂配对反方向单（复用 e 实例）→ 同样直接认为成功
+    7. _write_order 写入订单（默认成功，不检查 ok/contract）
     """
     # 1. 校验100倍数
     _validate_shares(shares)
@@ -435,11 +436,30 @@ def _unified_trade(action, code, shares, price, pair_price=None):
 
     time.sleep(2)  # 撤单和下单之间间隔
     result = _call_evolving(method, code, shares, price, e=e)
+
+    # 下单后直接认为成交成功，不检查返回值
+    print(f"✅ {method} {code} {shares}股@{price} → 已提交EvolvingSim，认为成交成功")
+
+    # 如果 EvolvingSim 返回 None（进程卡死），用 AppleScript debug 检查
     if result is None:
-        print(f"⚠️ {method} {code} {shares}股@{price} → EvolvingSim返回None，仍按已提交处理")
-    else:
-        ok, contract = result
-        print(f"⏳ {method} {code} {shares}股@{price} → 已调用EvolvingSim (ok={ok}, contract={contract})")
+        try:
+            from evolving import ascmds
+            raw = os.popen(ascmds.asissuingEntrustSim + ' ' + method + ' stock ' + code + ' ' + str(price) + ' ' + str(shares)).read().strip()
+            print(f"  [DEBUG] EvolvingSim返回None，AppleScript返回: {raw}")
+            # 检查是否包含 "Begin failed" → 同花顺进程卡死，杀进程重启
+            if raw and ('Begin failed' in raw):
+                print(f"  🔄 检测到 'Begin failed'，杀同花顺进程并重启...")
+                os.system("pkill -9 -x 同花顺")
+                time.sleep(3)
+                os.system("open -a /Applications/同花顺.app")
+                time.sleep(5)
+                print(f"  ✅ 同花顺已重启，继续执行")
+            elif raw and 'failed' in raw.lower():
+                print(f"  ⚠️ 检测到 'failed'（非Begin failed），仍按成功处理，不杀进程")
+            else:
+                print(f"  ⚠️ EvolvingSim返回None但AppleScript未检测到异常，仍按成功处理")
+        except Exception as ex:
+            print(f"  ⚠️ AppleScript debug 异常: {ex}，仍按成功处理")
 
     # 6. _write_order 写入订单（默认成功，不检查ok/contract）
     _write_order(code, action, shares, price, 'pending', 'pending')
@@ -448,11 +468,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     if is_t0 and pair_price is not None:
         time.sleep(2)  # 两次调用之间间隔
         p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
-        if p_result is not None:
-            p_ok, p_contract = p_result
-            print(f"   ⏳ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → 已调用EvolvingSim (ok={p_ok}, contract={p_contract})")
-        else:
-            print(f"   ⚠️ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → EvolvingSim返回None，仍按已提交处理")
+        print(f"   ✅ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → 已提交EvolvingSim，认为成交成功")
 
         _write_order(code, pair_action, shares, pair_price, 'pending', 'pending')
         print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
