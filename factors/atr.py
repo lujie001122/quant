@@ -5,6 +5,7 @@ factors/atr.py — ATR 指标计算（Average True Range）
 从 market_data.py 提取的纯计算函数，无IO依赖。
 """
 
+from typing import Optional
 
 
 def calc_atr(klines, period=14):

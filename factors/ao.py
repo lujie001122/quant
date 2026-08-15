@@ -5,7 +5,7 @@ factors/ao.py — AO 指标计算（Awesome Oscillator）
 从 market_data.py 提取的纯计算函数，无IO依赖。
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 
 
 def calc_ao(highs, lows, short=5, long=34):

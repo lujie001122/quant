@@ -14,7 +14,7 @@ return_calculator.py — 总资产收益率计算
 """
 
 from datetime import date
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 import math
 
 

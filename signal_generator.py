@@ -15,6 +15,7 @@
 import json
 import os
 import sys
+import time
 from datetime import datetime
 
 # ── 行情数据与指标 ──
@@ -33,6 +34,10 @@ from position_info import (
 
 # ── 策略判定 ──
 from strategies.rsi_macd import (
+    is_auction_time,
+    t0_buy_score, t0_sell_score,
+    _compute_stop_loss_price, _compute_breakeven_price, _compute_trailing_stop,
+    _parse_position_ratio, _get_position_shares,
     check_defense,
 )
 from strategies.grid import (
@@ -67,6 +72,30 @@ def evaluate_t0(t, pos, price, today_str, atr_pct):
 
 def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True):
     return _t0_strategy.evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0)
+
+# ── 状态中心（执行层瘦身：订单管理、同步、intent、错误检测等） ──
+from state_center import (
+    # 持仓信息
+    get_position_shares as _get_position_shares,
+    # 订单管理
+    load_today_orders as _load_today_orders,
+    load_intent_files as _load_intent_files,
+    intent_to_dedup_key as _intent_to_dedup_key,
+    sync_entrust_to_orders as _sync_entrust_to_orders,
+    check_pending_orders as _check_pending_orders,
+    # 工具函数
+    trade_type_to_mode as _trade_type_to_mode,
+    get_signal_direction as _get_signal_direction,
+    signal_direction as _signal_direction,
+    detect_error_type as _detect_error_type,
+    # build_retry_cmd as _build_retry_cmd,  # [注释] retry_cmd 不再使用
+    parse_position_ratio as _parse_position_ratio,
+    # intent 清理
+    cleanup_intent_files as _cleanup_intent_files,
+    cleanup_intent_force as _cleanup_intent_force,
+    cleanup_old_intent_files as _cleanup_old_intent_files,
+)
+
 
 # ============================================================
 # 一、配置(仅 signal_generator 独有的常量)
@@ -543,9 +572,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
 
 def execute_signals(result, mode=None):
-    """遍历信号执行交易（P1-2: 简化转发链，直接调用 SignalExecutor）"""
-    from executor import SignalExecutor
-    return SignalExecutor().execute_signals(result, mode=mode)
+    """遍历信号执行交易（P2-9: 已迁移到 executor.py，此处保留向后兼容）"""
+    from executor import execute_signals as _exec_execute
+    return _exec_execute(result, mode=mode)
 
 
 def main():

@@ -22,7 +22,9 @@ from factors.ao import calc_ao
 
 # 从 indicators.py 导入复合指标和辅助函数
 from factors.indicators import (
+    calc_ma,
     calc_rsi_wilder,
+    calc_vol_ratio,
     calc_5min_indicators,
     dynamic_spacing,
 )

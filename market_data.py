@@ -322,11 +322,13 @@ def fetch_klines_5min(code, today=None):
 # ============================================================
 
 # 基础指标
+from factors.indicators import calc_ma
 from factors.indicators import calc_rsi_wilder
 from factors.indicators import dynamic_spacing
 from factors.indicators import calc_5min_indicators
 
 # 独立因子
+from factors.rsi import calc_rsi
 from factors.macd import calc_macd
 from factors.atr import calc_atr
 from factors.ao import calc_ao

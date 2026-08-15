@@ -1,11 +1,10 @@
 #!/bin/bash
 # ETF 盘中监控 — macOS，每30分钟，无信号静默
-# P3-3: 使用新管线 signal_generator → decision_engine → executor
 source /Users/lujie/Documents/code/quant/.venv/bin/activate
 SCRIPTS=/Users/lujie/Documents/code/quant
 
-# 主信号（新管线：decision_engine 内部调用 signal_generator）
-SIG_OUT=$(python3 "$SCRIPTS/decision_engine.py" 2>/dev/null)
+# 主信号
+SIG_OUT=$(python3 "$SCRIPTS/signal_generator.py" 2>/dev/null)
 
 # 解析主信号，提取有操作的标的
 HAS_ACTION=false
@@ -14,10 +13,9 @@ if [ -n "$SIG_OUT" ]; then
     FORMATTED=$(echo "$SIG_OUT" | python3 -c "
 import sys, json
 t = sys.stdin.read()
-# 跳过日志行，找到第一个 {
-s = t.rfind('{')
-e = t.rfind('}') + 1 if s >= 0 else -1
-if s < 0 or e <= s:
+s = t.find('{')
+e = t.rfind('}') + 1
+if s < 0:
     sys.exit()
 d = json.loads(t[s:e])
 signals = d.get('signals', {})

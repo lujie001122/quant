@@ -43,8 +43,7 @@ def _load_config():
         _DEFAULTS['inverted_weights'] = cfg.get('inverted_weights', _DEFAULTS['inverted_weights'])
         _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 极限方案C: 100%
         _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 极限方案C
-        _DEFAULTS['avg_cost_stop_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)  # 极限方案C
-        _DEFAULTS['max_daily_loss_pct'] = cfg.get('risk', {}).get('max_daily_loss_pct', 0.05)  # 日亏损限额
+        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)  # 极限方案C
     except Exception:
         pass
     return _DEFAULTS
@@ -63,8 +62,7 @@ COOLDOWN_DAYS = _config['cooldown_days']
 INVERTED_WEIGHTS = _config['inverted_weights']
 MAX_PER_ETF = _config.get('max_per_etf', 44000)
 MAX_POSITION_RATIO = _config.get('max_position_ratio', 0.50)
-MAX_DAILY_LOSS_PCT = _config.get('max_daily_loss_pct', 0.05)  # 日亏损限额 5%
-AVG_COST_STOP_PCT = _config.get('avg_cost_stop_pct', 0.12)  # 均价止损 12%
+MAX_DAILY_LOSS_PCT = _config.get('max_daily_loss_pct', 0.12)
 
 
 class PositionInfo:
