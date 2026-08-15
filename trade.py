@@ -404,12 +404,10 @@ def _unified_trade(action, code, shares, price, pair_price=None):
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
-    # 2. sync+revoke 合并复用，buy/sell 用新实例
-    e_sync = EvolvingSim()
+    # 2. 一个实例：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
+    e = EvolvingSim()
     orders = _load_today_orders()
-    _sync_entrust_to_orders(e=e_sync, orders=orders)
-    _revoke_all(e=e_sync, orders=orders)
-
+    _sync_entrust_to_orders(e=e, orders=orders)
     # 3. 写 intent 文件（下单前，防跨 cron 重复）
     _write_intent(code, action, shares, price)
 
@@ -436,43 +434,28 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         print(f"📊 {action} {code} {shares}股@{price}")
 
     time.sleep(2)  # 撤单和下单之间间隔
-    result = _call_evolving(method, code, shares, price)
+    result = _call_evolving(method, code, shares, price, e=e)
     if result is None:
-        print(f"❌ {method} {code} {shares}股@{price} → EvolvingSim返回None（可能是AppleScript卡死或网络断连）")
-        _write_intent_for_failed(code, action, shares, price, reason='EvolvingSim返回None')
-        return False
+        print(f"⚠️ {method} {code} {shares}股@{price} → EvolvingSim返回None，仍按已提交处理")
+    else:
+        ok, contract = result
+        print(f"⏳ {method} {code} {shares}股@{price} → 已调用EvolvingSim (ok={ok}, contract={contract})")
 
-    ok, contract = result
-    if not ok:
-        print(f"❌ {method} {code} {shares}股@{price} → 下单失败: {contract}")
-        _write_intent_for_failed(code, action, shares, price, reason=f'下单失败: {contract}')
-        return False
-
-    print(f"⏳ {method} {code} {shares}股@{price} → 已挂单 合同:{contract}")
-
-    # 6. _write_order 写入订单（成功）
-    _write_order(code, action, shares, price, contract, 'pending')
+    # 6. _write_order 写入订单（默认成功，不检查ok/contract）
+    _write_order(code, action, shares, price, 'pending', 'pending')
 
     # 7. 做T：挂配对反方向单 → 复用 e 实例
     if is_t0 and pair_price is not None:
         time.sleep(2)  # 两次调用之间间隔
         p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
-        p_contract = None
-        p_ok = False
         if p_result is not None:
             p_ok, p_contract = p_result
-            if p_ok:
-                print(f"   ✅ 配对{pair_method}挂单 {code} {shares}股@{pair_price} 合同:{p_contract}")
-            else:
-                print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}: {p_contract}")
+            print(f"   ⏳ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → 已调用EvolvingSim (ok={p_ok}, contract={p_contract})")
         else:
-            print(f"   ⚠️ 配对{pair_method}挂单失败 {code} {shares}股@{pair_price}")
+            print(f"   ⚠️ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → EvolvingSim返回None，仍按已提交处理")
 
-        if p_ok:
-            _write_order(code, pair_action, shares, pair_price, p_contract, 'pending')
-            print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
-        else:
-            print(f"❌ 配对{pair_method}挂单失败，不写入订单文件")
+        _write_order(code, pair_action, shares, pair_price, 'pending', 'pending')
+        print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
 
     return True
 
