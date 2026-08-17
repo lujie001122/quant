@@ -10,6 +10,7 @@ T0Strategy — 做T配对策略
 
 from strategies.base import BaseStrategy
 from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time, TOTAL_FUND
+from position_info import MAX_POSITION_RATIO
 from money_manager import calc_t0_pair_price
 from datetime import datetime
 
@@ -102,10 +103,10 @@ class T0Strategy(BaseStrategy):
 
             if "买入" in t0_signal:
                 _position_ratio_val = pos.shares * price / TOTAL_FUND
-                _position_capped = _position_ratio_val >= 0.50
+                _position_capped = _position_ratio_val >= MAX_POSITION_RATIO
                 if _position_capped:
                     return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None,
-                            f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过")
+                            f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 if record_t0:
                     pos.record_t0(today_str)
                 ratio = 0.30

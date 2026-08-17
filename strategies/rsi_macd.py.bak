@@ -12,7 +12,7 @@ RSIMACDStrategy — RSI+MACD建仓止损策略
 
 from strategies.base import BaseStrategy
 from datetime import datetime
-from position_info import DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, GRID_BUY_LEVELS, GRID_SELL_LEVELS, MAX_DAILY_BUYS, MAX_DAILY_T0, DEFENSE_CODE, COOLDOWN_DAYS, INVERTED_WEIGHTS, MAX_POSITION_RATIO
+from position_info import DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, GRID_BUY_LEVELS, GRID_SELL_LEVELS, MAX_DAILY_BUYS, MAX_DAILY_T0, DEFENSE_CODE, COOLDOWN_DAYS, INVERTED_WEIGHTS
 
 # ═══════════════════════════════════════════════
 # 常量（从 position_info 统一导入，避免跨文件定义不一致）
@@ -322,14 +322,14 @@ class RSIMACDStrategy(BaseStrategy):
 
         elif pos.build_phase == 1:
             _position_ratio_val = pos.shares * price / TOTAL_FUND
-            _position_capped = _position_ratio_val >= MAX_POSITION_RATIO
+            _position_capped = _position_ratio_val >= 0.50
 
             # ── 逆势补仓: 跌超3%允许第二次买入（需检查仓位上限）──
             if pos.build_first_price > 0 and pos.add_count < 5:
                 dip_pct = (price - pos.build_first_price) / pos.build_first_price
                 if dip_pct < -0.03 and pos.can_buy_today(today_str, atr_pct) and t["macd_status"] not in ["死叉", "绿柱放大"] and (t["rsi"] is None or t["rsi"] < 40):
                     if _position_capped:
-                        return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"补仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
+                        return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"补仓信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过")
                     pos.record_buy(today_str)
                     pos.add_count += 1
                     return ("买入", "15%(补仓)", "buy", f"逆势补仓:跌{dip_pct*100:.0f}%加仓15%(MACD{t['macd_status']})")
@@ -342,7 +342,7 @@ class RSIMACDStrategy(BaseStrategy):
                 if not ao_rising:
                     return ("持有(等确认)", None, None, f"分批建仓1已入场,AO未回升(now={ao_now:.4f},5ago={ao_5ago:.4f}),跳过加仓")
                 elif _position_capped:
-                    return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
+                    return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过")
                 elif pos.can_buy_today(today_str, atr_pct):
                     pos.record_buy(today_str)
                     pos.build_phase = 2

@@ -121,6 +121,11 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
     """获取日K线(腾讯前复权接口, 自带qfq无需手动复权)"""
     sid = CODE_MAP.get(code, "")
     if not sid:
+        if code.startswith("5"):
+            sid = f"sh{code}"
+        elif code.startswith("1"):
+            sid = f"sz{code}"
+    if not sid:
         raise RuntimeError(f"{code} 无代码映射")
 
     # 腾讯接口: qfq=前复权, datalen=1200条

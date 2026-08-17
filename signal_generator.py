@@ -29,7 +29,7 @@ from market_data import (
 # ── 持仓信息模型 + 常量 ──
 from position_info import (
     PositionInfo,
-    DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE,
+    DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE, MAX_POSITION_RATIO,
 )
 
 # ── 策略判定 ──
@@ -310,7 +310,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # 提前计算持仓占比（用于仓位上限检查，防重复计算）
         _position_ratio_val = pos.shares * price / TOTAL_FUND if pos.has_position else 0
-        _position_capped = pos.has_position and _position_ratio_val >= 0.50
+        _position_capped = pos.has_position and _position_ratio_val >= MAX_POSITION_RATIO
 
         # ═══════════════════════════════════════════════════════
         # 信号优先级规则（prd 系统优化方案2 漏洞三）
@@ -377,7 +377,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 if _position_capped:
                     action = "持有(仓位已满)"
                     position_ratio = f"{_position_ratio_val*100:.0f}%"
-                    reason = f"网格买入信号但仓位{_position_ratio_val*100:.0f}%已达50%上限,跳过"
+                    reason = f"网格买入信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过"
                     trade_type = None
                 else:
                     # 检查是否已触发过同一档位
@@ -429,7 +429,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         reason = "网格冻结(跌破第5档),等站上MA5解冻"
                     elif _position_capped:
                         action = "持有(仓位已满)"
-                        reason = f"当前仓位{_position_ratio_val*100:.0f}%已达目标50%"
+                        reason = f"当前仓位{_position_ratio_val*100:.0f}%已达目标{MAX_POSITION_RATIO*100:.0f}%"
                     elif price > t["ma5"] and t["rsi"] and t["rsi"] > 50:
                         reason = "趋势偏强,继续持有"
                     elif price < t["ma5"]:
