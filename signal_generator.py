@@ -453,16 +453,20 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 pos.empty_days += 1
                 pos.empty_days_date = today_str
 
-        # 兜底：如果 t0_signal 有有效信号，仅当 trade_type 未设置或为买入时覆盖为 t0
-        # 止损/止盈/减仓/卖出信号（liquidate/reduce/sell）优先级更高，T0 不覆盖
+        # 兜底：如果 t0_signal 有有效信号，仅当 trade_type 未设置时覆盖为 t0
+        # 止损/止盈/减仓/卖出/T0已设置信号（liquidate/reduce/sell/t0）优先级更高，T0 不覆盖
         if t0_signal and t0_signal not in ("无", "无(非交易时段)", "无(集合竞价时段)"):
             if "买入" in t0_signal or "卖出" in t0_signal:
-                if trade_type is None or trade_type == "buy":
+                if trade_type is None:
                     trade_type = "t0"
                     if "买入" in t0_signal:
                         action = "买入"
                     elif "卖出" in t0_signal:
                         action = "卖出"
+
+        # 兜底：position_ratio 为 None 时设为 "0%"
+        if position_ratio is None:
+            position_ratio = "0%"
 
         signals_output[code] = {
             "price": f"{price:.3f}",

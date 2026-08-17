@@ -518,8 +518,8 @@ class ETFStrategy(bt.Strategy):
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and ma20_ok and atr_ok:
                 entered = False
 
-                # 通道1: RSI抄底 (RSI为None时允许,与实盘一致)
-                if not entered and (rsi_val is None or rsi_val <= 80) and ms == "金叉":
+                # 通道1: RSI抄底 (RSI缺失时不抄底)
+                if not entered and rsi_val is not None and rsi_val <= 80 and ms == "金叉":
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
@@ -545,20 +545,21 @@ class ETFStrategy(bt.Strategy):
 
                 # 通道6: 试探建仓 (RSI>30, 与strategy.py evaluate_entry 的 rsi_minimal 对齐)
                 if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 30 and price > ma5_v:
-                    if self._buy(d, 0.15, f"试探建仓15% MACD{ms} RSI={rsi_val:.1f}"):
+                    if self._buy(d, 0.60, f"试探建仓60% MACD{ms} RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
             # ═══ ADD-ON LOGIC ═══
             if ps["build_phase"] == 1 and ps["first_price"] > 0 and not ps["bought_today"]:
                 dip = (price - ps["first_price"]) / ps["first_price"]
+                avg = self._get_avg_cost(d)
 
                 # 补仓: RSI<40
                 if dip < -0.03 and ms not in ("死叉", "绿柱放大") and ps["add_count"] < 5 and (rsi_val is None or rsi_val < 40):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓60%
-                elif price > ps["first_price"] and ps["build_phase"] == 1:
+                # 确认加仓60% (需MA5连续2日站稳)
+                elif price > ps["first_price"] and ps["build_phase"] == 1 and ps["ma5_touch_count"] >= 2:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
                         ao_ok = False

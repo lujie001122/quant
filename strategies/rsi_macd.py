@@ -12,22 +12,11 @@ RSIMACDStrategy — RSI+MACD建仓止损策略
 
 from strategies.base import BaseStrategy
 from datetime import datetime
-
+from position_info import DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, GRID_BUY_LEVELS, GRID_SELL_LEVELS, MAX_DAILY_BUYS, MAX_DAILY_T0, DEFENSE_CODE, COOLDOWN_DAYS, INVERTED_WEIGHTS
 
 # ═══════════════════════════════════════════════
-# 常量
+# 常量（从 position_info 统一导入，避免跨文件定义不一致）
 # ═══════════════════════════════════════════════
-
-TOTAL_FUND = 220000
-DEAD_RATIO = 0.6
-ACTIVE_RATIO = 0.4
-GRID_BUY_LEVELS = 5
-GRID_SELL_LEVELS = 3
-MAX_DAILY_BUYS = 1
-MAX_DAILY_T0 = 2
-DEFENSE_CODE = "159611"
-COOLDOWN_DAYS = 2
-INVERTED_WEIGHTS = [0.20, 0.25, 0.30, 0.35, 0.40]
 
 
 # ═══════════════════════════════════════════════
