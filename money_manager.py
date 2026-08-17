@@ -209,13 +209,17 @@ class MoneyManager:
 
         公式:
           - 买入信号（做T买入后高位卖出）: pair_price = (shares*price + 230) / shares
-          - 卖出信号（做T卖出后低位接回）: pair_price = (shares*price + 230) / shares
+          - 卖出信号（做T卖出后低位接回）: pair_price = (shares*price - 230) / shares
           确保配对交易总价差为230元。
         """
         if shares <= 0 or current_price <= 0:
             return 0.0
-        # 配对价格 = (股数×当前价 + 230) / 股数 = 当前价 + 230/股数
-        return round(current_price + 230.0 / shares, 3)
+        if is_buy_t0:
+            # 做T买入：先买后卖，配对的卖出价需高于买入价
+            return round(current_price + 230.0 / shares, 3)
+        else:
+            # 做T卖出：先卖后买，配对的买入价需低于卖出价
+            return round(current_price - 230.0 / shares, 3)
 
     @staticmethod
     def is_t0_pair_viable(current_price, pair_price, shares, min_spread=200):
