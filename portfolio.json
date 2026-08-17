@@ -11,13 +11,13 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 0.767,
+      "peak_price": 0.776,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 53.5,
+      "prev_rsi": 53.94,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -37,14 +37,14 @@
       "build_phase": 1,
       "build_first_price": 0.651,
       "stop_level": 0,
-      "reached_8pct": false,
+      "reached_8pct": true,
       "reached_15pct": false,
       "trailing_stop_price": 0.0,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 0.699,
+      "peak_price": 0.707,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
@@ -58,7 +58,7 @@
       "daily_trade_log": {
         "2026-08-17": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 2
         }
       },
       "shares": 19200,
@@ -77,13 +77,13 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 1.056,
+      "peak_price": 1.07,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 2,
-      "prev_rsi": 53.23,
+      "prev_rsi": 54.32,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -116,7 +116,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 58.48,
+      "prev_rsi": 60.29,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [
         "2026-08-12",
@@ -141,18 +141,18 @@
       "stop_level": 2,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.0336,
+      "trailing_stop_price": 1.04405,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-17",
-      "peak_price": 1.088,
+      "peak_price": 1.099,
       "breakeven_activated": true,
       "below_ma20_count": 2,
       "below_ma20_date": "2026-08-11",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 52.76,
+      "prev_rsi": 53.06,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -160,7 +160,7 @@
       "daily_trade_log": {
         "2026-08-17": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 2
         }
       },
       "shares": 21600,
@@ -185,7 +185,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 42.22,
+      "prev_rsi": 42.5,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [
         "2026-08-13",
@@ -303,5 +303,5 @@
     "cash": 8471.95,
     "market_value": 211459.1
   },
-  "last_updated": "2026-08-17 10:38"
+  "last_updated": "2026-08-17 12:53"
 }

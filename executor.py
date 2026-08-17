@@ -795,17 +795,17 @@ class SignalExecutor:
                     sig_atr = 0.0
                 old_pair_price = t0_pair.get("pair_price", 0)
 
-                # P2-10: 使用 money_manager 统一计算做T配对价
+                # P2-10: 使用 money_manager 统一计算做T配对价（固定+230价差）
                 from money_manager import calc_t0_pair_price
                 if "买入" in action:
-                    pair_price = calc_t0_pair_price(price, sig_atr, True) if sig_atr > 0 else old_pair_price
+                    pair_price = calc_t0_pair_price(price, pair_shares, True) if pair_shares >= 100 else old_pair_price
                 elif "卖出" in action:
-                    pair_price = calc_t0_pair_price(price, sig_atr, False) if sig_atr > 0 else old_pair_price
+                    pair_price = calc_t0_pair_price(price, pair_shares, False) if pair_shares >= 100 else old_pair_price
                 else:
                     pair_price = old_pair_price
 
-                if sig_atr > 0:
-                    print(f"[EXECUTE] {code} 做T配对价: 5minATR={sig_atr:.4f}, 当前价={price:.3f}, 配对价={pair_price:.3f}")
+                if pair_shares >= 100:
+                    print(f"[EXECUTE] {code} 做T配对价: 固定价差=230元, 当前价={price:.3f}, 股数={pair_shares}, 配对价={pair_price:.3f}")
                 shares = pair_shares
 
                 if pair_shares < 100:

@@ -197,24 +197,25 @@ class MoneyManager:
             return max(signal_price, live_price) if live_price > 0 else signal_price
 
     @staticmethod
-    def calc_t0_pair_price(current_price, atr_5min, is_buy_t0):
-        """计算做T配对挂单价
+    def calc_t0_pair_price(current_price, shares, is_buy_t0):
+        """计算做T配对挂单价（固定+230元总价差）
 
         参数:
           current_price: 当前价
-          atr_5min: 5分钟ATR
+          shares: 配对股数
           is_buy_t0: True=T0买入(配对卖出), False=T0卖出(配对买入)
         返回:
           float: 配对挂单价, 或 0.0 表示无效
+
+        公式:
+          - 买入信号（做T买入后高位卖出）: pair_price = (shares*price + 230) / shares
+          - 卖出信号（做T卖出后低位接回）: pair_price = (shares*price + 230) / shares
+          确保配对交易总价差为230元。
         """
-        if atr_5min <= 0 or current_price <= 0:
+        if shares <= 0 or current_price <= 0:
             return 0.0
-        if is_buy_t0:
-            # T0买入 → 高位卖出配对 = 当前价 + ATR*1.1
-            return round(current_price + atr_5min * 1.1, 3)
-        else:
-            # T0卖出 → 低位接回配对 = 当前价 - ATR*1.1
-            return round(current_price - atr_5min * 1.1, 3)
+        # 配对价格 = (股数×当前价 + 230) / 股数 = 当前价 + 230/股数
+        return round(current_price + 230.0 / shares, 3)
 
     @staticmethod
     def is_t0_pair_viable(current_price, pair_price, shares, min_spread=200):
@@ -255,5 +256,5 @@ def calc_limit_price(signal_price, live_price, is_buy):
     return MoneyManager.calc_limit_price(signal_price, live_price, is_buy)
 
 
-def calc_t0_pair_price(current_price, atr_5min, is_buy_t0):
-    return MoneyManager.calc_t0_pair_price(current_price, atr_5min, is_buy_t0)
+def calc_t0_pair_price(current_price, shares, is_buy_t0):
+    return MoneyManager.calc_t0_pair_price(current_price, shares, is_buy_t0)
