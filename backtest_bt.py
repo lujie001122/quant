@@ -38,9 +38,16 @@ backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
 ═══════════════════════════════════════════════════════════════════
 """
 import sys
+import os
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
+import yaml
+
+# ── 加载 config.yaml ──
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
+with open(_CONFIG_PATH) as f:
+    CONF = yaml.safe_load(f)
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr, fetch_klines_daily_df
@@ -62,17 +69,20 @@ def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_s
     return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
 
 # ═══════════════════════════════════════════════
-#  Config
+#  Config (从 config.yaml 同步)
 # ═══════════════════════════════════════════════
-TRADE_START = "2021-08-01"
-TRADE_END = "2026-07-27"
-TOTAL_FUND = 220000
-MAX_PER_ETF = 44000
-FEE = 5
-SLIPPAGE_PCT = 0.001
-COOLDOWN_DAYS = 2
-DEAD_RATIO = 0.6
-ACTIVE_RATIO = 0.4
+TRADE_START = CONF['backtest']['trade_start']
+TRADE_END = CONF['backtest']['trade_end']
+TOTAL_FUND = CONF['total_fund']
+MAX_PER_ETF = CONF['max_per_etf']
+FEE = CONF['backtest']['fee']
+SLIPPAGE_PCT = CONF['backtest']['slippage_pct']
+COOLDOWN_DAYS = CONF['cooldown_days']
+DEAD_RATIO = CONF['dead_ratio']
+ACTIVE_RATIO = CONF['active_ratio']
+POSITION_CAP = CONF['entry']['position_cap']           # 仓位上限
+CONFIRM_ENTRY_RATIO = CONF['entry']['confirm_entry_ratio']  # 确认加仓比例
+RISK_FREE_RATE = CONF['backtest']['risk_free_rate']
 
 # 默认ETF配置(回退用, etf_pool.json不存在时使用)
 _DEFAULT_CODES = {
@@ -318,7 +328,7 @@ class ETFStrategy(bt.Strategy):
     def _buy(self, data, pct, reason):
         """按总资金比例买入，与实盘一致"""
         name = data._name
-        target_value = min(self.broker.getvalue() * pct, self.broker.getvalue() * 0.50)
+        target_value = min(self.broker.getvalue() * pct, self.broker.getvalue() * POSITION_CAP)
         price = data.close[0]
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
@@ -511,11 +521,9 @@ class ETFStrategy(bt.Strategy):
                             ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
 
             # ═══ ENTRY LOGIC ═══
-            # P1: 入场MA20趋势过滤 — 新开仓时要求price > MA20
-            ma20_ok = (ma20_v and price > ma20_v)
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
-            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and ma20_ok and atr_ok:
+            if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and atr_ok:
                 entered = False
 
                 # 通道1: RSI抄底 (RSI缺失时不抄底)
@@ -558,13 +566,13 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓60% (需MA5连续2日站稳)
+                # 确认加仓 (需MA5连续2日站稳)
                 elif price > ps["first_price"] and ps["build_phase"] == 1 and ps["ma5_touch_count"] >= 2:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
                         ao_ok = False
                     if ao_ok:
-                        if self._buy(d, 0.60, f"确认加60% 突破→phase2"):
+                        if self._buy(d, CONFIRM_ENTRY_RATIO, f"确认加{CONFIRM_ENTRY_RATIO*100:.0f}% 突破→phase2"):
                             ps["build_phase"] = 2; ps["bought_today"] = True; ps["add_count"] += 1
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
                             ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
@@ -736,15 +744,8 @@ def main():
         elif arg.startswith("--end="):
             custom_end = arg.split("=", 1)[1]
 
-    # --period X 支持: 5y/3y/2y/1y/6m/3m
-    period_map = {
-        "5y": ("2021-08-01", "2026-07-27"),
-        "3y": ("2023-08-01", "2026-07-27"),
-        "2y": ("2024-08-01", "2026-07-27"),
-        "1y": ("2025-08-01", "2026-07-27"),
-        "6m": ("2026-01-27", "2026-07-27"),
-        "3m": ("2026-04-27", "2026-07-27"),
-    }
+    # --period X 支持: 从 config.yaml 读取
+    period_map = CONF['backtest']['periods']
     period = None
     for arg in sys.argv:
         if arg.startswith("--period="):
@@ -823,7 +824,7 @@ def main():
     cerebro.addstrategy(ETFStrategy)
 
     # Analyzers
-    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=0.02)
+    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
     cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
     cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')

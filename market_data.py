@@ -129,7 +129,7 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
         raise RuntimeError(f"{code} 无代码映射")
 
     # 腾讯接口: qfq=前复权, datalen=1200条
-    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
+    url = (f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?"
            f"param={sid},day,,,1200,qfq")
     try:
         req = urllib.request.Request(url, headers={

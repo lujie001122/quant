@@ -49,6 +49,7 @@ entry:
   dip_pct: -0.03            # 逆势补仓跌幅阈值(跌超3%)
   add_count_limit: 5        # 补仓次数上限
   position_cap: 1.00        # 单只ETF仓位上限100%(极限方案C)
+  confirm_entry_ratio: 1.00 # 确认加仓比例100%(极限方案C: 全仓加)
 
 # ── 做T参数 ──
 t0:

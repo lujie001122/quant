@@ -396,7 +396,15 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     if "熔断" in grid_signal:
                         pos.grid_frozen = True
             elif grid_signal != "无" and "卖出" in grid_signal:
-                if pos.active_shares > 0:
+                # 提取卖出档位做去重（与买入侧对称）
+                grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                if pos.last_grid_trigger == grid_key:
+                    action = "持有(等下一档)"
+                    reason = f"网格{grid_key}今日已触发,等下一档"
+                elif pos.active_shares > 0:
+                    pos.last_grid_trigger = grid_key
+                    # 更新base_price到当前价，使网格上移，防止同一档位重复触发
+                    pos.base_price = round(price, 3)
                     action = "卖出"
                     position_ratio = "5%(活动仓)"
                     reason = grid_signal
