@@ -51,10 +51,12 @@ with open(_CONFIG_PATH) as f:
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr, fetch_klines_daily_df
-from position_info import PositionInfo
-from strategies.rsi_macd import RSIMACDStrategy
+from position_info import PositionInfo, DEFENSE_CODE
+from strategies.rsi_macd import RSIMACDStrategy, check_defense
+from strategies.grid import GridStrategy
 
 _rsi_macd_strategy = RSIMACDStrategy()
+_grid_strategy = GridStrategy()
 
 
 def evaluate_stop(pos, t, price, today_str):
@@ -285,8 +287,19 @@ class ETFStrategy(bt.Strategy):
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
                 "pending_order": None, "stop_cooldown": False,
                 "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(最多3次)
-                "active_sell_until": "",  # 活动仓卖出冷却日期(3天内不重复)
+                "active_sell_until": "",  # 活动仓卖出冷却日期(已废弃，对齐实盘)
+                # 趋势止盈冷却机制: 单日最多3次，触发后3天冷却
+                "trend_sell_today": 0,  # 当日趋势止盈次数
+                "trend_sell_cooling_until": "",  # 趋势止盈冷却截止日期
+                # 破MA5卖活动仓冷却机制: 单日最多3次，触发后3天冷却
+                "ma5_sell_today": 0,  # 当日破MA5卖活动仓次数
+                "ma5_sell_cooling_until": "",  # 破MA5卖活动仓冷却截止日期
                 "breakeven_activated": False,  # 浮盈≥10%激活保本线
+                # 网格策略状态
+                "grid_base_price": 0.0,  # 网格基准价
+                "grid_frozen": False,  # 网格冻结
+                "last_grid_trigger": None,  # 上次网格触发
+                "last_reset_date": "",  # 上次网格重置日期
             }
 
         # 统计
@@ -294,6 +307,7 @@ class ETFStrategy(bt.Strategy):
         self.win_amount = 0.0; self.loss_amount = 0.0
         self.daily_values = []
         self._order_pending = {}  # data_name -> order
+        self._last_date = ""  # 上次交易日，用于每日计数器重置
 
     def notify_order(self, order):
         """订单状态回调"""
@@ -326,9 +340,9 @@ class ETFStrategy(bt.Strategy):
         return self.getposition(data).size > 0
 
     def _buy(self, data, pct, reason):
-        """按总资金比例买入，与实盘一致"""
+        """按总资金比例买入，与实盘一致：使用 TOTAL_FUND 而非动态 portfolio value"""
         name = data._name
-        target_value = min(self.broker.getvalue() * pct, self.broker.getvalue() * POSITION_CAP)
+        target_value = min(TOTAL_FUND * pct, TOTAL_FUND * POSITION_CAP)
         price = data.close[0]
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
@@ -379,7 +393,11 @@ class ETFStrategy(bt.Strategy):
         ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
         ps["active_sell_count"] = 0; ps["active_sell_until"] = ""
+        ps["trend_sell_today"] = 0; ps["trend_sell_cooling_until"] = ""
+        ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
+        ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
+        ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -387,6 +405,13 @@ class ETFStrategy(bt.Strategy):
 
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
+
+        # 每日计数器重置: 新交易日重置趋势止盈和破MA5卖活动仓的当日计数
+        if date_str != self._last_date:
+            self._last_date = date_str
+            for ps in self.ps.values():
+                ps["trend_sell_today"] = 0
+                ps["ma5_sell_today"] = 0
 
         for ps in self.ps.values():
             ps["bought_today"] = False
@@ -498,41 +523,131 @@ class ETFStrategy(bt.Strategy):
                 if ps["stop_level"] > 0 and ma20_v and price > ma20_v and dif_val > 0 and ms in ("红柱放大", "红柱缩短"):
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
-                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓(累计最多3次,3天冷却)
-                if (name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
-                        and ps["active_sell_count"] < 3
-                        and date_str >= ps["active_sell_until"]):
+                # 分级止损恢复: Level 2 单独恢复 (MACD未恶化+价格恢复，对齐实盘)
+                if ps["stop_level"] == 2 and ms not in ("死叉", "绿柱放大") and ma20_v and price > ma20_v and dif_val > 0:
+                    ps["stop_level"] = 0; ps["below_ma20"] = 0
+
+                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓 (冷却机制: 单日最多3次，触发后3天冷却)
+                # 检查冷却期
+                trend_cooling = ps["trend_sell_cooling_until"] and date_str <= ps["trend_sell_cooling_until"]
+                if (not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
+                        and ps["trend_sell_today"] < 3):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.10 / 100) * 100
                     if sell_shares >= 100:
                         if self._sell(d, 10, f"趋势止盈 红柱缩短+破MA5"):
-                            ps["active_sell_count"] += 1
-                            ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
+                            ps["trend_sell_today"] += 1
+                            # 当日达到3次 → 触发3天冷却
+                            if ps["trend_sell_today"] >= 3:
+                                try:
+                                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                                    ps["trend_sell_cooling_until"] = (dt + timedelta(days=3)).strftime("%Y-%m-%d")
+                                except:
+                                    ps["trend_sell_cooling_until"] = ""
 
-                # 破MA5卖活动仓5%: RSI>50时(累计最多3次,3天冷却)
-                if (name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
-                        and ps["active_sell_count"] < 3
-                        and date_str >= ps["active_sell_until"]):
+                # 破MA5卖活动仓5%: RSI>50时 (冷却机制: 单日最多3次，触发后3天冷却)
+                # 检查冷却期
+                ma5_cooling = ps["ma5_sell_cooling_until"] and date_str <= ps["ma5_sell_cooling_until"]
+                if (not ma5_cooling and name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
+                        and ps["ma5_sell_today"] < 3):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.05 / 100) * 100
                     if sell_shares >= 100:
                         if self._sell(d, 5, f"破MA5卖活动仓5% RSI={rsi_val:.1f}"):
-                            ps["active_sell_count"] += 1
-                            ps["active_sell_until"] = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=3)).strftime("%Y-%m-%d")
+                            ps["ma5_sell_today"] += 1
+                            # 当日达到3次 → 触发3天冷却
+                            if ps["ma5_sell_today"] >= 3:
+                                try:
+                                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                                    ps["ma5_sell_cooling_until"] = (dt + timedelta(days=3)).strftime("%Y-%m-%d")
+                                except:
+                                    ps["ma5_sell_cooling_until"] = ""
+
+                # ═══ 网格策略 (对齐实盘) ═══
+                # 网格基准价初始化
+                if ps["grid_base_price"] == 0.0 and ps["base"] > 0:
+                    ps["grid_base_price"] = ps["base"]
+                elif ps["grid_base_price"] == 0.0 and ps["first_price"] > 0:
+                    ps["grid_base_price"] = ps["first_price"]
+
+                # 网格解冻: 站上MA5解冻
+                if ps["grid_frozen"] and ma5_v and price > ma5_v:
+                    ps["grid_frozen"] = False
+
+                if ps["grid_base_price"] > 0:
+                    # 计算动态间距 (ATR/price 钳制)
+                    atr_pct_grid = atr_val / price if atr_val and price > 0 else 0.025
+                    spacing = round(max(0.0125, min(0.05, 0.6 * 0.025 + 0.4 * atr_pct_grid)), 4)
+
+                    # 网格重置检查
+                    upper_limit = ps["grid_base_price"] * (1 + spacing * 4)
+                    lower_limit = ps["grid_base_price"] * (1 - spacing * 6)
+                    if price > upper_limit and ps["last_reset_date"] != date_str:
+                        ps["grid_base_price"] = round(price, 3)
+                        ps["last_reset_date"] = date_str
+                    elif price < lower_limit and ps["last_reset_date"] != date_str:
+                        ps["grid_base_price"] = round(price, 3)
+                        ps["last_reset_date"] = date_str
+
+                    # 网格信号评估
+                    grid_signal, grid_weight = _grid_strategy.evaluate_grid_signals(
+                        price, ps["grid_base_price"], spacing, ps["grid_frozen"])
+
+                    # 网格买入
+                    if grid_signal != "无" and "买入" in grid_signal and not ps["grid_frozen"] and name not in self._order_pending:
+                        grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                        if ps["last_grid_trigger"] != grid_key:
+                            ps["last_grid_trigger"] = grid_key
+                            pct = grid_weight  # 网格权重 (0.20-0.40)
+                            if self._buy(d, pct, f"网格{grid_signal}"):
+                                ps["bought_today"] = True
+                                if "熔断" in grid_signal:
+                                    ps["grid_frozen"] = True
+                            ps["last_grid_trigger"] = None  # 重置，允许下次触发
+
+                    # 网格卖出
+                    if grid_signal != "无" and "卖出" in grid_signal and name not in self._order_pending:
+                        grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                        if ps["last_grid_trigger"] != grid_key:
+                            ps["last_grid_trigger"] = grid_key
+                            # 卖活动仓
+                            active_shares = int(shares * ACTIVE_RATIO)
+                            if active_shares >= 100:
+                                sell_shares = int(active_shares * 0.20 / 100) * 100
+                                if sell_shares >= 100:
+                                    if self._sell(d, 20, f"网格{grid_signal}"):
+                                        ps["grid_base_price"] = round(price, 3)  # 上移基准价
+                            ps["last_grid_trigger"] = None  # 重置
 
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+
+            # 防御盾过滤: 计算全市场弱势信号(对齐实盘)
+            defense_weak = False
+            if DEFENSE_CODE and DEFENSE_CODE in self.ps:
+                for dd in self.datas:
+                    if dd._name == DEFENSE_CODE:
+                        dd_price = dd.close[0]
+                        dd_ma20 = self.ma20[DEFENSE_CODE][0]
+                        dd_dif = self.macd[DEFENSE_CODE].dif[0]
+                        dd_ms = MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡")
+                        if dd_ma20 and dd_price < dd_ma20 and dd_dif is not None and dd_dif < 0 and dd_ms in ("死叉", "绿柱放大"):
+                            defense_weak = True
+                        break
+            if defense_weak and name != DEFENSE_CODE:
+                continue  # 防御标的弱势，全市场暂停建仓（防御标自身除外）
+
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and atr_ok:
                 entered = False
 
-                # 通道1: RSI抄底 (RSI缺失时不抄底)
-                if not entered and rsi_val is not None and rsi_val <= 80 and ms == "金叉":
+                # 通道1: RSI抄底 (RSI=None时放行，对齐实盘)
+                if not entered and (rsi_val is None or rsi_val <= 80) and ms == "金叉":
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道2: 趋势跟踪
-                if not entered and ps["empty_days"] > 10 and price > ma20_v and ms in ("红柱放大", "红柱缩短"):
+                # 通道2: 趋势跟踪 (空仓>10天+MACD红柱，去掉MA20过滤对齐实盘)
+                if not entered and ps["empty_days"] > 10 and ms in ("红柱放大", "红柱缩短"):
                     if self._buy(d, 0.30, f"趋势跟踪30% 空仓{ps['empty_days']}d"):
                         self._init_on_entry(ps, price); entered = True
 
@@ -566,8 +681,8 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓 (需MA5连续2日站稳)
-                elif price > ps["first_price"] and ps["build_phase"] == 1 and ps["ma5_touch_count"] >= 2:
+                # 确认加仓 (price>first_price OR ma5_touch>=2，对齐实盘OR逻辑)
+                elif (price > ps["first_price"] or ps["ma5_touch_count"] >= 2) and ps["build_phase"] == 1:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
                         ao_ok = False
