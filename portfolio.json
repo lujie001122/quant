@@ -26,7 +26,7 @@
         "2026-08-19": {
           "buy_count": 0,
           "t0_count": 0,
-          "trend_profit_count": 1
+          "trend_profit_count": 3
         }
       },
       "trend_profit_trigger_date": "2026-08-19",
@@ -62,7 +62,7 @@
         "2026-08-19": {
           "buy_count": 0,
           "t0_count": 0,
-          "trend_profit_count": 1
+          "trend_profit_count": 3
         }
       },
       "trend_profit_trigger_date": "2026-08-19",
@@ -303,5 +303,5 @@
     "cash": 134712.75,
     "market_value": 88414.8
   },
-  "last_updated": "2026-08-19 15:00"
+  "last_updated": "2026-08-19 15:40"
 }
