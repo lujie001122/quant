@@ -23,6 +23,11 @@ inverted_weights: [0.20, 0.25, 0.30, 0.35, 0.40]  # 倒金字塔权重
 # ── 冷却期 ──
 cooldown_days: 2            # 清仓后冷静期(天)
 
+# ── 趋势止盈冷却 ──
+trend_profit:
+  max_daily: 3              # 单日最多触发3次
+  cooldown_days: 3          # 触发后冷却3天(从次日算起)
+
 # ── 防御标的 ──
 defense_code: "159611"      # 防御标的: 电力ETF
 

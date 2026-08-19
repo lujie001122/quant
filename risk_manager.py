@@ -188,14 +188,17 @@ class RiskManager:
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # 趋势止盈(MACD红柱缩短+破MA5)
+        # 趋势止盈(MACD红柱缩短+破MA5) — 带冷却机制
         if t["macd_status"] == "红柱缩短" and price < t["ma5"]:
-            stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
+            if pos.can_trend_profit_today(today_str):
+                stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
+                pos.record_trend_profit(today_str)
 
-        # 破MA5卖活动仓5%
+        # 破MA5卖活动仓5% — 带冷却机制
         if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
-            if pos.active_shares > 0:
+            if pos.active_shares > 0 and pos.can_ma5_sell_today(today_str):
                 stop_actions.append(("破MA5卖活动仓5%", "sell_active_5pct"))
+                pos.record_ma5_sell(today_str)
 
         return stop_actions
 

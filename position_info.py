@@ -44,6 +44,8 @@ def _load_config():
         _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 极限方案C: 100%
         _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 极限方案C
         _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)  # 极限方案C
+        _DEFAULTS['trend_profit_max_daily'] = cfg.get('trend_profit', {}).get('max_daily', 3)
+        _DEFAULTS['trend_profit_cooldown_days'] = cfg.get('trend_profit', {}).get('cooldown_days', 3)
     except Exception:
         pass
     return _DEFAULTS
@@ -63,6 +65,9 @@ INVERTED_WEIGHTS = _config['inverted_weights']
 MAX_PER_ETF = _config.get('max_per_etf', 44000)
 MAX_POSITION_RATIO = _config.get('max_position_ratio', 0.50)
 MAX_DAILY_LOSS_PCT = _config.get('max_daily_loss_pct', 0.12)
+
+TREND_PROFIT_MAX_DAILY = _config.get('trend_profit_max_daily', 3)
+TREND_PROFIT_COOLDOWN_DAYS = _config.get('trend_profit_cooldown_days', 3)
 
 
 class PositionInfo:
@@ -97,6 +102,8 @@ class PositionInfo:
         self.prev_macd_status = None
         self.breakeven_activated = False
         self.entry_avg_cost = 0.0
+        self.trend_profit_trigger_date = None
+        self.ma5_sell_trigger_date = None
 
     @property
     def entry_cost(self):
@@ -123,9 +130,9 @@ class PositionInfo:
         return MAX_DAILY_T0
 
     def _get_daily_log(self, date_str):
-        log = self.daily_trade_log.get(date_str, {"buy_count": 0, "t0_count": 0})
+        log = self.daily_trade_log.get(date_str, {"buy_count": 0, "t0_count": 0, "trend_profit_count": 0, "ma5_sell_count": 0})
         if not isinstance(log, dict):
-            log = {"buy_count": 0, "t0_count": 0}
+            log = {"buy_count": 0, "t0_count": 0, "trend_profit_count": 0, "ma5_sell_count": 0}
         return log
 
     def can_buy_today(self, date_str, atr_pct=None):
@@ -141,8 +148,50 @@ class PositionInfo:
         log["buy_count"] = log.get("buy_count", 0) + 1
 
     def record_t0(self, date_str):
-        log = self.daily_trade_log.setdefault(date_str, {"buy_count": 0, "t0_count": 0})
+        log = self.daily_trade_log.setdefault(date_str, {"buy_count": 0, "t0_count": 0, "trend_profit_count": 0, "ma5_sell_count": 0})
         log["t0_count"] = log.get("t0_count", 0) + 1
+
+    def can_trend_profit_today(self, date_str):
+        """趋势止盈冷却检查：单日最多 N 次，触发后冷却 N 天（从次日算起）"""
+        log = self._get_daily_log(date_str)
+        if log.get("trend_profit_count", 0) >= TREND_PROFIT_MAX_DAILY:
+            return False
+        if self.trend_profit_trigger_date is None:
+            return True
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            d = _dt.strptime(date_str, "%Y-%m-%d")
+            t = _dt.strptime(self.trend_profit_trigger_date, "%Y-%m-%d")
+            cooldown_end = t + _td(days=TREND_PROFIT_COOLDOWN_DAYS)
+            return d <= t or d > cooldown_end
+        except Exception:
+            return True
+
+    def record_trend_profit(self, date_str):
+        log = self.daily_trade_log.setdefault(date_str, {"buy_count": 0, "t0_count": 0, "trend_profit_count": 0, "ma5_sell_count": 0})
+        log["trend_profit_count"] = log.get("trend_profit_count", 0) + 1
+        self.trend_profit_trigger_date = date_str
+
+    def can_ma5_sell_today(self, date_str):
+        """破MA5卖活动仓冷却检查：单日最多 N 次，触发后冷却 N 天（从次日算起）"""
+        log = self._get_daily_log(date_str)
+        if log.get("ma5_sell_count", 0) >= TREND_PROFIT_MAX_DAILY:
+            return False
+        if self.ma5_sell_trigger_date is None:
+            return True
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            d = _dt.strptime(date_str, "%Y-%m-%d")
+            t = _dt.strptime(self.ma5_sell_trigger_date, "%Y-%m-%d")
+            cooldown_end = t + _td(days=TREND_PROFIT_COOLDOWN_DAYS)
+            return d <= t or d > cooldown_end
+        except Exception:
+            return True
+
+    def record_ma5_sell(self, date_str):
+        log = self.daily_trade_log.setdefault(date_str, {"buy_count": 0, "t0_count": 0, "trend_profit_count": 0, "ma5_sell_count": 0})
+        log["ma5_sell_count"] = log.get("ma5_sell_count", 0) + 1
+        self.ma5_sell_trigger_date = date_str
 
     def is_in_cooldown(self, date_str):
         if self.cooldown_until is None: return False
@@ -243,6 +292,8 @@ class PositionInfo:
             "empty_days": self.empty_days,
             "empty_days_date": self.empty_days_date,
             "daily_trade_log": {today_str: self.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
+            "trend_profit_trigger_date": self.trend_profit_trigger_date,
+            "ma5_sell_trigger_date": self.ma5_sell_trigger_date,
             "shares": self.shares,
             "avg_cost": self.avg_cost,
             "current_price": self.current_price,
@@ -275,3 +326,5 @@ class PositionInfo:
         self.avg_cost = data.get("avg_cost", self.avg_cost)
         self.current_price = data.get("current_price", self.current_price)
         self.entry_avg_cost = data.get("entry_avg_cost", 0.0)
+        self.trend_profit_trigger_date = data.get("trend_profit_trigger_date")
+        self.ma5_sell_trigger_date = data.get("ma5_sell_trigger_date")
