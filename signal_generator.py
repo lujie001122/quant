@@ -146,9 +146,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                             p.daily_trade_log[today_str] = saved_log[today_str]
                     # 持仓数量从 portfolio 恢复（即使没有 _signal_state 也要恢复持仓）
                     pos_pf = pf_data["positions"].get(code, {})
-                    if pos_pf.get("shares", 0) > 0:
-                        p.shares = pos_pf["shares"]
-                        p.cost = pos_pf.get("total_cost", pos_pf["shares"] * pos_pf.get("avg_cost", 0))
+                    p.shares = pos_pf.get("shares", 0)
+                    if p.shares > 0:
+                        p.cost = pos_pf.get("total_cost", p.shares * pos_pf.get("avg_cost", 0))
                         p.avg_cost = pos_pf["avg_cost"]
                         p.current_price = pos_pf.get("current_price", 0.0)
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
