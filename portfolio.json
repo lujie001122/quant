@@ -11,13 +11,13 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-18",
-      "peak_price": 0.733,
+      "peak_price": 0.736,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 48.47,
+      "prev_rsi": 49.57,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -25,9 +25,12 @@
       "daily_trade_log": {
         "2026-08-19": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 0,
+          "trend_profit_count": 1
         }
       },
+      "trend_profit_trigger_date": "2026-08-19",
+      "ma5_sell_trigger_date": null,
       "shares": 83800,
       "avg_cost": 0.728,
       "current_price": 0.76,
@@ -44,7 +47,7 @@
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-18",
-      "peak_price": 0.649,
+      "peak_price": 0.652,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
@@ -58,9 +61,12 @@
       "daily_trade_log": {
         "2026-08-19": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 0,
+          "trend_profit_count": 1
         }
       },
+      "trend_profit_trigger_date": "2026-08-19",
+      "ma5_sell_trigger_date": null,
       "shares": 23600,
       "avg_cost": 0.667,
       "current_price": 0.674,
@@ -96,6 +102,8 @@
           "t0_count": 0
         }
       },
+      "trend_profit_trigger_date": null,
+      "ma5_sell_trigger_date": null,
       "shares": 0,
       "avg_cost": 0,
       "current_price": 1.104,
@@ -118,7 +126,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 47.5,
+      "prev_rsi": 48.41,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [
         "2026-08-12",
@@ -132,6 +140,8 @@
           "t0_count": 0
         }
       },
+      "trend_profit_trigger_date": null,
+      "ma5_sell_trigger_date": null,
       "shares": 0,
       "avg_cost": 0,
       "current_price": 1.647,
@@ -167,6 +177,8 @@
           "t0_count": 0
         }
       },
+      "trend_profit_trigger_date": null,
+      "ma5_sell_trigger_date": null,
       "shares": 0,
       "avg_cost": 0.86,
       "current_price": 1.101,
@@ -221,6 +233,8 @@
           "t0_count": 0
         }
       },
+      "trend_profit_trigger_date": null,
+      "ma5_sell_trigger_date": null,
       "shares": 0,
       "avg_cost": 0,
       "current_price": 1.063,
@@ -254,6 +268,8 @@
           "t0_count": 0
         }
       },
+      "trend_profit_trigger_date": null,
+      "ma5_sell_trigger_date": null,
       "shares": 0,
       "avg_cost": 0.332,
       "current_price": 0.357,
@@ -287,5 +303,5 @@
     "cash": 134712.75,
     "market_value": 88414.8
   },
-  "last_updated": "2026-08-19 14:40"
+  "last_updated": "2026-08-19 15:00"
 }

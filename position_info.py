@@ -44,8 +44,8 @@ def _load_config():
         _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 极限方案C: 100%
         _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 极限方案C
         _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)  # 极限方案C
-        _DEFAULTS['trend_profit_max_daily'] = cfg.get('trend_profit', {}).get('max_daily', 3)
-        _DEFAULTS['trend_profit_cooldown_days'] = cfg.get('trend_profit', {}).get('cooldown_days', 3)
+        _DEFAULTS['trend_profit_max_daily'] = cfg.get('trend_profit', {}).get('max_daily', 5)
+        _DEFAULTS['trend_profit_cooldown_days'] = cfg.get('trend_profit', {}).get('cooldown_days', 1)
     except Exception:
         pass
     return _DEFAULTS
@@ -66,8 +66,8 @@ MAX_PER_ETF = _config.get('max_per_etf', 44000)
 MAX_POSITION_RATIO = _config.get('max_position_ratio', 0.50)
 MAX_DAILY_LOSS_PCT = _config.get('max_daily_loss_pct', 0.12)
 
-TREND_PROFIT_MAX_DAILY = _config.get('trend_profit_max_daily', 3)
-TREND_PROFIT_COOLDOWN_DAYS = _config.get('trend_profit_cooldown_days', 3)
+TREND_PROFIT_MAX_DAILY = _config.get('trend_profit_max_daily', 5)
+TREND_PROFIT_COOLDOWN_DAYS = _config.get('trend_profit_cooldown_days', 1)
 
 
 class PositionInfo:
