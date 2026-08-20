@@ -686,7 +686,40 @@ class SignalExecutor:
         print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
         print("=" * 60)
 
-        # ═══ 全撤 ═══
+        # ═══ 下单前检查 orders/ 目录（去重检查）═══
+        # 先同步同花顺委托状态，获取最新的 pending/filled 信息
+        # 注意：必须在 revoke_all 之前调用，否则 revoke_all 会将 pending 标记为 revoked
+        # 导致 pending 订单对去重检查不可见，造成重复下单
+        pending_map, filled_codes = self._check_pending_orders(mode, sync_entrust=True)
+        if filled_codes:
+            print(f"[EXECUTE] 去重: {len(filled_codes)} 笔已成交/已挂单，跳过重复信号")
+        if pending_map:
+            print(f"[EXECUTE] 当前 pending 挂单: {len(pending_map)} 笔")
+
+        # ═══ 过滤信号：同标的同日同方向已有 pending/filled 订单，跳过 ═══
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
+
+        actual_actionable = []
+        for code, sig in actionable:
+            trade_type = sig["trade_type"]
+            action = sig.get("action", "")
+            sig_mode = self._trade_type_to_mode(trade_type)
+            sig_direction = self._get_signal_direction(trade_type, action)
+            if (code, sig_mode, sig_direction) in filled_codes:
+                print(f"  ⏭️ {code} mode={sig_mode} dir={sig_direction} 今日已有订单(pending/filled)，跳过")
+                skip_count += 1
+                continue
+            actual_actionable.append((code, sig))
+
+        if not actual_actionable:
+            print("[EXECUTE] 所有信号均已被去重过滤，跳过执行")
+            self._cleanup_intent_files()
+            self._cleanup_old_intent_files()
+            return
+
+        # ═══ 全撤（仅撤掉不匹配新信号的 pending 订单）═══
         print("[EXECUTE] 全撤所有未成交委托...")
         try:
             revoke_proc = self._subprocess.run(
@@ -708,28 +741,13 @@ class SignalExecutor:
         except Exception as e:
             print(f"  ⚠️ revoke_all 异常: {e}，继续执行...")
 
-        # ═══ 撤单后重新收集 filled_codes ═══
-        pending_map, filled_codes = self._check_pending_orders(mode, sync_entrust=False)
-        if filled_codes:
-            print(f"[EXECUTE] 去重: {len(filled_codes)} 笔已成交/已挂单，跳过重复信号")
-        if pending_map:
-            print(f"[EXECUTE] 当前 pending 挂单: {len(pending_map)} 笔")
-
-        success_count = 0
-        fail_count = 0
-        skip_count = 0
-
-        for i, (code, sig) in enumerate(actionable):
+        for i, (code, sig) in enumerate(actual_actionable):
             trade_type = sig["trade_type"]
             action = sig.get("action", "")
 
-            # 去重检查
+            # 方向信息（供后续 filled_codes 更新和 intent 写入使用）
             sig_mode = self._trade_type_to_mode(trade_type)
             sig_direction = self._get_signal_direction(trade_type, action)
-            if (code, sig_mode, sig_direction) in filled_codes:
-                print(f"  ⏭️ {code} mode={sig_mode} dir={sig_direction} 今日已成交，跳过")
-                skip_count += 1
-                continue
 
             # 获取当前实时价
             signal_price_str = sig.get("price", "0")
@@ -912,7 +930,7 @@ class SignalExecutor:
 
             # ═══ 执行命令（含重试） ═══
             direction = self._signal_direction(sig)
-            print(f"\n[{i+1}/{len(actionable)}] {label}")
+            print(f"\n[{i+1}/{len(actual_actionable)}] {label}")
             print(f"  → {' '.join(cmd)}")
 
             # [注释] retry_cmd 不再使用
@@ -1020,7 +1038,7 @@ class SignalExecutor:
             if not success:
                 fail_count += 1
 
-            if i < len(actionable) - 1:
+            if i < len(actual_actionable) - 1:
                 time.sleep(3)
 
         print("\n" + "=" * 60)
