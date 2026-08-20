@@ -222,7 +222,7 @@ def get_tracked_codes():
 
     codes = set()
     if pool:
-        codes.update(pool["codes"])
+        codes.update(pool.get("etf_pool", pool.get("codes", [])))
     else:
         codes.update(_DEFAULT_CODES)
     codes.update(pf.get("positions", {}).keys())
