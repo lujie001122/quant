@@ -50,7 +50,7 @@ class MoneyManager:
             return 0
         target_value = fund * ratio
         shares = int(target_value / price / round_lot) * round_lot
-        return max(shares, 0)
+        return max(shares, 5000)
 
     @staticmethod
     def calc_position_size_percent(pos, ratio, round_lot=100):
@@ -63,7 +63,7 @@ class MoneyManager:
         if not pos.has_position or pos.shares < round_lot:
             return 0
         shares = int(pos.shares * ratio / round_lot) * round_lot
-        return max(shares, min(pos.shares, round_lot)) if shares < round_lot else shares
+        return max(shares, 5000)
 
     @staticmethod
     def calc_t0_shares(pos, ratio=0.30, round_lot=100):
@@ -76,7 +76,7 @@ class MoneyManager:
         if not pos.has_position or pos.shares < round_lot:
             return 0
         shares = int(pos.shares * ratio / round_lot) * round_lot
-        return shares if shares >= round_lot else min(pos.shares, round_lot)
+        return max(shares, 5000)
 
     @staticmethod
     def calc_position_ratio(pos, price, total_fund=None):
