@@ -30,24 +30,29 @@ from evolving.evolving import EvolvingSim
 
 
 def main():
+    no_revoke = "--no-revoke" in sys.argv
+
     print("=" * 50)
-    print("同花顺全撤 + 杀进程 + 重启")
+    print("同花顺" + ("杀进程 + 重启（不撤单）" if no_revoke else "全撤 + 杀进程 + 重启"))
     print("=" * 50)
 
-    # 1. 全撤所有买卖委托
-    print("\n[1/4] 全撤所有买卖委托...")
-    try:
-        e = EvolvingSim()
-        result = e.revokeEntrust(revokeType='allBuyAndSell')
-        if result is not None:
-            ok = result[0] if isinstance(result, (list, tuple)) else result
-            msg = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else str(result)
-            print(f"  {'✅ 全撤成功' if ok else '⚠️ 全撤失败'}: {msg}")
-        else:
-            print(f"  ⚠️ 全撤返回 None（可能无委托或同花顺未运行）")
-    except Exception as ex:
-        print(f"  ⚠️ 全撤异常: {ex}")
-    time.sleep(2)
+    if no_revoke:
+        print("\n[1/4] ⏭️ 跳过撤单（--no-revoke）")
+    else:
+        # 1. 全撤所有买卖委托
+        print("\n[1/4] 全撤所有买卖委托...")
+        try:
+            e = EvolvingSim()
+            result = e.revokeEntrust(revokeType='allBuyAndSell')
+            if result is not None:
+                ok = result[0] if isinstance(result, (list, tuple)) else result
+                msg = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else str(result)
+                print(f"  {'✅ 全撤成功' if ok else '⚠️ 全撤失败'}: {msg}")
+            else:
+                print(f"  ⚠️ 全撤返回 None（可能无委托或同花顺未运行）")
+        except Exception as ex:
+            print(f"  ⚠️ 全撤异常: {ex}")
+        time.sleep(2)
 
     # 2. 杀同花顺进程
     print("\n[2/4] 杀同花顺进程...")
