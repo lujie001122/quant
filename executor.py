@@ -964,20 +964,12 @@ class SignalExecutor:
                         break
 
                     elif err_type == "tonghuashun_disconnect":
-                        if attempt < max_retries:
-                            print(f"  ⚠️ 同花顺断连，激活窗口后重试 ({attempt}/{max_retries})...")
-                            os.system("osascript -e 'tell application \"同花顺\" to activate'")
-                            time.sleep(2)
-                        else:
-                            if stdout:
-                                print(stdout.strip())
-                            if stderr_out:
-                                print(f"  [stderr] {stderr_out.strip()}")
-                            alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连(3次重试全失败)。"
-                            # [注释] retry_cmd 不再使用
-                            print(alert_msg, file=sys.stderr)
-                            final_error = err_detail
-                            final_error_type = err_type
+                        print(f"  ⚠️ 同花顺断连，跳过当前信号")
+                        alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连，跳过该信号。"
+                        print(alert_msg, file=sys.stderr)
+                        final_error = err_detail
+                        final_error_type = err_type
+                        break
 
                     elif err_type == "not_filled":
                         if stdout:
