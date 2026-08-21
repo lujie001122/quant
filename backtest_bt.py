@@ -106,9 +106,12 @@ CODES["000725"] = _DEFAULT_CODES["000725"]
 #  Data fetch (腾讯前复权)
 # ═══════════════════════════════════════════════
 
-def fetch_daily(code, sid):
+def fetch_daily(code, sid, data_start=None, data_end=None):
     """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily"""
-    klines = fetch_klines_daily(code)
+    # 默认拉全量（回退用），调用方可传入 data_start/data_end 限制区间
+    start = data_start or "20250101"
+    end = data_end or "20261231"
+    klines = fetch_klines_daily(code, start=start, end=end)
     if not klines:
         return None
     df = pd.DataFrame(klines)
@@ -892,10 +895,14 @@ def main():
         trade_start, trade_end = TRADE_START, TRADE_END
 
     print("▸ 拉取历史K线 (腾讯前复权 API)...")
+    # 计算K线拉取起始日: trade_start 往前推 120 个交易日（预热期）
+    data_start = (pd.Timestamp(trade_start) - pd.offsets.BDay(120)).strftime("%Y%m%d")
+    data_end = pd.Timestamp(trade_end).strftime("%Y%m%d")
+    print(f"  K线区间: {data_start} → {data_end} (预热120个交易日)")
     dataframes = {}
     for code, cfg in active_codes.items():
         try:
-            df = fetch_daily(code, cfg["sid"])
+            df = fetch_daily(code, cfg["sid"], data_start=data_start, data_end=data_end)
             dataframes[code] = df
             print(f"  ✓ {code} {cfg['name']:10s}  {len(df):3d} 条K线 (前复权)")
         except Exception as e:

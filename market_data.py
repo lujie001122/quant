@@ -171,6 +171,10 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             # 数据源标识: 腾讯主源
             for k in klines:
                 k["source"] = "tencent"
+            # 按 start/end 过滤（start/end 为 YYYYMMDD 格式，K线日期为 YYYY-MM-DD）
+            start_dt = datetime.strptime(start, "%Y%m%d").strftime("%Y-%m-%d")
+            end_dt = datetime.strptime(end, "%Y%m%d").strftime("%Y-%m-%d")
+            klines = [k for k in klines if start_dt <= k["date"] <= end_dt]
             return klines
     except Exception as e:
         logger.warning(f"{code} 腾讯接口失败: {e}, 降级为akshare")
