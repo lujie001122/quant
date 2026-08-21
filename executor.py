@@ -573,9 +573,9 @@ class SignalExecutor:
 
         from market_data import fetch_realtime_quotes, ETFS
         from position_info import PositionInfo, TOTAL_FUND
-        from strategies.rsi_macd import _parse_position_ratio, _get_position_shares
         from state_center import (
             get_position_shares,
+            parse_position_ratio,
             check_pending_orders,
             trade_type_to_mode,
             get_signal_direction,
@@ -591,8 +591,8 @@ class SignalExecutor:
         self._ETFS = ETFS
         self._PositionInfo = PositionInfo
         self._TOTAL_FUND = TOTAL_FUND
-        self._parse_position_ratio = _parse_position_ratio
-        self._get_position_shares = _get_position_shares
+        self._parse_position_ratio = parse_position_ratio
+        self._get_position_shares = get_position_shares
         self._check_pending_orders = check_pending_orders
         self._trade_type_to_mode = trade_type_to_mode
         self._get_signal_direction = get_signal_direction
@@ -788,21 +788,7 @@ class SignalExecutor:
             # ── 做T信号 ──
             if trade_type == "t0" and t0_pair:
                 pair_shares = t0_pair.get("shares", 0)
-                sig_atr = sig.get("atr_5min") or sig.get("atr", 0)
-                try:
-                    sig_atr = float(sig_atr)
-                except (ValueError, TypeError):
-                    sig_atr = 0.0
-                old_pair_price = t0_pair.get("pair_price", 0)
-
-                # P2-10: 使用 money_manager 统一计算做T配对价（固定+230价差）
-                from money_manager import calc_t0_pair_price
-                if "买入" in action:
-                    pair_price = calc_t0_pair_price(price, pair_shares, True) if pair_shares >= 100 else old_pair_price
-                elif "卖出" in action:
-                    pair_price = calc_t0_pair_price(price, pair_shares, False) if pair_shares >= 100 else old_pair_price
-                else:
-                    pair_price = old_pair_price
+                pair_price = t0_pair.get("pair_price", 0)  # B5: 直接使用t0_pair中的固定价差
 
                 if pair_shares >= 100:
                     print(f"[EXECUTE] {code} 做T配对价: 固定价差=230元, 当前价={price:.3f}, 股数={pair_shares}, 配对价={pair_price:.3f}")
@@ -961,6 +947,22 @@ class SignalExecutor:
 
                         # ═══ 同时写 intent 记录 ═══
                         self._write_intent_for_sg(code, sig_mode, sig_direction)
+
+                        # ═══ O4: 清仓成交确认后重置持仓状态 ═══
+                        if trade_type == "liquidate":
+                            try:
+                                from state_center import load_portfolio, save_portfolio
+                                from position_info import PositionInfo
+                                pf = load_portfolio()
+                                pos_data = pf.get("positions", {}).get(code, {})
+                                if pos_data:
+                                    pos = PositionInfo()
+                                    pos.from_dict(pos_data)
+                                    pos.reset_on_liquidate(today_str)
+                                    pf["positions"][code] = pos.to_dict(today_str)
+                                    save_portfolio(pf)
+                            except Exception:
+                                pass
                         break
 
                     elif err_type == "tonghuashun_disconnect":

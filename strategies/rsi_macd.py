@@ -115,29 +115,8 @@ def _compute_trailing_stop(avg_cost, peak_price, reached_8pct, reached_15pct):
 # 通用辅助
 # ═══════════════════════════════════════════════
 
-def _parse_position_ratio(ratio_str):
-    """从 position_ratio 字符串中提取比例(0-1浮点数)"""
-    if not ratio_str:
-        return 0.0
-    try:
-        pct_str = ratio_str.split("%")[0]
-        return float(pct_str) / 100.0
-    except (ValueError, IndexError):
-        return 0.0
-
-
-def _get_position_shares(code):
-    """从 portfolio.json 读取当前持仓股数"""
-    import json as _json, os as _os
-    pf_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "portfolio.json")
-    try:
-        if _os.path.exists(pf_path):
-            with open(pf_path, "r") as f:
-                pf = _json.load(f)
-            return pf.get("positions", {}).get(code, {}).get("shares", 0)
-    except Exception:
-        pass
-    return 0
+# _parse_position_ratio / _get_position_shares 已统一到 state_center
+# 统一使用 state_center.parse_position_ratio / state_center.get_position_shares
 
 
 def check_defense(DEFENSE_CODE, all_tech, realtime):
@@ -230,14 +209,17 @@ class RSIMACDStrategy(BaseStrategy):
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # P1: 趋势止盈(MACD红柱缩短+破MA5)
+        # P1: 趋势止盈(MACD红柱缩短+破MA5) — 带冷却检查 (B6)
         if t["macd_status"] == "红柱缩短" and price < t["ma5"]:
-            stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
+            if pos.can_trend_profit_today(today_str):
+                stop_actions.append((f"趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
+                pos.record_trend_profit(today_str)
 
-        # 破MA5卖活动仓5%(active=0时不触发)
+        # 破MA5卖活动仓5%(active=0时不触发) — 带冷却检查 (B6)
         if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
-            if pos.active_shares > 0:
-                stop_actions.append(("破MA5卖活动仓5%", "sell_active_5pct"))
+            if pos.active_shares > 0 and pos.can_ma5_sell_today(today_str):
+                stop_actions.append((f"破MA5卖活动仓5%", "sell_active_5pct"))
+                pos.record_ma5_sell(today_str)
 
         return stop_actions
 

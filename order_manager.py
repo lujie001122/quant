@@ -22,7 +22,7 @@ import os
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from decision_engine import OrderIntent
 
@@ -447,10 +447,10 @@ class OrderManager:
     # ══════════════════════════════════════════════════
 
     def _order_filepath(self, order: Order) -> str:
-        """生成订单文件路径 — 与现有格式兼容"""
+        """生成订单文件路径 — Q6: 文件名含 order_id 避免覆盖"""
         today = datetime.now().strftime("%Y-%m-%d")
         return os.path.join(
-            self.orders_dir, f"{today}_{order.code}_{order.action}.json"
+            self.orders_dir, f"{today}_{order.code}_{order.action}_{order.order_id}.json"
         )
 
     def _persist_order(self, order: Order) -> None:

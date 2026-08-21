@@ -50,8 +50,8 @@ with open(_CONFIG_PATH) as f:
     CONF = yaml.safe_load(f)
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
-from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr, fetch_klines_daily_df
-from position_info import PositionInfo, DEFENSE_CODE
+from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
+from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
 from strategies.grid import GridStrategy
 
@@ -295,6 +295,7 @@ class ETFStrategy(bt.Strategy):
                 "ma5_sell_today": 0,  # 当日破MA5卖活动仓次数
                 "ma5_sell_cooling_until": "",  # 破MA5卖活动仓冷却截止日期
                 "breakeven_activated": False,  # 浮盈≥10%激活保本线
+                "entry_avg_cost": 0.0,  # 建仓锁定均价(止损用)
                 # 网格策略状态
                 "grid_base_price": 0.0,  # 网格基准价
                 "grid_frozen": False,  # 网格冻结
@@ -385,6 +386,7 @@ class ETFStrategy(bt.Strategy):
         ps["base"] = price; ps["first_price"] = price
         ps["build_phase"] = 1; ps["bought_today"] = True
         ps["add_count"] = 0; ps["empty_days"] = 0; ps["stop_cooldown"] = False
+        ps["entry_avg_cost"] = price  # B1: 锁定建仓均价供止损判断
 
     def _full_liquidate_state(self, ps, date_str):
         """清仓后重置状态"""
@@ -396,6 +398,7 @@ class ETFStrategy(bt.Strategy):
         ps["trend_sell_today"] = 0; ps["trend_sell_cooling_until"] = ""
         ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
+        ps["entry_avg_cost"] = 0.0
         ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
         ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
         try:
@@ -412,6 +415,8 @@ class ETFStrategy(bt.Strategy):
             for ps in self.ps.values():
                 ps["trend_sell_today"] = 0
                 ps["ma5_sell_today"] = 0
+                # B3: 跨天重置网格触发档位
+                ps["last_grid_trigger"] = None
 
         for ps in self.ps.values():
             ps["bought_today"] = False
@@ -460,9 +465,10 @@ class ETFStrategy(bt.Strategy):
                 # ── 极限方案C: 取消保本止盈 ──
                 # (保本止盈已移除，保留注释以标记)
 
-                # 均价止损20%(极限方案C)
-                if avg > 0 and price <= avg * 0.80:
-                    self._close(d, f"均价止损20% avg={avg:.3f}")
+                # 均价止损20%(极限方案C) — B1: 用锁定建仓均价而非动态均价
+                entry_cost = ps.get("entry_avg_cost", 0) or avg
+                if entry_cost > 0 and price <= entry_cost * 0.80:
+                    self._close(d, f"均价止损20% entry_cost={entry_cost:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 
@@ -527,39 +533,39 @@ class ETFStrategy(bt.Strategy):
                 if ps["stop_level"] == 2 and ms not in ("死叉", "绿柱放大") and ma20_v and price > ma20_v and dif_val > 0:
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
-                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓 (冷却机制: 单日最多3次，触发后3天冷却)
+                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓 (冷却机制: 从config读取)
                 # 检查冷却期
                 trend_cooling = ps["trend_sell_cooling_until"] and date_str <= ps["trend_sell_cooling_until"]
                 if (not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
-                        and ps["trend_sell_today"] < 3):
+                        and ps["trend_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.10 / 100) * 100
                     if sell_shares >= 100:
                         if self._sell(d, 10, f"趋势止盈 红柱缩短+破MA5"):
                             ps["trend_sell_today"] += 1
-                            # 当日达到3次 → 触发3天冷却
-                            if ps["trend_sell_today"] >= 3:
+                            # 当日达到上限 → 触发冷却
+                            if ps["trend_sell_today"] >= TREND_PROFIT_MAX_DAILY:
                                 try:
                                     dt = datetime.strptime(date_str, "%Y-%m-%d")
-                                    ps["trend_sell_cooling_until"] = (dt + timedelta(days=3)).strftime("%Y-%m-%d")
+                                    ps["trend_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
                                 except:
                                     ps["trend_sell_cooling_until"] = ""
 
-                # 破MA5卖活动仓5%: RSI>50时 (冷却机制: 单日最多3次，触发后3天冷却)
+                # 破MA5卖活动仓5%: RSI>50时 (冷却机制: 从config读取)
                 # 检查冷却期
                 ma5_cooling = ps["ma5_sell_cooling_until"] and date_str <= ps["ma5_sell_cooling_until"]
                 if (not ma5_cooling and name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
-                        and ps["ma5_sell_today"] < 3):
+                        and ps["ma5_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.05 / 100) * 100
                     if sell_shares >= 100:
                         if self._sell(d, 5, f"破MA5卖活动仓5% RSI={rsi_val:.1f}"):
                             ps["ma5_sell_today"] += 1
                             # 当日达到3次 → 触发3天冷却
-                            if ps["ma5_sell_today"] >= 3:
+                            if ps["ma5_sell_today"] >= TREND_PROFIT_MAX_DAILY:
                                 try:
                                     dt = datetime.strptime(date_str, "%Y-%m-%d")
-                                    ps["ma5_sell_cooling_until"] = (dt + timedelta(days=3)).strftime("%Y-%m-%d")
+                                    ps["ma5_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
                                 except:
                                     ps["ma5_sell_cooling_until"] = ""
 
@@ -603,7 +609,7 @@ class ETFStrategy(bt.Strategy):
                                 ps["bought_today"] = True
                                 if "熔断" in grid_signal:
                                     ps["grid_frozen"] = True
-                            ps["last_grid_trigger"] = None  # 重置，允许下次触发
+                            # B3: 不立即重置，跨天重置
 
                     # 网格卖出
                     if grid_signal != "无" and "卖出" in grid_signal and name not in self._order_pending:
@@ -617,23 +623,25 @@ class ETFStrategy(bt.Strategy):
                                 if sell_shares >= 100:
                                     if self._sell(d, 20, f"网格{grid_signal}"):
                                         ps["grid_base_price"] = round(price, 3)  # 上移基准价
-                            ps["last_grid_trigger"] = None  # 重置
+                            # B3: 不立即重置，跨天重置
 
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
 
-            # 防御盾过滤: 计算全市场弱势信号(对齐实盘)
+            # 防御盾过滤: 统一调用 check_defense (O3: 替代内联逻辑)
             defense_weak = False
-            if DEFENSE_CODE and DEFENSE_CODE in self.ps:
+            if DEFENSE_CODE:
                 for dd in self.datas:
                     if dd._name == DEFENSE_CODE:
                         dd_price = dd.close[0]
-                        dd_ma20 = self.ma20[DEFENSE_CODE][0]
-                        dd_dif = self.macd[DEFENSE_CODE].dif[0]
-                        dd_ms = MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡")
-                        if dd_ma20 and dd_price < dd_ma20 and dd_dif is not None and dd_dif < 0 and dd_ms in ("死叉", "绿柱放大"):
-                            defense_weak = True
+                        all_tech_d = {DEFENSE_CODE: {
+                            "ma20": self.ma20[DEFENSE_CODE][0],
+                            "dif": self.macd[DEFENSE_CODE].dif[0],
+                            "macd_status": MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡"),
+                        }}
+                        realtime_d = {DEFENSE_CODE: {"price": dd_price}}
+                        defense_weak = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
                         break
             if defense_weak and name != DEFENSE_CODE:
                 continue  # 防御标的弱势，全市场暂停建仓（防御标自身除外）

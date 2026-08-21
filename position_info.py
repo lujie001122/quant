@@ -200,9 +200,9 @@ class PositionInfo:
     def update_trailing_stop(self, price):
         if not self.has_position or self.avg_cost == 0: return
         profit_pct = self.profit_pct(price)
-        if profit_pct >= 8 - 0.01 and not self.reached_8pct:
+        if profit_pct >= 8 - 0.0001 and not self.reached_8pct:
             self.reached_8pct = True
-        if profit_pct >= 15 - 0.01 and not self.reached_15pct:
+        if profit_pct >= 15 - 0.0001 and not self.reached_15pct:
             self.reached_15pct = True
             self.trailing_stop_price = self.avg_cost * 1.05
         if self.reached_15pct and self.peak_price > 0:

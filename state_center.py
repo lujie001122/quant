@@ -30,7 +30,6 @@ state_center.py — 统一状态中心
 
 import json
 import os
-import sys
 import time
 from datetime import datetime
 

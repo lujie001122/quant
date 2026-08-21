@@ -123,7 +123,7 @@ class DecisionEngine:
         if positions is None:
             positions = self._load_positions_from_state()
         if realtime is None:
-            realtime = self._load_realtime_from_portfolio(code=None)
+            realtime = self._fetch_realtime_quotes(code=None)
         if portfolio_data is None:
             from state_center import load_portfolio
             portfolio_data = load_portfolio()
@@ -223,21 +223,10 @@ class DecisionEngine:
         if shares < 100:
             return None
 
-        # ── 做T配对价 ──
+        # ── 做T配对价: 直接使用 t0_pair 中的固定价差
         pair_price = 0.0
         if trade_type == "t0" and t0_pair:
             pair_price = t0_pair.get("pair_price", 0.0)
-            # 用实时 ATR 重算配对价
-            sig_atr = sig.get("atr_5min") or sig.get("atr", 0)
-            try:
-                sig_atr = float(sig_atr)
-            except (ValueError, TypeError):
-                sig_atr = 0.0
-            if sig_atr > 0:
-                if direction == '买入':
-                    pair_price = round(price + sig_atr * 1.1, 3)
-                else:
-                    pair_price = round(price - sig_atr * 1.1, 3)
 
         # ── 确定来源 ──
         source = self._get_source(trade_type, sig)
@@ -293,7 +282,7 @@ class DecisionEngine:
             positions[code] = pos
         return positions
 
-    def _load_realtime_from_portfolio(self, code: Optional[str] = None) -> Dict:
+    def _fetch_realtime_quotes(self, code: Optional[str] = None) -> Dict:
         """从 market_data 获取实时行情（价格供决策使用）"""
         try:
             from market_data import fetch_realtime_quotes
@@ -391,7 +380,8 @@ class DecisionEngine:
 
     def _calc_buy_shares(self, code: str, sig: Dict, price: float) -> int:
         """计算买入股数"""
-        ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
+        from state_center import parse_position_ratio
+        ratio = parse_position_ratio(sig.get("position_ratio", ""))
         fund = self._get_fund(code)
         return self.mm.calc_position_size(fund, ratio, price)
 
@@ -408,24 +398,14 @@ class DecisionEngine:
         if trade_type == "liquidate":
             return current_shares
 
-        ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
+        from state_center import parse_position_ratio
+        ratio = parse_position_ratio(sig.get("position_ratio", ""))
         if ratio > 0:
             shares = int(current_shares * ratio / 100) * 100
         else:
             shares = int(current_shares * 0.30 / 100) * 100
 
         return min(shares, current_shares) if shares >= 100 else current_shares
-
-    @staticmethod
-    def _parse_position_ratio(ratio_str: str) -> float:
-        """解析持仓比例字符串 → 浮点数"""
-        if not ratio_str:
-            return 0.0
-        try:
-            ratio_str = ratio_str.replace("%", "").strip()
-            return float(ratio_str) / 100.0
-        except (ValueError, TypeError):
-            return 0.0
 
     @staticmethod
     def _get_fund(code: str) -> float:

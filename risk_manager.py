@@ -31,6 +31,16 @@ from position_info import (
     DEAD_RATIO, ACTIVE_RATIO,
 )
 
+# 从 config.yaml 读取日亏损限额
+import yaml as _yaml, os as _os
+_config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'config.yaml')
+try:
+    with open(_config_path, 'r') as _f:
+        _cfg = _yaml.safe_load(_f) or {}
+    _daily_loss = _cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)
+except Exception:
+    _daily_loss = 0.20
+
 
 class RiskManager:
     """风险管理器 — 统一处理止损、仓位上限、日亏损限额、连续亏损熔断"""
@@ -41,7 +51,7 @@ class RiskManager:
             from state_center import StateCenter
             state_center = StateCenter.get_instance()
         self._state = state_center
-        self.MAX_DAILY_LOSS_PCT = 0.05  # 单日最大亏损5%
+        self.MAX_DAILY_LOSS_PCT = _daily_loss  # O2: 从config.yaml读取
         self.MAX_CONSECUTIVE_LOSS_DAYS = 3  # 连续亏损3天熔断
         self.MIN_DAILY_LOSS_PCT = 0.01  # 日亏损>1%才计入连续亏损
         self.daily_pnl = 0.0

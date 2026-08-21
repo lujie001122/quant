@@ -158,7 +158,7 @@ class MoneyManager:
             return 0
         target_value = fund * grid_weight
         shares = int(target_value / price / round_lot) * round_lot
-        return max(shares, 0)
+        return max(shares, 5000)  # Q3: 5000股下限
 
     # ══════════════════════════════════════════════
     # 4. 综合工具

@@ -9,12 +9,11 @@ GridStrategy — 网格加仓减仓策略
 """
 
 from strategies.base import BaseStrategy
+from position_info import GRID_BUY_LEVELS, GRID_SELL_LEVELS, INVERTED_WEIGHTS
 
 
-# 常量
-GRID_BUY_LEVELS = 5
-GRID_SELL_LEVELS = 3
-INVERTED_WEIGHTS = [0.20, 0.25, 0.30, 0.35, 0.40]
+# 常量（从 position_info 统一导入，避免跨文件定义不一致）
+# GRID_BUY_LEVELS / GRID_SELL_LEVELS / INVERTED_WEIGHTS 已从 position_info 导入
 
 
 class GridStrategy(BaseStrategy):

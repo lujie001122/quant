@@ -37,7 +37,6 @@ from strategies.rsi_macd import (
     is_auction_time,
     t0_buy_score, t0_sell_score,
     _compute_stop_loss_price, _compute_breakeven_price, _compute_trailing_stop,
-    _parse_position_ratio, _get_position_shares,
     check_defense,
 )
 from strategies.grid import (
@@ -164,6 +163,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     if p.last_grid_trigger and p.last_grid_trigger != today_str:
                         p.last_grid_trigger = None
         except Exception:
+            print("[WARN] portfolio.json 读取失败，跳过状态恢复")
             pass
 
     # 获取数据
@@ -329,7 +329,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = "100%"
                     reason = sig_name
                     trade_type = "liquidate"
-                    pos.reset_on_liquidate(today_str)
+                    # O4: reset_on_liquidate 移到成交确认后执行，此处不再提前重置
                     break
                 elif sig_type in ("reduce_30pct_all",):
                     action = "减仓"
