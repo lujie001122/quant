@@ -157,9 +157,17 @@ class RSIMACDStrategy(BaseStrategy):
         if not pos.has_position:
             return stop_actions
 
-        # ── 均价止损20%: 从买入均价跌20%无条件清仓(极限方案C: 放宽) ──
-        if pos.entry_cost > 0 and price <= pos.entry_cost * 0.80:
-            stop_actions.append((f"均价止损20%(avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
+        # ── 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% ──
+        if pos.entry_cost > 0:
+            pos_ratio = pos.shares * price / TOTAL_FUND if price > 0 else 0
+            if pos_ratio > 0.80:
+                stop_pct = 0.15
+            elif pos_ratio >= 0.50:
+                stop_pct = 0.20
+            else:
+                stop_pct = 0.25
+            if price <= pos.entry_cost * (1 - stop_pct):
+                stop_actions.append((f"均价止损{stop_pct*100:.0f}%(仓位{pos_ratio*100:.0f}%,avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
 
         # ── 硬止盈60%: base_price*1.60(极限方案C) ──
         if pos.base_price and price >= pos.base_price * 1.60:
@@ -209,8 +217,8 @@ class RSIMACDStrategy(BaseStrategy):
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # P1: 趋势止盈(MACD红柱缩短+破MA5) — 带冷却检查 (B6)
-        if t["macd_status"] == "红柱缩短" and price < t["ma5"]:
+        # P1: 趋势止盈(MACD红柱缩短+破MA5+破MA10) — 带冷却检查 (B6)
+        if t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
             if pos.can_trend_profit_today(today_str):
                 stop_actions.append((f"趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
                 pos.record_trend_profit(today_str)
@@ -265,10 +273,15 @@ class RSIMACDStrategy(BaseStrategy):
 
         rsi_ok = t["rsi"] is not None and t["rsi"] > 40
         rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
+        # 多头排列: MA5>MA10>MA20 才允许建仓
+        bullish_align = t["ma5"] and t.get("ma10") and t["ma20"] and t["ma5"] > t["ma10"] > t["ma20"]
 
         if pos.build_phase == 0:
-            # 通道1: RSI抄底 (MACD金叉+RSI≤80) → 30%(极限方案C: 去掉MA20过滤)
-            if t["macd_status"] == "金叉" and (t["rsi"] is None or t["rsi"] <= 80) and pos.can_buy_today(today_str, atr_pct):
+            # 所有建仓通道要求多头排列
+            if not bullish_align:
+                return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA10={t.get('ma10',0):.3f},MA20={t['ma20']:.3f}),暂停建仓")
+            # 通道1: RSI抄底 (MACD金叉+RSI≤50) → 30%(极限方案C: 去掉MA20过滤)
+            if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= 50) and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
                 return (action, position_ratio, trade_type, f"RSI抄底:MACD金叉(RSI={t['rsi']})")
 
@@ -295,10 +308,10 @@ class RSIMACDStrategy(BaseStrategy):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(Test抄底)")
                 return (action, position_ratio, trade_type, f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5")
 
-            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5) → 60%(极限方案C: 去掉MA20过滤+大幅提仓)
-            if t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_minimal and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
-                action, position_ratio, trade_type = pos._enter_position(today_str, price, "60%(试探)")
-                return (action, position_ratio, trade_type, f"试探建仓:60%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站上MA5)")
+            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5+站MA20) → 30%
+            if t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_ok and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
+                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(试探)")
+                return (action, position_ratio, trade_type, f"试探建仓:30%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站MA5+站MA20)")
 
             return ("持有(观望)", "0%", None, f"建仓条件未满足(MACD{t['macd_status']},RSI{t['rsi']})")
 
@@ -316,7 +329,7 @@ class RSIMACDStrategy(BaseStrategy):
                     pos.add_count += 1
                     return ("买入", "15%(补仓)", "buy", f"逆势补仓:跌{dip_pct*100:.0f}%加仓15%(MACD{t['macd_status']})")
 
-            # ── 确认加仓: 突破首笔价或回踩MA5站稳（需检查仓位上限）──
+            # ── 确认加仓: 突破首笔价或回踩MA5站稳 → 分3次每次30%，间隔1天 ──
             if price > pos.build_first_price or pos.ma5_touch_count >= 2:
                 ao_now = t.get("ao_now")
                 ao_5ago = t.get("ao_5ago")
@@ -326,16 +339,32 @@ class RSIMACDStrategy(BaseStrategy):
                 elif _position_capped:
                     return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 elif pos.can_buy_today(today_str, atr_pct):
+                    # 确认加仓分批: 最多3次, 每次30%, 间隔1天
+                    if not hasattr(pos, 'confirm_batch_count'):
+                        pos.confirm_batch_count = 0
+                    if not hasattr(pos, 'confirm_batch_date'):
+                        pos.confirm_batch_date = None
+                    if pos.confirm_batch_date == today_str:
+                        return ("持有(等确认)", None, None, f"确认加仓{pos.confirm_batch_count+1}/3批: 同日已加仓, 等下个交易日")
+                    if pos.confirm_batch_count >= 3:
+                        pos.build_phase = 2
+                        pos.base_price = pos.avg_cost
+                        pos.peak_price = price
+                        pos.add_count += 1
+                        return ("持有(建仓完成)", None, None, "确认加仓3批已完成, 进入phase2")
                     pos.record_buy(today_str)
-                    pos.build_phase = 2
-                    pos.base_price = pos.avg_cost
-                    pos.peak_price = price
-                    pos.build_first_price = price
-                    pos.reached_8pct = False
-                    pos.reached_15pct = False
-                    pos.trailing_stop_price = 0.0
+                    pos.confirm_batch_count += 1
+                    pos.confirm_batch_date = today_str
                     pos.add_count += 1
-                    return ("买入", "100%(分批2)", "buy", f"分批建仓2:确认加100%(突破首笔价{pos.build_first_price:.3f}或回踩MA5站稳)")
+                    if pos.confirm_batch_count >= 3:
+                        pos.build_phase = 2
+                        pos.base_price = pos.avg_cost
+                        pos.peak_price = price
+                        pos.build_first_price = price
+                        pos.reached_8pct = False
+                        pos.reached_15pct = False
+                        pos.trailing_stop_price = 0.0
+                    return ("买入", "30%(分批2)", "buy", f"确认加仓{pos.confirm_batch_count}/3批: 30%(突破或回踩MA5)" if pos.confirm_batch_count < 3 else "确认加仓3/3批完成→phase2")
                 else:
                     return ("持有(等确认)", None, None, "建仓确认信号出现但今日已买入,等明日")
             else:

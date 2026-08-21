@@ -266,7 +266,7 @@ class ETFStrategy(bt.Strategy):
         # 指标
         self.rsi = {}; self.macd = {}; self.ao = {}
         self.atr = {}
-        self.ma5 = {}; self.ma20 = {}
+        self.ma5 = {}; self.ma20 = {}; self.ma10 = {}
         for d in self.datas:
             n = d._name
             self.rsi[n] = WilderRSI(d.close)
@@ -274,6 +274,7 @@ class ETFStrategy(bt.Strategy):
             self.ao[n] = AOIndicator(d)
             self.atr[n] = bt.indicators.ATR(d, period=14)
             self.ma5[n] = bt.indicators.SMA(d.close, period=5)
+            self.ma10[n] = bt.indicators.SMA(d.close, period=10)
             self.ma20[n] = bt.indicators.SMA(d.close, period=20)
 
         # 每ETF状态
@@ -304,6 +305,7 @@ class ETFStrategy(bt.Strategy):
                 "grid_frozen": False,  # 网格冻结
                 "last_grid_trigger": None,  # 上次网格触发
                 "last_reset_date": "",  # 上次网格重置日期
+                "grid_entry_avg": 0.0,  # 网格买入均价(独立止损用)
             }
 
         # 统计
@@ -404,6 +406,9 @@ class ETFStrategy(bt.Strategy):
         ps["entry_avg_cost"] = 0.0
         ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
         ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
+        ps["grid_entry_avg"] = 0.0
+        ps["t0_pending"] = []
+        ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -443,6 +448,7 @@ class ETFStrategy(bt.Strategy):
             dif_val = self.macd[name].dif[0]
             ms = MACDStatus.STATUS_MAP.get(macd_status, "震荡")
             ma5_v = self.ma5[name][0]
+            ma10_v = self.ma10[name][0]
             ma20_v = self.ma20[name][0]
             ao_val = self.ao[name].ao[0]
             atr_val = self.atr[name].atr[0]
@@ -468,12 +474,28 @@ class ETFStrategy(bt.Strategy):
                 # ── 极限方案C: 取消保本止盈 ──
                 # (保本止盈已移除，保留注释以标记)
 
-                # 均价止损20%(极限方案C) — B1: 用锁定建仓均价而非动态均价
+                # 网格买入独立止损-10%: 网格买入均价跌10%止损
+                if ps.get("grid_entry_avg", 0) > 0 and price <= ps["grid_entry_avg"] * 0.90:
+                    grid_shares = int(shares * 0.20 / 100) * 100  # 卖20%仓位
+                    if grid_shares >= 100:
+                        if self._sell(d, 20, f"网格止损-10% grid_entry={ps['grid_entry_avg']:.3f}"):
+                            ps["grid_entry_avg"] = 0.0  # 止损后重置
+                            ps["peak_price"] = price
+
+                # 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% — B1: 用锁定建仓均价而非动态均价
                 entry_cost = ps.get("entry_avg_cost", 0) or avg
-                if entry_cost > 0 and price <= entry_cost * 0.80:
-                    self._close(d, f"均价止损20% entry_cost={entry_cost:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
+                if entry_cost > 0:
+                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
+                    if pos_ratio > 0.80:
+                        stop_pct = 0.15
+                    elif pos_ratio >= 0.50:
+                        stop_pct = 0.20
+                    else:
+                        stop_pct = 0.25
+                    if price <= entry_cost * (1 - stop_pct):
+                        self._close(d, f"均价止损{stop_pct*100:.0f}% 仓位{pos_ratio*100:.0f}% entry_cost={entry_cost:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
 
                 # 硬止盈60%(极限方案C)
                 if ps["base"] > 0 and price >= ps["base"] * 1.60:
@@ -536,11 +558,11 @@ class ETFStrategy(bt.Strategy):
                 if ps["stop_level"] == 2 and ms not in ("死叉", "绿柱放大") and ma20_v and price > ma20_v and dif_val > 0:
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
-                # 趋势止盈: MACD红柱缩短+破MA5 → 卖10%活动仓 (冷却机制: 从config读取)
+                # 趋势止盈: MACD红柱缩短+破MA5+破MA10 → 卖10%活动仓 (冷却机制: 从config读取)
                 # 检查冷却期
                 trend_cooling = ps["trend_sell_cooling_until"] and date_str <= ps["trend_sell_cooling_until"]
                 if (not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
-                        and ps["trend_sell_today"] < TREND_PROFIT_MAX_DAILY):
+                        and ma10_v and price < ma10_v and ps["trend_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.10 / 100) * 100
                     if sell_shares >= 100:
@@ -610,12 +632,21 @@ class ETFStrategy(bt.Strategy):
                             pct = grid_weight  # 网格权重 (0.20-0.40)
                             if self._buy(d, pct, f"网格{grid_signal}"):
                                 ps["bought_today"] = True
+                                # 更新网格买入均价
+                                if ps["grid_entry_avg"] == 0.0:
+                                    ps["grid_entry_avg"] = price
+                                else:
+                                    # 加权平均
+                                    ps["grid_entry_avg"] = (ps["grid_entry_avg"] * 0.5 + price * 0.5)
                                 if "熔断" in grid_signal:
                                     ps["grid_frozen"] = True
                             # B3: 不立即重置，跨天重置
 
-                    # 网格卖出
+                    # 网格卖出 (趋势止盈触发当天不触发网格卖出)
                     if grid_signal != "无" and "卖出" in grid_signal and name not in self._order_pending:
+                        # 趋势止盈互斥: 当天趋势止盈已触发则跳过网格卖出
+                        if ps["trend_sell_today"] > 0:
+                            continue
                         grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
                         if ps["last_grid_trigger"] != grid_key:
                             ps["last_grid_trigger"] = grid_key
@@ -627,6 +658,42 @@ class ETFStrategy(bt.Strategy):
                                     if self._sell(d, 20, f"网格{grid_signal}"):
                                         ps["grid_base_price"] = round(price, 3)  # 上移基准价
                             # B3: 不立即重置，跨天重置
+
+            # ═══ T0做T模拟 (RSI 45/55 + 固定230元配对) ═══
+                if has_pos and name not in self._order_pending and not ps["bought_today"]:
+                    t0_shares = max(int(shares * 0.20 / 100) * 100, 5000)  # 20%仓位, 最低5000
+                    # T0买入: RSI<45 超卖, 买入等反弹
+                    if rsi_val is not None and rsi_val < 45 and t0_shares >= 100:
+                        pair_price = round(price + 230.0 / t0_shares, 3)  # 配对卖出价
+                        if self._buy(d, 0.20, f"T0买入 RSI={rsi_val:.1f} pair={pair_price:.3f}"):
+                            # 模拟做T配对卖出: 以pair_price卖出同等股数
+                            ps["bought_today"] = True
+                            # 记录T0配对, 在次日或同日以pair_price卖出
+                            if "t0_pending" not in ps:
+                                ps["t0_pending"] = []
+                            ps["t0_pending"].append({"shares": t0_shares, "pair_price": pair_price, "date": date_str})
+                    # T0卖出: RSI>55 超买, 卖出等回落
+                    elif rsi_val is not None and rsi_val > 55 and t0_shares >= 100 and t0_shares <= shares:
+                        pair_price = round(price - 230.0 / t0_shares, 3)  # 配对买入价
+                        if self._sell(d, int(t0_shares/shares*100), f"T0卖出 RSI={rsi_val:.1f} pair={pair_price:.3f}"):
+                            # 记录T0配对买入
+                            if "t0_pending" not in ps:
+                                ps["t0_pending"] = []
+                            ps["t0_pending"].append({"shares": t0_shares, "pair_price": pair_price, "date": date_str, "is_buy_back": True})
+
+                # 处理T0配对: 检查是否有待配对的T0订单
+                if "t0_pending" in ps and ps["t0_pending"]:
+                    for t0 in list(ps["t0_pending"]):
+                        if t0.get("is_buy_back"):
+                            # T0卖出→配对买入: 以pair_price买入
+                            if price <= t0["pair_price"] and name not in self._order_pending:
+                                if self._buy(d, 0.20, f"T0配对买入 @{t0['pair_price']:.3f}"):
+                                    ps["t0_pending"].remove(t0)
+                        else:
+                            # T0买入→配对卖出: 以pair_price卖出
+                            if price >= t0["pair_price"] and name not in self._order_pending:
+                                if self._sell(d, int(t0["shares"]/shares*100) if shares > 0 else 20, f"T0配对卖出 @{t0['pair_price']:.3f}"):
+                                    ps["t0_pending"].remove(t0)
 
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
@@ -650,10 +717,13 @@ class ETFStrategy(bt.Strategy):
                 continue  # 防御标的弱势，全市场暂停建仓（防御标自身除外）
 
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and atr_ok:
+                # 多头排列: MA5>MA10>MA20才允许建仓
+                if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                    continue
                 entered = False
 
-                # 通道1: RSI抄底 (RSI=None时放行，对齐实盘)
-                if not entered and (rsi_val is None or rsi_val <= 80) and ms == "金叉":
+                # 通道1: RSI抄底 (RSI≤50+金叉)
+                if not entered and rsi_val is not None and rsi_val <= 50 and ms == "金叉":
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
@@ -677,9 +747,9 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.30, f"Test抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道6: 试探建仓 (RSI>30, 与strategy.py evaluate_entry 的 rsi_minimal 对齐)
-                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 30 and price > ma5_v:
-                    if self._buy(d, 0.60, f"试探建仓60% MACD{ms} RSI={rsi_val:.1f}"):
+                # 通道6: 试探建仓 (RSI>40+站MA5+站MA20+多头排列)
+                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 40 and price > ma5_v and ma20_v and price > ma20_v:
+                    if self._buy(d, 0.30, f"试探建仓30% MACD{ms} RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
             # ═══ ADD-ON LOGIC ═══
@@ -692,17 +762,35 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓 (price>first_price OR ma5_touch>=2，对齐实盘OR逻辑)
+                # 确认加仓分批: 分3次每次30%, 间隔1天
                 elif (price > ps["first_price"] or ps["ma5_touch_count"] >= 2) and ps["build_phase"] == 1:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
                         ao_ok = False
                     if ao_ok:
-                        if self._buy(d, CONFIRM_ENTRY_RATIO, f"确认加{CONFIRM_ENTRY_RATIO*100:.0f}% 突破→phase2"):
-                            ps["build_phase"] = 2; ps["bought_today"] = True; ps["add_count"] += 1
+                        # 确认加仓分批: 最多3次
+                        if "confirm_batch_count" not in ps:
+                            ps["confirm_batch_count"] = 0
+                        if "confirm_batch_date" not in ps:
+                            ps["confirm_batch_date"] = ""
+                        if ps.get("confirm_batch_date") == date_str:
+                            pass  # 同日已加仓, 等下个交易日
+                        elif ps["confirm_batch_count"] >= 3:
+                            ps["build_phase"] = 2
+                            ps["bought_today"] = True
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
                             ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
                             ps["breakeven_activated"] = False
+                        else:
+                            if self._buy(d, 0.30, f"确认加仓{ps['confirm_batch_count']+1}/3批30%"):
+                                ps["confirm_batch_count"] += 1
+                                ps["confirm_batch_date"] = date_str
+                                ps["add_count"] += 1
+                                if ps["confirm_batch_count"] >= 3:
+                                    ps["build_phase"] = 2; ps["bought_today"] = True
+                                    ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
+                                    ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
+                                    ps["breakeven_activated"] = False
                     else:
                         if price > ma5_v: ps["ma5_touch_count"] += 1
                         else: ps["ma5_touch_count"] = 0
@@ -771,11 +859,13 @@ class ETFStrategy(bt.Strategy):
             ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
             dif_val = self.macd[name].dif[0]
             ma5_v = self.ma5[name][0]
+            ma10_v = self.ma10[name][0]
             ma20_v = self.ma20[name][0]
             atr_val = self.atr[name].atr[0]
 
             t = {
                 "ma5": ma5_v,
+                "ma10": ma10_v,
                 "ma20": ma20_v,
                 "dif": dif_val,
                 "macd_status": ms,

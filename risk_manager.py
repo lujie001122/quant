@@ -146,9 +146,17 @@ class RiskManager:
         if not pos.has_position:
             return stop_actions
 
-        # ── 均价止损20%: 从买入均价跌20%无条件清仓(极限方案C: 放宽) ──
-        if pos.entry_cost > 0 and price <= pos.entry_cost * 0.80:
-            stop_actions.append((f"均价止损20%(avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
+        # ── 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% ──
+        if pos.entry_cost > 0:
+            pos_ratio = pos.shares * price / TOTAL_FUND if price > 0 else 0
+            if pos_ratio > 0.80:
+                stop_pct = 0.15
+            elif pos_ratio >= 0.50:
+                stop_pct = 0.20
+            else:
+                stop_pct = 0.25
+            if price <= pos.entry_cost * (1 - stop_pct):
+                stop_actions.append((f"均价止损{stop_pct*100:.0f}%(仓位{pos_ratio*100:.0f}%,avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
 
         # ── 硬止盈60%: base_price*1.60(极限方案C) ──
         if pos.base_price and price >= pos.base_price * 1.60:
@@ -198,8 +206,8 @@ class RiskManager:
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # 趋势止盈(MACD红柱缩短+破MA5) — 带冷却机制
-        if t["macd_status"] == "红柱缩短" and price < t["ma5"]:
+        # 趋势止盈(MACD红柱缩短+破MA5+破MA10) — 带冷却机制
+        if t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
             if pos.can_trend_profit_today(today_str):
                 stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
                 pos.record_trend_profit(today_str)
