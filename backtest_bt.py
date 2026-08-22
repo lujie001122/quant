@@ -690,8 +690,8 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道2: 趋势跟踪 (空仓>10天+MACD红柱，去掉MA20过滤对齐实盘)
-                if not entered and ps["empty_days"] > 10 and ms in ("红柱放大", "红柱缩短"):
+                # 通道2: 趋势跟踪 (空仓>5天+MACD红柱，去掉MA20过滤对齐实盘)
+                if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
                     if self._buy(d, 0.30, f"趋势跟踪30% 空仓{ps['empty_days']}d"):
                         self._init_on_entry(ps, price); entered = True
 
@@ -720,36 +720,36 @@ class ETFStrategy(bt.Strategy):
                 dip = (price - ps["first_price"]) / ps["first_price"]
                 avg = self._get_avg_cost(d)
 
-                # 补仓: RSI<40
-                if dip < -0.03 and ms not in ("死叉", "绿柱放大") and ps["add_count"] < 5 and (rsi_val is None or rsi_val < 40):
+                # 补仓: RSI<40, 跌5%以上
+                if dip < -0.05 and ms not in ("死叉", "绿柱放大") and ps["add_count"] < 5 and (rsi_val is None or rsi_val < 40):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓分批: 分3次每次30%, 间隔1天
+                # 确认加仓分批: 分2次每次30%, 间隔1天
                 elif (price > ps["first_price"] or ps["ma5_touch_count"] >= 2) and ps["build_phase"] == 1:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
                         ao_ok = False
                     if ao_ok:
-                        # 确认加仓分批: 最多3次
+                        # 确认加仓分批: 最多2次
                         if "confirm_batch_count" not in ps:
                             ps["confirm_batch_count"] = 0
                         if "confirm_batch_date" not in ps:
                             ps["confirm_batch_date"] = ""
                         if ps.get("confirm_batch_date") == date_str:
                             pass  # 同日已加仓, 等下个交易日
-                        elif ps["confirm_batch_count"] >= 3:
+                        elif ps["confirm_batch_count"] >= 2:
                             ps["build_phase"] = 2
                             ps["bought_today"] = True
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
                             ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
                             ps["breakeven_activated"] = False
                         else:
-                            if self._buy(d, 0.30, f"确认加仓{ps['confirm_batch_count']+1}/3批30%"):
+                            if self._buy(d, 0.30, f"确认加仓{ps['confirm_batch_count']+1}/2批30%"):
                                 ps["confirm_batch_count"] += 1
                                 ps["confirm_batch_date"] = date_str
                                 ps["add_count"] += 1
-                                if ps["confirm_batch_count"] >= 3:
+                                if ps["confirm_batch_count"] >= 2:
                                     ps["build_phase"] = 2; ps["bought_today"] = True
                                     ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
                                     ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
