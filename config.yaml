@@ -1,4 +1,4 @@
-active_ratio: 0.70
+active_ratio: 0.7
 ai_signal:
   confidence_threshold: 0.65
   enabled: false
@@ -34,7 +34,7 @@ backtest:
   trade_start: '2021-08-01'
 broker_type: sim
 cooldown_days: 2
-dead_ratio: 0.30
+dead_ratio: 0.3
 defense_code: '159611'
 entry:
   add_count_limit: 5

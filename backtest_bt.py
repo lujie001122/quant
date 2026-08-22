@@ -407,7 +407,6 @@ class ETFStrategy(bt.Strategy):
         ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
         ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
         ps["grid_entry_avg"] = 0.0
-        ps["t0_pending"] = []
         ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -659,42 +658,6 @@ class ETFStrategy(bt.Strategy):
                                         ps["grid_base_price"] = round(price, 3)  # 上移基准价
                             # B3: 不立即重置，跨天重置
 
-            # ═══ T0做T模拟 (RSI 45/55 + 固定230元配对) ═══
-                if has_pos and name not in self._order_pending and not ps["bought_today"]:
-                    t0_shares = max(int(shares * 0.20 / 100) * 100, 5000)  # 20%仓位, 最低5000
-                    # T0买入: RSI<45 超卖, 买入等反弹
-                    if rsi_val is not None and rsi_val < 45 and t0_shares >= 100:
-                        pair_price = round(price + 230.0 / t0_shares, 3)  # 配对卖出价
-                        if self._buy(d, 0.20, f"T0买入 RSI={rsi_val:.1f} pair={pair_price:.3f}"):
-                            # 模拟做T配对卖出: 以pair_price卖出同等股数
-                            ps["bought_today"] = True
-                            # 记录T0配对, 在次日或同日以pair_price卖出
-                            if "t0_pending" not in ps:
-                                ps["t0_pending"] = []
-                            ps["t0_pending"].append({"shares": t0_shares, "pair_price": pair_price, "date": date_str})
-                    # T0卖出: RSI>55 超买, 卖出等回落
-                    elif rsi_val is not None and rsi_val > 55 and t0_shares >= 100 and t0_shares <= shares:
-                        pair_price = round(price - 230.0 / t0_shares, 3)  # 配对买入价
-                        if self._sell(d, int(t0_shares/shares*100), f"T0卖出 RSI={rsi_val:.1f} pair={pair_price:.3f}"):
-                            # 记录T0配对买入
-                            if "t0_pending" not in ps:
-                                ps["t0_pending"] = []
-                            ps["t0_pending"].append({"shares": t0_shares, "pair_price": pair_price, "date": date_str, "is_buy_back": True})
-
-                # 处理T0配对: 检查是否有待配对的T0订单
-                if "t0_pending" in ps and ps["t0_pending"]:
-                    for t0 in list(ps["t0_pending"]):
-                        if t0.get("is_buy_back"):
-                            # T0卖出→配对买入: 以pair_price买入
-                            if price <= t0["pair_price"] and name not in self._order_pending:
-                                if self._buy(d, 0.20, f"T0配对买入 @{t0['pair_price']:.3f}"):
-                                    ps["t0_pending"].remove(t0)
-                        else:
-                            # T0买入→配对卖出: 以pair_price卖出
-                            if price >= t0["pair_price"] and name not in self._order_pending:
-                                if self._sell(d, int(t0["shares"]/shares*100) if shares > 0 else 20, f"T0配对卖出 @{t0['pair_price']:.3f}"):
-                                    ps["t0_pending"].remove(t0)
-
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
@@ -907,8 +870,9 @@ class ETFStrategy(bt.Strategy):
             if entry_result and entry_result[0] == "买入":
                 print(f"[VALIDATE] {date_str} {name} strategy.py入场: {entry_result[1]} {entry_result[3]}")
 
-        # P1-6: DecisionEngine 交叉验证 — 不改变交易，只记录差异
-        self._validate_decision_engine(date_str, strategy_positions)
+        # P1-6: DecisionEngine 交叉验证 — 已禁用：generate_signals() 联网拉实时行情，
+        # 回测每个 bar 都调导致极慢（3个月回测10分钟+），需离线数据源后才能启用
+        # self._validate_decision_engine(date_str, strategy_positions)
 
     def _validate_decision_engine(self, date_str, strategy_positions):
         """P1-6: 回测通过 DecisionEngine 管线做交叉验证。
