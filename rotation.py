@@ -518,10 +518,9 @@ def run_rotation(force_write=False):
         reverse=True,
     )
 
-    # ── 动量TOP3/4: 多周期确认(4w+8w都为正) + 同板块只取最高分 + RSI防追高 ──
+    # ── 动量TOP3/4: 多周期确认(4w+8w都为正) + 同板块只取最高分 ──
     momentum_picks = []
     picked_sectors = set()
-    overheat_watch = []  # RSI>65 过热观察，等回调
     for code, r in by_weighted:
         if len(momentum_picks) >= momentum_count:
             break
@@ -533,37 +532,19 @@ def run_rotation(force_write=False):
             continue
         if m8 is None or m8 <= 0:
             continue
-        # RSI防追高: >65 排除，放入过热观察
-        rsi = r.get("rsi")
-        if rsi is not None and rsi > 65:
-            overheat_watch.append((code, rsi))
-            continue
         if sector not in picked_sectors:
             momentum_picks.append(code)
             picked_sectors.add(sector)
 
-    # 标记动量池中RSI级别
-    mom_rsi_tags = {}
-    for c in momentum_picks:
-        rsi_v = results[c].get("rsi")
-        if rsi_v is not None and 40 <= rsi_v <= 55:
-            mom_rsi_tags[c] = f"✅优先(RSI={rsi_v:.1f})"
-        elif rsi_v is not None and 55 < rsi_v <= 65:
-            mom_rsi_tags[c] = f"⚠观察(RSI={rsi_v:.1f})"
-
-    mom_strs = [f"{c}({results[c]['weighted_score']:.1f})" + (f" {mom_rsi_tags[c]}" if c in mom_rsi_tags else "") for c in momentum_picks]
+    mom_strs = [f"{c}({results[c]['weighted_score']:.1f})" for c in momentum_picks]
     print(f"  动量池({len(momentum_picks)}/{momentum_count}): {', '.join(mom_strs)}")
-    if overheat_watch:
-        oh_strs = [f"{c}(RSI={v:.1f})" for c, v in overheat_watch]
-        print(f"  🔥 过热观察(RSI>65,等回调后可入选): {', '.join(oh_strs)}")
 
-    # ── 防御TOP2/3: 收紧条件 (回撤<15% + 动量>3% + 波动率>15% + RSI≤65防追高) ──
+    # ── 防御TOP2/3: 收紧条件 (回撤<15% + 动量>3% + 波动率>15%) ──
     defense_candidates = [
         (code, r) for code, r in results.items()
         if r["max_drawdown"] is not None and r["max_drawdown"] < 15
         and r["momentum_4w"] is not None and r["momentum_4w"] > 0.03
         and r["volatility"] is not None and r["volatility"] > 15
-        and r.get("rsi") is not None and r["rsi"] <= 65
         and code not in momentum_picks
     ]
     defense_candidates.sort(key=lambda x: x[1]["weighted_score"], reverse=True)
@@ -578,14 +559,13 @@ def run_rotation(force_write=False):
             defense_picks.append(code)
             defense_picked_sectors.add(sector)
 
-    # 放宽条件：回撤<20% + 动量>0% + 波动率>10% + RSI≤65
+    # 放宽条件：回撤<20% + 动量>0% + 波动率>10%
     if len(defense_picks) < defense_count:
         relaxed = [
             (code, r) for code, r in results.items()
             if r["max_drawdown"] is not None and r["max_drawdown"] < 20
             and r["momentum_4w"] is not None and r["momentum_4w"] > 0
             and r["volatility"] is not None and r["volatility"] > 10
-            and r.get("rsi") is not None and r["rsi"] <= 65
             and code not in momentum_picks and code not in defense_picks
         ]
         relaxed.sort(key=lambda x: x[1]["weighted_score"], reverse=True)
@@ -675,7 +655,6 @@ def run_rotation(force_write=False):
         "sector_heat": sector_avg,
         "momentum_picks": momentum_picks,
         "defense_picks": defense_picks,
-        "overheat_watch": [{"code": c, "rsi": round(v, 1)} for c, v in overheat_watch],
         "all_picks": all_picks,
         "current_pool": sorted(current_pool_codes),
         "etfs": {},
