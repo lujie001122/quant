@@ -217,7 +217,11 @@ def fetch_klines_daily_arrays(code, sid):
     返回:
       {closes, highs, lows, volumes} 或 None
     """
-    klines = fetch_klines_daily(code)
+    try:
+        klines = fetch_klines_daily(code)
+    except RuntimeError:
+        # 如果 code 映射失败（如指数 000001），用 sid 直接构造请求
+        klines = _fetch_klines_by_sid(sid)
     if not klines:
         return None
     return {
@@ -227,6 +231,47 @@ def fetch_klines_daily_arrays(code, sid):
         "volumes": [k["volume"] for k in klines],
         "dates": [k["date"] for k in klines],
     }
+
+
+def _fetch_klines_by_sid(sid):
+    """直接用 sid 从腾讯接口获取K线数据"""
+    import urllib.request
+    url = (f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?"
+           f"param={sid},day,,,1200,qfq")
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+
+        stock_data = raw.get("data", {})
+        qfq_key = None
+        for key in (sid, sid.lower(), sid.upper()):
+            if key in stock_data:
+                qfq_key = key
+                break
+        if not qfq_key:
+            return None
+
+        kline_list = stock_data[qfq_key].get("qfqday", [])
+        if not kline_list:
+            kline_list = stock_data[qfq_key].get("day", [])
+
+        klines = []
+        for item in kline_list:
+            if len(item) >= 6:
+                klines.append({
+                    "date": str(item[0]),
+                    "open": float(item[1]) if item[1] else 0,
+                    "close": float(item[2]) if item[2] else 0,
+                    "high": float(item[3]) if item[3] else 0,
+                    "low": float(item[4]) if item[4] else 0,
+                    "volume": float(item[5]) if item[5] else 0,
+                })
+        return klines if klines else None
+    except Exception:
+        return None
 
 
 def calc_max_drawdown(closes):

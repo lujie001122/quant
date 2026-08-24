@@ -21,29 +21,70 @@ from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr, fetch_kli
 from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
 
 # ═══════════════════════════════════════════════════════
-#  20只ETF候选池 (原硬编码)
+#  45只ETF候选池 (扩容 v2.1 — 覆盖AI/机器人/芯片/新能源/军工/低空等)
 # ═══════════════════════════════════════════════════════
 ETF_CANDIDATES = {
-    "512480": {"name": "半导体ETF",    "sid": "sh512480", "sector": "科技"},
-    "515880": {"name": "通信ETF",      "sid": "sh515880", "sector": "科技"},
-    "515050": {"name": "中证全指ETF",  "sid": "sh515050", "sector": "宽基"},
-    "512100": {"name": "中证1000ETF",  "sid": "sh512100", "sector": "宽基"},
-    "510050": {"name": "上证50ETF",    "sid": "sh510050", "sector": "宽基"},
-    "510300": {"name": "沪深300ETF",   "sid": "sh510300", "sector": "宽基"},
-    "159915": {"name": "创业板ETF",    "sid": "sz159915", "sector": "宽基"},
-    "588000": {"name": "科创50ETF",    "sid": "sh588000", "sector": "科技"},
-    "159869": {"name": "游戏ETF",      "sid": "sz159869", "sector": "消费"},
-    "512880": {"name": "证券ETF",      "sid": "sh512880", "sector": "金融"},
-    "512690": {"name": "酒ETF",        "sid": "sh512690", "sector": "消费"},
-    "159766": {"name": "旅游ETF",      "sid": "sz159766", "sector": "消费"},
-    "516670": {"name": "畜牧ETF",      "sid": "sz516670", "sector": "农业"},
-    "515790": {"name": "光伏ETF",      "sid": "sh515790", "sector": "新能源"},
-    "510880": {"name": "红利ETF",      "sid": "sh510880", "sector": "红利"},
-    "517090": {"name": "共赢ETF",      "sid": "sh517090", "sector": "红利"},
-    "516510": {"name": "云计算ETF",    "sid": "sh516510", "sector": "科技"},
-    "516160": {"name": "新能源ETF",    "sid": "sh516160", "sector": "新能源"},
-    "512170": {"name": "医疗ETF",      "sid": "sh512170", "sector": "医药"},
-    "159611": {"name": "电力ETF",      "sid": "sz159611", "sector": "公用"},
+    # ── 科技/半导体/芯片 ──
+    "512480": {"name": "半导体ETF",      "sid": "sh512480", "sector": "半导体"},
+    "512760": {"name": "半导体设备ETF",  "sid": "sh512760", "sector": "半导体"},
+    "588200": {"name": "科创芯片ETF",    "sid": "sh588200", "sector": "芯片"},
+    "159995": {"name": "芯片ETF",        "sid": "sz159995", "sector": "芯片"},
+    "588000": {"name": "科创50ETF",      "sid": "sh588000", "sector": "科创"},
+    # ── AI/机器人/算力 ──
+    "159819": {"name": "AI龙头ETF",      "sid": "sz159819", "sector": "AI"},
+    "159770": {"name": "机器人ETF",      "sid": "sz159770", "sector": "机器人"},
+    "562500": {"name": "机器人ETF基金",  "sid": "sh562500", "sector": "机器人"},
+    "516510": {"name": "云计算ETF",      "sid": "sh516510", "sector": "算力"},
+    "515000": {"name": "科技ETF",        "sid": "sh515000", "sector": "科技"},
+    # ── 通信/5G ──
+    "515880": {"name": "通信ETF",        "sid": "sh515880", "sector": "通信"},
+    "515050": {"name": "中证全指ETF",    "sid": "sh515050", "sector": "通信"},
+    # ── 宽基 ──
+    "512100": {"name": "中证1000ETF",    "sid": "sh512100", "sector": "宽基"},
+    "510050": {"name": "上证50ETF",      "sid": "sh510050", "sector": "宽基"},
+    "510300": {"name": "沪深300ETF",     "sid": "sh510300", "sector": "宽基"},
+    "159915": {"name": "创业板ETF",      "sid": "sz159915", "sector": "宽基"},
+    "510500": {"name": "中证500ETF",     "sid": "sh510500", "sector": "宽基"},
+    "159845": {"name": "中证1000ETF",    "sid": "sz159845", "sector": "宽基"},
+    # ── 军工/国防 ──
+    "512660": {"name": "军工ETF",        "sid": "sh512660", "sector": "军工"},
+    "512670": {"name": "国防ETF",        "sid": "sh512670", "sector": "军工"},
+    # ── 低空经济 ──
+    "159528": {"name": "低空经济ETF",    "sid": "sz159528", "sector": "低空"},
+    # ── 消费电子/家电/汽车 ──
+    "159732": {"name": "消费电子ETF",    "sid": "sz159732", "sector": "消费电子"},
+    "159996": {"name": "家电ETF",        "sid": "sz159996", "sector": "家电"},
+    "516110": {"name": "汽车ETF",        "sid": "sh516110", "sector": "汽车"},
+    # ── 消费/游戏/酒/旅游 ──
+    "159869": {"name": "游戏ETF",        "sid": "sz159869", "sector": "游戏"},
+    "512690": {"name": "酒ETF",          "sid": "sh512690", "sector": "消费"},
+    "159766": {"name": "旅游ETF",        "sid": "sz159766", "sector": "消费"},
+    # ── 新能源/光伏/电池/新能源车 ──
+    "515790": {"name": "光伏ETF",        "sid": "sh515790", "sector": "光伏"},
+    "516160": {"name": "新能源ETF",      "sid": "sh516160", "sector": "新能源"},
+    "159806": {"name": "新能源车ETF",    "sid": "sz159806", "sector": "新能源车"},
+    "561910": {"name": "电池ETF",        "sid": "sh561910", "sector": "电池"},
+    # ── 金融/证券/银行 ──
+    "512880": {"name": "证券ETF",        "sid": "sh512880", "sector": "证券"},
+    "512800": {"name": "银行ETF",        "sid": "sh512800", "sector": "银行"},
+    "512070": {"name": "非银ETF",        "sid": "sh512070", "sector": "金融"},
+    # ── 红利/高股息 ──
+    "510880": {"name": "红利ETF",        "sid": "sh510880", "sector": "红利"},
+    "517090": {"name": "共赢ETF",        "sid": "sh517090", "sector": "红利"},
+    # ── 医药/创新药 ──
+    "512170": {"name": "医疗ETF",        "sid": "sh512170", "sector": "医药"},
+    "512010": {"name": "医药ETF",        "sid": "sh512010", "sector": "医药"},
+    "159929": {"name": "医药ETF",        "sid": "sz159929", "sector": "医药"},
+    # ── 周期/有色/煤炭/稀土 ──
+    "512400": {"name": "有色ETF",        "sid": "sh512400", "sector": "周期"},
+    "515220": {"name": "煤炭ETF",        "sid": "sh515220", "sector": "周期"},
+    "516150": {"name": "稀土ETF",        "sid": "sh516150", "sector": "周期"},
+    # ── 农业/畜牧 ──
+    "516670": {"name": "畜牧ETF",        "sid": "sz516670", "sector": "农业"},
+    "159865": {"name": "养殖ETF",        "sid": "sz159865", "sector": "农业"},
+    # ── 公用/电力/基建 ──
+    "159611": {"name": "电力ETF",        "sid": "sz159611", "sector": "公用"},
+    "516970": {"name": "基建ETF",        "sid": "sh516970", "sector": "基建"},
 }
 
 # ═══════════════════════════════════════════════════════
@@ -135,6 +176,88 @@ def calc_momentum_4w(closes):
     if price_4w_ago <= 0:
         return None
     return (current - price_4w_ago) / price_4w_ago
+
+
+def calc_momentum_8w(closes):
+    """计算近8周(40个交易日)涨幅"""
+    if len(closes) < 40:
+        return None
+    current = closes[-1]
+    price_8w_ago = closes[-40]
+    if price_8w_ago <= 0:
+        return None
+    return (current - price_8w_ago) / price_8w_ago
+
+
+def calc_volatility(closes, period=20):
+    """计算年化波动率(%)，基于日收益率标准差"""
+    import math
+    if len(closes) < period + 1:
+        return None
+    daily_returns = []
+    for i in range(len(closes) - period, len(closes)):
+        if closes[i - 1] and closes[i - 1] > 0:
+            daily_returns.append((closes[i] - closes[i - 1]) / closes[i - 1])
+    if len(daily_returns) < 2:
+        return None
+    mean_r = sum(daily_returns) / len(daily_returns)
+    variance = sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+    daily_vol = math.sqrt(variance)
+    annual_vol = daily_vol * math.sqrt(252) * 100  # 年化百分比
+    return round(annual_vol, 2)
+
+
+def calc_macd_trend_score(dif, dea, macd_bar, macd_status):
+    """MACD趋势得分: 金叉+1, 死叉-1, 红柱+0.5, 绿柱-0.5"""
+    score = 0.0
+    if macd_status == "金叉":
+        score += 1.0
+    elif macd_status == "死叉":
+        score -= 1.0
+    elif macd_bar is not None:
+        if macd_bar > 0 and macd_status in ("红柱放大", "红柱缩小"):
+            score += 0.5
+        elif macd_bar < 0 and macd_status in ("绿柱放大", "绿柱缩短"):
+            score -= 0.5
+    return score
+
+
+def calc_weighted_score(r):
+    """多因子加权打分: 4周动量×0.4 + 8周动量×0.3 + RSI强度×0.15 + MACD趋势×0.15"""
+    score = 0.0
+    # 4周动量
+    m4 = r.get("momentum_4w")
+    if m4 is not None:
+        score += m4 * 100 * 0.4  # 转为百分比
+    # 8周动量
+    m8 = r.get("momentum_8w")
+    if m8 is not None:
+        score += m8 * 100 * 0.3
+    # RSI 强度 (RSI-50)
+    rsi = r.get("rsi")
+    if rsi is not None:
+        score += (rsi - 50) * 0.15
+    # MACD 趋势
+    macd_s = r.get("macd_trend_score", 0)
+    score += macd_s * 0.15
+    return round(score, 2)
+
+
+def calc_ma_slope(closes, ma_period=20, lookback=5):
+    """计算MA斜率: 最近lookback天MA20的变化率"""
+    if len(closes) < ma_period + lookback:
+        return None
+    ma_list = []
+    for i in range(ma_period, len(closes) + 1):
+        ma_list.append(sum(closes[i - ma_period:i]) / ma_period)
+    if len(ma_list) < lookback + 1:
+        return None
+    # 最近lookback天的MA变化
+    ma_recent = ma_list[-1]
+    ma_prev = ma_list[-lookback - 1]
+    if ma_prev <= 0:
+        return None
+    return (ma_recent - ma_prev) / ma_prev
 
 
 def calc_entry_precheck(r):
@@ -268,8 +391,11 @@ def run_rotation(force_write=False):
         ma20 = calc_ma(closes, 20)
         _klines = [{"high": h, "low": l, "close": c} for h, l, c in zip(highs, lows, closes)]
         atr = calc_atr(_klines)
-        momentum = calc_momentum_4w(closes)
+        momentum_4w = calc_momentum_4w(closes)
+        momentum_8w = calc_momentum_8w(closes)
+        volatility = calc_volatility(closes)
         max_dd = calc_max_drawdown(closes)
+        macd_trend_score = calc_macd_trend_score(dif, dea, macd_bar, macd_status)
         close = closes[-1]
 
         # MA20 位置
@@ -295,11 +421,14 @@ def run_rotation(force_write=False):
             "ma20_pct": ma20_pct,
             "ma20_pos": ma20_pos,
             "atr": atr,
-            "momentum_4w": momentum,
+            "momentum_4w": momentum_4w,
+            "momentum_8w": momentum_8w,
+            "volatility": volatility,
             "max_drawdown": max_dd,
+            "macd_trend_score": macd_trend_score,
         }
 
-        mom_str = f"{momentum*100:+.2f}%" if momentum is not None else "N/A"
+        mom_str = f"{momentum_4w*100:+.2f}%" if momentum_4w is not None else "N/A"
         rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
         print(f"  ✓ {code} {cfg['name']:12s}  价格={close:.3f}  RSI={rsi_str}  "
               f"MACD={macd_status}  动量={mom_str}  MA20{ma20_pos}  ATR={atr}")
@@ -342,60 +471,114 @@ def run_rotation(force_write=False):
         preview_str = " | ".join(t[:40] for t in news_preview) if news_preview else "无相关新闻"
         print(f"  {level} {code} {r['name']:12s}  (负{neg}/正{pos})  {preview_str}")
 
-    # 5. 生成调入调出建议
+    # 5. 生成调入调出建议 (v2.1 — 多因子打分+多周期确认+动态配比+板块热度)
     print(f"\n{'─' * 60}")
     print("  【调入调出建议】")
 
-    # 动量排序
-    by_momentum = sorted(
+    # ── 计算加权得分 ──
+    for code, r in results.items():
+        r["weighted_score"] = calc_weighted_score(r)
+
+    # ── 获取上证指数MA20斜率，决定攻防配比 ──
+    sh_idx = fetch_klines_daily_arrays("000001", "sh000001")
+    ma_slope = None
+    if sh_idx and len(sh_idx["closes"]) >= 20 + 5:
+        ma_slope = calc_ma_slope(sh_idx["closes"])
+    if ma_slope is not None and ma_slope > 0:
+        momentum_count = 4
+        defense_count = 1
+        ratio_label = "4攻1守"
+    else:
+        momentum_count = 2
+        defense_count = 3
+        ratio_label = "2攻3守"
+    slope_str = f"{ma_slope*100:+.2f}%" if ma_slope is not None else "N/A"
+    print(f"  上证MA20斜率={slope_str} → {ratio_label} (MA20上升=4攻1守, 否则2攻3守)")
+
+    # ── 板块热度评分 ──
+    sector_heat = {}
+    for code, r in results.items():
+        sector = r.get("sector", "")
+        if sector:
+            if sector not in sector_heat:
+                sector_heat[sector] = []
+            if r["momentum_4w"] is not None:
+                sector_heat[sector].append(r["momentum_4w"])
+    sector_avg = {}
+    for sec, mlist in sector_heat.items():
+        if mlist:
+            sector_avg[sec] = round(sum(mlist) / len(mlist) * 100, 2)
+    top_sectors = sorted(sector_avg.items(), key=lambda x: x[1], reverse=True)[:5]
+    print(f"  板块热度TOP5: {', '.join(f'{s}({v:+.2f}%)' for s, v in top_sectors)}")
+
+    # ── 加权打分排序 ──
+    by_weighted = sorted(
         [(code, r) for code, r in results.items() if r["momentum_4w"] is not None],
-        key=lambda x: x[1]["momentum_4w"],
+        key=lambda x: x[1]["weighted_score"],
         reverse=True,
     )
 
-    # 选动量TOP3 (不含同板块)
+    # ── 动量TOP3/4: 多周期确认(4w+8w都为正) + 同板块只取最高分 ──
     momentum_picks = []
     picked_sectors = set()
-    for code, r in by_momentum:
-        if len(momentum_picks) >= 3:
+    for code, r in by_weighted:
+        if len(momentum_picks) >= momentum_count:
             break
         sector = r.get("sector", "")
+        # 多周期动量确认: 4周+8周动量都为正
+        m4 = r["momentum_4w"]
+        m8 = r["momentum_8w"]
+        if m4 is None or m4 <= 0:
+            continue
+        if m8 is None or m8 <= 0:
+            continue
         if sector not in picked_sectors:
             momentum_picks.append(code)
             picked_sectors.add(sector)
 
-    # 防御TOP2: 回撤<20%且近4周正收益
+    mom_strs = [f"{c}({results[c]['weighted_score']:.1f})" for c in momentum_picks]
+    print(f"  动量池({len(momentum_picks)}/{momentum_count}): {', '.join(mom_strs)}")
+
+    # ── 防御TOP2/3: 收紧条件 (回撤<15% + 动量>3% + 波动率>15%) ──
     defense_candidates = [
         (code, r) for code, r in results.items()
-        if r["max_drawdown"] is not None and r["max_drawdown"] < 20
-        and r["momentum_4w"] is not None and r["momentum_4w"] > 0
+        if r["max_drawdown"] is not None and r["max_drawdown"] < 15
+        and r["momentum_4w"] is not None and r["momentum_4w"] > 0.03
+        and r["volatility"] is not None and r["volatility"] > 15
         and code not in momentum_picks
     ]
-    defense_candidates.sort(key=lambda x: x[1]["momentum_4w"], reverse=True)
+    defense_candidates.sort(key=lambda x: x[1]["weighted_score"], reverse=True)
 
     defense_picks = []
     defense_picked_sectors = set()
     for code, r in defense_candidates:
-        if len(defense_picks) >= 2:
+        if len(defense_picks) >= defense_count:
             break
         sector = r.get("sector", "")
         if sector not in defense_picked_sectors:
             defense_picks.append(code)
             defense_picked_sectors.add(sector)
 
-    # 放宽条件
-    if len(defense_picks) < 2:
+    # 放宽条件：回撤<20% + 动量>0% + 波动率>10%
+    if len(defense_picks) < defense_count:
         relaxed = [
             (code, r) for code, r in results.items()
-            if r["max_drawdown"] is not None and r["max_drawdown"] < 30
+            if r["max_drawdown"] is not None and r["max_drawdown"] < 20
             and r["momentum_4w"] is not None and r["momentum_4w"] > 0
+            and r["volatility"] is not None and r["volatility"] > 10
             and code not in momentum_picks and code not in defense_picks
         ]
-        relaxed.sort(key=lambda x: x[1]["momentum_4w"], reverse=True)
+        relaxed.sort(key=lambda x: x[1]["weighted_score"], reverse=True)
         for code, r in relaxed:
-            if len(defense_picks) >= 2:
+            if len(defense_picks) >= defense_count:
                 break
-            defense_picks.append(code)
+            sector = r.get("sector", "")
+            if sector not in defense_picked_sectors:
+                defense_picks.append(code)
+                defense_picked_sectors.add(sector)
+
+    def_strs = [f"{c}(DD={results[c]['max_drawdown']:.1f}%,M={results[c]['momentum_4w']*100:.1f}%)" for c in defense_picks]
+    print(f"  防御池({len(defense_picks)}/{defense_count}): {', '.join(def_strs)}")
 
     all_picks = momentum_picks + defense_picks
     pick_types = {}
@@ -421,10 +604,10 @@ def run_rotation(force_write=False):
 
         if code in momentum_picks:
             advice = "调入"
-            reasons.append(f"动量TOP3 (4周动量={r['momentum_4w']*100:+.2f}%)")
+            reasons.append(f"动量TOP{momentum_count} (加权={r['weighted_score']:.1f}, 4w={r['momentum_4w']*100:+.2f}%, 8w={r['momentum_8w']*100:+.2f}% rf)" if r['momentum_8w'] else f"动量TOP{momentum_count} (加权={r['weighted_score']:.1f})")
         elif code in defense_picks:
             advice = "调入"
-            reasons.append(f"防御优选 (回撤={r['max_drawdown']:.1f}%, 动量={r['momentum_4w']*100:+.2f}%)")
+            reasons.append(f"防御优选 (回撤={r['max_drawdown']:.1f}%, 动量={r['momentum_4w']*100:+.2f}%, 波动={r['volatility']:.1f}%)")
         elif code in current_pool_codes and code not in all_picks:
             advice = "调出"
             reasons.append("不在新一轮TOP3/防御中，动量不足或被替换")
@@ -465,6 +648,11 @@ def run_rotation(force_write=False):
         "scan_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "total_scanned": len(results),
         "total_candidates": len(targets),
+        "ratio_label": ratio_label,
+        "momentum_count": momentum_count,
+        "defense_count": defense_count,
+        "ma_slope": round(ma_slope * 100, 4) if ma_slope is not None else None,
+        "sector_heat": sector_avg,
         "momentum_picks": momentum_picks,
         "defense_picks": defense_picks,
         "all_picks": all_picks,
@@ -490,7 +678,11 @@ def run_rotation(force_write=False):
                 "ma20_pos": r["ma20_pos"],
                 "atr": r["atr"],
                 "momentum_4w": round(r["momentum_4w"] * 100, 2) if r["momentum_4w"] is not None else None,
+                "momentum_8w": round(r["momentum_8w"] * 100, 2) if r["momentum_8w"] is not None else None,
+                "volatility": r["volatility"],
                 "max_drawdown": round(r["max_drawdown"], 1) if r["max_drawdown"] is not None else None,
+                "weighted_score": r["weighted_score"],
+                "macd_trend_score": r["macd_trend_score"],
             },
             "sentiment": {
                 "score": r["sentiment_score"],
@@ -520,7 +712,7 @@ def run_rotation(force_write=False):
 
     print(f"\n{'─' * 60}")
     print(f"▸ 建议已写入 {out_path}")
-    print(f"  调入: {len(momentum_picks) + len(defense_picks)} 只  |  "
+    print(f"  配比: {ratio_label}  |  调入: {len(momentum_picks) + len(defense_picks)} 只  |  "
           f"调出: {sum(1 for r in results.values() if r['advice'] == '调出')} 只")
     print(f"  ⚠ 未自动写入 etf_pool.json，请手动确认后执行")
 
@@ -534,8 +726,12 @@ def run_rotation(force_write=False):
             "names": {c: results[c]["name"] for c in all_picks},
             "sids": {c: results[c]["sid"] for c in all_picks},
             "momentum": {c: round(results[c]["momentum_4w"] * 100, 2) for c in all_picks},
+            "momentum_8w": {c: round(results[c]["momentum_8w"] * 100, 2) if results[c]["momentum_8w"] is not None else None for c in all_picks},
+            "volatility": {c: results[c]["volatility"] for c in all_picks},
+            "weighted_score": {c: results[c]["weighted_score"] for c in all_picks},
             "max_drawdown": {c: round(results[c]["max_drawdown"], 1) for c in all_picks},
             "type": {c: pick_types[c] for c in all_picks},
+            "ratio_label": ratio_label,
             "industry_kw": industry_kw_map,
             "updated": datetime.now().strftime("%Y-%m-%d"),
         }
