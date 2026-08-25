@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 from state_center import get_etfs_config, get_code_map
 
-ETFS = get_etfs_config(fund_per_etf=44000)
+ETFS = get_etfs_config()
 CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
 
 API_DELAY = 1  # akshare调用间隔(秒)

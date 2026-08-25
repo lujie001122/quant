@@ -264,7 +264,6 @@ class DecisionEngine:
             pos = PositionInfo()
             pos.shares = pdata.get("shares", 0)
             pos.avg_cost = pdata.get("avg_cost", 0.0)
-            pos.cost = pos.avg_cost * pos.shares
             pos.base_price = pdata.get("base_price", pos.avg_cost)
             pos.peak_price = pdata.get("peak_price", 0.0)
             pos.build_phase = pdata.get("build_phase", 0)
@@ -278,7 +277,6 @@ class DecisionEngine:
             pos.add_count = pdata.get("add_count", 0)
             pos.empty_days = pdata.get("empty_days", 0)
             pos.entry_avg_cost = pdata.get("entry_avg_cost", 0.0)
-            pos.active_sell_count = pdata.get("active_sell_count", 0)
             positions[code] = pos
         return positions
 

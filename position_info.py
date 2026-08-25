@@ -17,8 +17,8 @@ def _load_config():
     """从 config.yaml 加载配置，返回合并后的默认值"""
     _DEFAULTS = {
         'total_fund': 220000,
-        'dead_ratio': 0.0,      # 极限方案C: 取消底仓锁
-        'active_ratio': 1.0,    # 极限方案C: 全部活动
+        'dead_ratio': 0.3,      # 底仓30%
+        'active_ratio': 0.7,    # 活动仓70%
         'grid_buy_levels': 5,
         'grid_sell_levels': 3,
         'max_daily_buys': 1,
@@ -43,7 +43,7 @@ def _load_config():
         _DEFAULTS['inverted_weights'] = cfg.get('inverted_weights', _DEFAULTS['inverted_weights'])
         _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 极限方案C: 100%
         _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 极限方案C
-        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)  # 极限方案C
+        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('daily_loss_limit_pct', 0.20)  # 极限方案C
         _DEFAULTS['trend_profit_max_daily'] = cfg.get('trend_profit', {}).get('max_daily', 5)
         _DEFAULTS['trend_profit_cooldown_days'] = cfg.get('trend_profit', {}).get('cooldown_days', 1)
     except Exception:
@@ -71,11 +71,10 @@ TREND_PROFIT_COOLDOWN_DAYS = _config.get('trend_profit_cooldown_days', 1)
 
 
 class PositionInfo:
-    def __init__(self, base_price=None, shares=0, cost=0.0, peak_price=0.0):
+    def __init__(self, base_price=None, shares=0, peak_price=0.0):
         self.base_price = base_price
         self.shares = shares
-        self.cost = cost
-        self.avg_cost = cost / shares if shares > 0 else 0.0
+        self.avg_cost = 0.0
         self.current_price = 0.0
         self.peak_price = peak_price
         self.dead_shares = 0
@@ -216,7 +215,6 @@ class PositionInfo:
 
     def reset_on_liquidate(self, date_str):
         self.shares = 0
-        self.cost = 0
         self.avg_cost = 0
         self.entry_avg_cost = 0
         self.base_price = None
@@ -255,7 +253,6 @@ class PositionInfo:
         if reduce_count > self.shares:
             reduce_count = self.shares
         self.shares -= reduce_count
-        self.cost = self.avg_cost * self.shares if self.shares > 0 else 0
         self.peak_price = price
         self.update_dead_active()
 
@@ -306,6 +303,7 @@ class PositionInfo:
             "avg_cost": self.avg_cost,
             "current_price": self.current_price,
             "entry_avg_cost": self.entry_avg_cost,
+            "base_price": self.base_price,
         }
 
     def from_dict(self, data):
@@ -336,3 +334,4 @@ class PositionInfo:
         self.entry_avg_cost = data.get("entry_avg_cost", 0.0)
         self.trend_profit_trigger_date = data.get("trend_profit_trigger_date")
         self.ma5_sell_trigger_date = data.get("ma5_sell_trigger_date")
+        self.base_price = data.get("base_price")

@@ -27,7 +27,7 @@ from typing import Tuple
 
 # 从 position_info 导入统一常量
 from position_info import (
-    TOTAL_FUND, MAX_POSITION_RATIO, MAX_DAILY_LOSS_PCT,
+    TOTAL_FUND, MAX_POSITION_RATIO,
     DEAD_RATIO, ACTIVE_RATIO,
 )
 
@@ -37,7 +37,7 @@ _config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'conf
 try:
     with open(_config_path, 'r') as _f:
         _cfg = _yaml.safe_load(_f) or {}
-    _daily_loss = _cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)
+    _daily_loss = _cfg.get('stop_loss', {}).get('daily_loss_limit_pct', 0.20)
 except Exception:
     _daily_loss = 0.20
 
@@ -316,7 +316,6 @@ class RiskManager:
                 pos = PositionInfo()
                 pos.shares = pos_data.get("shares", 0)
                 pos.avg_cost = pos_data.get("avg_cost", 0.0)
-                pos.cost = pos.avg_cost * pos.shares
                 capped, ratio = self.is_position_capped(pos, order_intent.price)
                 if capped:
                     return False, (

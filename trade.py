@@ -93,14 +93,18 @@ def sync():
             if shares_val > 0:
                 cur_price = float(row[2])
                 name = code_map.get(code, {}).get('name') or row[1]
+                # 从 _signal_state 读取 base_price，回退到 avg_cost
+                signal_state = pf.get('_signal_state', {}).get(code, {})
+                base_price = signal_state.get('base_price') or cost
                 pf['positions'][code] = {
                     'name': name,
                     'shares': shares_val,
                     'avg_cost': cost,
                     'current_price': cur_price,
                     'market_value': float(row[11]),
-                    'pnl': float(row[3]),
-                    'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,
+                    'pnl': float(row[3]),  # 仅展示用
+                    'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,  # 仅展示用
+                    'base_price': base_price,
                 }
             elif code in pf['positions']:
                 del pf['positions'][code]

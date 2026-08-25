@@ -31,6 +31,7 @@ state_center.py — 统一状态中心
 import json
 import os
 import time
+import yaml
 from datetime import datetime
 
 # ====================================================================
@@ -260,11 +261,23 @@ def get_code_map():
     return result
 
 
-def get_etfs_config(fund_per_etf=44000):
+def get_etfs_config(fund_per_etf=None):
     """
     返回 {code: {name, fund, base_spacing, style}} 配置字典。
     与 signal_generator._build_etfs_config() 逻辑一致。
     """
+    if fund_per_etf is None:
+        # 从 config.yaml 读取 max_per_etf ÷ etf 数量
+        try:
+            config_path = os.path.join(_DIR, 'config.yaml')
+            with open(config_path, 'r') as f:
+                _cfg = yaml.safe_load(f) or {}
+            max_per_etf = _cfg.get('max_per_etf', 220000)
+            pool = _load_pool()
+            n_etfs = len(pool['etf_pool']) if pool else len(_DEFAULT_CODES)
+            fund_per_etf = max_per_etf // n_etfs
+        except Exception:
+            fund_per_etf = 44000
     pool = _load_pool()
     pf = load_portfolio()
 

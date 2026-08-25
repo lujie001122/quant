@@ -147,7 +147,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     pos_pf = pf_data["positions"].get(code, {})
                     p.shares = pos_pf.get("shares", 0)
                     if p.shares > 0:
-                        p.cost = pos_pf.get("total_cost", p.shares * pos_pf.get("avg_cost", 0))
                         p.avg_cost = pos_pf["avg_cost"]
                         p.current_price = pos_pf.get("current_price", 0.0)
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
