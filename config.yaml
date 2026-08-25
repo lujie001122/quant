@@ -101,9 +101,9 @@ signal:
   t0_sell_full_ratio: 0.2
   t0_sell_half_ratio: 0.1
 stop_loss:
-  daily_loss_limit_pct: 0.2
   breakeven_margin: 0.02
   breakeven_trigger: 0.3
+  daily_loss_limit_pct: 0.2
   hard_stop_pct: 0.25
 t0:
   ma20_slope_buy_cap: -0.005

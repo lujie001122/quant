@@ -67,8 +67,8 @@ def resolve_stop_signal(pos, stop_actions):
     return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
 
 
-def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
-    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
+def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=None, ma20_slope_turn=False):
+    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=rsi_20d_max, ma20_slope_turn=ma20_slope_turn)
 
 # ═══════════════════════════════════════════════
 #  Config (从 config.yaml 同步)
@@ -724,6 +724,19 @@ class ETFStrategy(bt.Strategy):
                 continue  # 防御标的弱势，全市场暂停建仓（防御标自身除外）
 
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and atr_ok:
+                # 通道7: 强势回调入场 (RSI近20日曾>70, 当前RSI 45-55, 价格站MA20) → 20%
+                rsi_20d_max = max(self.rsi[name].rsi.get(size=20), default=0) if len(self.rsi[name].rsi) >= 20 else 0
+                if rsi_val is not None and 45 <= rsi_val <= 55 and rsi_20d_max > 70 and ma20_v and price > ma20_v:
+                    if self._buy(d, 0.20, f"强势回调20% RSI20d高={rsi_20d_max:.1f}→{rsi_val:.1f}"):
+                        self._init_on_entry(ps, price)
+                        continue
+
+                # 通道8: MACD零轴上金叉 (DIF>0 + 金叉 + 站MA20) → 20%
+                if dif_val is not None and dif_val > 0 and ms == "金叉" and ma20_v and price > ma20_v:
+                    if self._buy(d, 0.20, f"零轴金叉20% DIF={dif_val:.4f}"):
+                        self._init_on_entry(ps, price)
+                        continue
+
                 # 多头排列: MA5>MA10>MA20才允许建仓
                 if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
                     continue

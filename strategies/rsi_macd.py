@@ -258,7 +258,7 @@ class RSIMACDStrategy(BaseStrategy):
                 return sig_name
         return stop_actions[0][0]
 
-    def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
+    def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=None, ma20_slope_turn=False):
         """6通道建仓判定 + 补仓/确认加仓
 
         返回:
@@ -287,6 +287,18 @@ class RSIMACDStrategy(BaseStrategy):
         bullish_align = t["ma5"] and t.get("ma10") and t["ma20"] and t["ma5"] > t["ma10"] > t["ma20"]
 
         if pos.build_phase == 0:
+            # 通道7: 强势回调入场 (RSI近20日曾>70, 当前RSI 45-55, 价格站MA20) → 20%
+            if rsi_20d_max is not None and rsi_20d_max > 70 and t["rsi"] is not None and 45 <= t["rsi"] <= 55 and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
+                action, position_ratio, trade_type = pos._enter_position(today_str, price, "20%(强势回调)")
+                self._update_entry_cost(pos, price, 0.20, code)
+                return (action, position_ratio, trade_type, f"强势回调:RSI20d高{rsi_20d_max:.1f}→{t['rsi']:.1f}+站MA20")
+
+            # 通道8: MACD零轴上金叉 (DIF>0 + 金叉 + 站MA20) → 20%
+            if t["dif"] is not None and t["dif"] > 0 and t["macd_status"] == "金叉" and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
+                action, position_ratio, trade_type = pos._enter_position(today_str, price, "20%(零轴金叉)")
+                self._update_entry_cost(pos, price, 0.20, code)
+                return (action, position_ratio, trade_type, f"零轴金叉:DIF={t['dif']:.4f}>0+金叉+站MA20")
+
             # 所有建仓通道要求多头排列
             if not bullish_align:
                 return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA10={t.get('ma10',0):.3f},MA20={t['ma20']:.3f}),暂停建仓")
