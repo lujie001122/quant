@@ -493,10 +493,10 @@ class ETFStrategy(bt.Strategy):
             ao_val = self.ao[name].ao[0]
             atr_val = self.atr[name].atr[0]
 
-            # 20日新高
-            h20 = None
-            if len(d.close) >= 21:
-                h20 = max(d.close.get(size=20, ago=1))
+            # 10日新高
+            h10 = None
+            if len(d.close) >= 11:
+                h10 = max(d.close.get(size=10, ago=1))
 
             # AO 5日前
             ao_5ago = None
@@ -550,7 +550,7 @@ class ETFStrategy(bt.Strategy):
                 if pp >= 0.15 - 0.0001 and not ps["reached_15"]:
                     ps["reached_15"] = True; ps["trail"] = avg * 1.05
                 if ps["reached_15"] and ps["peak_price"] > 0:
-                    ps["trail"] = ps["peak_price"] * 0.95
+                    ps["trail"] = ps["peak_price"] * 0.93
 
                 if ps["trail"] > 0 and price <= ps["trail"]:
                     label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
@@ -587,9 +587,13 @@ class ETFStrategy(bt.Strategy):
                     continue
 
                 if ps["stop_level"] == 2 and ms in ("死叉", "绿柱放大"):
-                    self._close(d, f"止损3清仓 MACD{ms}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
+                    # 额外确认: price<MA20持续3天或RSI<35
+                    below_ma20_3days = ps["below_ma20"] >= 3
+                    rsi_low = rsi_val is not None and rsi_val < 35
+                    if below_ma20_3days or rsi_low:
+                        self._close(d, f"止损3清仓 MACD{ms}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
 
                 if ps["stop_level"] > 0 and ma20_v and price > ma20_v and dif_val > 0 and ms in ("红柱放大", "红柱缩短"):
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
@@ -726,8 +730,8 @@ class ETFStrategy(bt.Strategy):
                     continue
                 entered = False
 
-                # 通道1: RSI抄底 (RSI≤50+金叉)
-                if not entered and rsi_val is not None and rsi_val <= 50 and ms == "金叉":
+                # 通道1: RSI抄底 (RSI≤55+金叉)
+                if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
@@ -736,9 +740,9 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.30, f"趋势跟踪30% 空仓{ps['empty_days']}d"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道3: 突破入场
-                if not entered and h20 is not None and price > h20 and ms == "金叉":
-                    if self._buy(d, 0.30, f"突破入场30% 20日高={h20:.3f}"):
+                # 通道3: 突破入场 (10日新高+金叉)
+                if not entered and h10 is not None and price > h10 and ms == "金叉":
+                    if self._buy(d, 0.30, f"突破入场30% 10日高={h10:.3f}"):
                         self._init_on_entry(ps, price); entered = True
 
                 # 通道4: 分批建仓
@@ -751,8 +755,8 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.30, f"Test抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道6: 试探建仓 (RSI>40+站MA5+站MA20+多头排列)
-                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 40 and price > ma5_v and ma20_v and price > ma20_v:
+                # 通道6: 试探建仓 (RSI>35+站MA5+站MA20+多头排列)
+                if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 35 and price > ma5_v and ma20_v and price > ma20_v:
                     if self._buy(d, 0.30, f"试探建仓30% MACD{ms} RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 

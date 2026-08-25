@@ -102,7 +102,7 @@ def _compute_breakeven_price(avg_cost, margin=0.02):
 def _compute_trailing_stop(avg_cost, peak_price, reached_8pct, reached_15pct):
     """计算移动止盈价格"""
     if reached_15pct and peak_price > 0:
-        return peak_price * 0.95
+        return peak_price * 0.93
     if reached_8pct:
         return avg_cost * 1.05
     return 0.0
@@ -207,10 +207,13 @@ class RSIMACDStrategy(BaseStrategy):
             stop_actions.append(("分级止损2级:DIF<0再减30%", "reduce_30pct_all"))
             pos.stop_level = 2
 
-        # Level 1c: MACD死叉/绿柱放大 → 清仓
+        # Level 1c: MACD死叉/绿柱放大 → 清仓（需额外确认: price<MA20持续3天 或 RSI<35）
         if pos.stop_level == 2 and t["macd_status"] in ["死叉", "绿柱放大"]:
-            stop_actions.append(("分级止损3级:MACD趋势恶化清仓", "liquidate_trend"))
-            pos.stop_level = 3
+            below_ma20_3days = pos.below_ma20_count >= 3
+            rsi_low = t["rsi"] is not None and t["rsi"] < 35
+            if below_ma20_3days or rsi_low:
+                stop_actions.append(("分级止损3级:MACD趋势恶化清仓", "liquidate_trend"))
+                pos.stop_level = 3
 
         # 分级止损恢复(价>MA20+DIF>0+MACD红柱)
         if pos.stop_level > 0 and t["ma20"] and price > t["ma20"] and t["dif"] is not None and t["dif"] > 0 and t["macd_status"] in ["红柱放大", "红柱缩短"]:
@@ -287,8 +290,8 @@ class RSIMACDStrategy(BaseStrategy):
             # 所有建仓通道要求多头排列
             if not bullish_align:
                 return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA10={t.get('ma10',0):.3f},MA20={t['ma20']:.3f}),暂停建仓")
-            # 通道1: RSI抄底 (MACD金叉+RSI≤50) → 30%(极限方案C: 去掉MA20过滤)
-            if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= 50) and pos.can_buy_today(today_str, atr_pct):
+            # 通道1: RSI抄底 (MACD金叉+RSI≤55) → 30%(极限方案C: 去掉MA20过滤)
+            if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= 55) and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"RSI抄底:MACD金叉(RSI={t['rsi']})")
@@ -299,14 +302,14 @@ class RSIMACDStrategy(BaseStrategy):
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"趋势跟踪:价>MA20+{t['macd_status']}")
 
-            # 通道3: 突破入场 (20日新高+MACD金叉) → 30%(极限方案C: 去掉MA20过滤)
+            # 通道3: 突破入场 (10日新高+MACD金叉) → 30%(极限方案C: 去掉MA20过滤)
             if t["macd_status"] == "金叉" and pos.can_buy_today(today_str, atr_pct):
-                if len(all_klines.get(code, [])) >= 21:
-                    closes_20 = [k["close"] for k in all_klines[code][-21:-1]]
-                    if closes_20 and price > max(closes_20):
+                if len(all_klines.get(code, [])) >= 11:
+                    closes_10 = [k["close"] for k in all_klines[code][-11:-1]]
+                    if closes_10 and price > max(closes_10):
                         action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(突破入场)")
                         self._update_entry_cost(pos, price, 0.30, code)
-                        return (action, position_ratio, trade_type, "突破入场:20日新高+金叉")
+                        return (action, position_ratio, trade_type, "突破入场:10日新高+金叉")
 
             # 通道4: 分批建仓 (金叉/红柱放大+RSI>40+站MA5) → 30%(极限方案C: 去掉MA20过滤)
             if t["macd_status"] in ["金叉", "红柱放大"] and rsi_ok and price > t["ma5"] and pos.can_buy_today(today_str, atr_pct):
@@ -320,8 +323,8 @@ class RSIMACDStrategy(BaseStrategy):
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5")
 
-            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>40+站MA5+站MA20) → 30%
-            if t["macd_status"] in ["绿柱缩短", "震荡"] and rsi_ok and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
+            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>35+站MA5+站MA20) → 30%
+            if t["macd_status"] in ["绿柱缩短", "震荡"] and t["rsi"] is not None and t["rsi"] > 35 and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(试探)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"试探建仓:30%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站MA5+站MA20)")

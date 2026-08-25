@@ -206,7 +206,7 @@ class PositionInfo:
             self.reached_15pct = True
             self.trailing_stop_price = self.avg_cost * 1.05
         if self.reached_15pct and self.peak_price > 0:
-            self.trailing_stop_price = self.peak_price * 0.95
+            self.trailing_stop_price = self.peak_price * 0.93
 
     def update_dead_active(self):
         self.dead_shares = int(self.shares * DEAD_RATIO)
