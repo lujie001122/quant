@@ -324,8 +324,46 @@ class ETFStrategy(bt.Strategy):
             self._order_pending.pop(name, None)
 
     def notify_trade(self, trade):
-        """交易完成回调 — 统计盈亏"""
+        """交易完成回调 — 统计盈亏 + 打印明细"""
+        def _fmt_date(dt_val):
+            if not dt_val:
+                return ''
+            try:
+                from datetime import datetime
+                if isinstance(dt_val, datetime):
+                    return dt_val.strftime('%Y-%m-%d')
+                return datetime.fromordinal(int(dt_val)).strftime('%Y-%m-%d')
+            except:
+                return str(dt_val)
+
         if trade.isclosed:
+            name = trade.data._name
+            ps = self.ps.get(name, {})
+            entry_reason = ps.get('_last_entry_reason', '未知')
+            exit_reason = ps.get('_last_exit_reason', '未知')
+            hold_days = 0
+            if trade.dtopen and trade.dtclose:
+                try:
+                    from datetime import datetime
+                    d_open = trade.dtopen if isinstance(trade.dtopen, datetime) else datetime.fromordinal(int(trade.dtopen))
+                    d_close = trade.dtclose if isinstance(trade.dtclose, datetime) else datetime.fromordinal(int(trade.dtclose))
+                    hold_days = (d_close - d_open).days
+                except:
+                    hold_days = 0
+            pnl_pct = (trade.pnl / (trade.price * abs(trade.size))) * 100 if trade.price and trade.size else 0
+
+            self.trades.append({
+                'date': _fmt_date(trade.dtclose),
+                'code': name,
+                'direction': '卖出',
+                'entry_reason': entry_reason,
+                'exit_reason': exit_reason,
+                'price': trade.price,
+                'pnl': trade.pnl,
+                'pnl_pct': pnl_pct,
+                'hold_days': hold_days,
+            })
+
             if trade.pnl >= 0:
                 self.win_trades += 1; self.win_amount += trade.pnl
             else:
@@ -360,6 +398,7 @@ class ETFStrategy(bt.Strategy):
             need = int(self.broker.getcash() / price / 100) * 100
             if need < 100: return False
         self._order_pending[name] = self.buy(data=data, size=need)
+        self.ps[name]['_last_entry_reason'] = reason
         return True
 
     def _sell(self, data, pct, reason):
@@ -374,6 +413,7 @@ class ETFStrategy(bt.Strategy):
             shares = (current // 100) * 100
             if shares < 100: return False
         self._order_pending[name] = self.sell(data=data, size=shares)
+        self.ps[name]['_last_exit_reason'] = reason
         return True
 
     def _close(self, data, reason):
@@ -381,6 +421,7 @@ class ETFStrategy(bt.Strategy):
         name = data._name
         if self._get_shares(data) < 100: return False
         self._order_pending[name] = self.close(data=data)
+        self.ps[name]['_last_exit_reason'] = reason
         return True
 
     def _is_in_cooldown(self, ps, date_str):
@@ -904,7 +945,16 @@ class ETFStrategy(bt.Strategy):
             pass  # DecisionEngine 不可用时静默跳过
 
     def stop(self):
-        pass  # 结果输出在main()中用analyzers
+        print("\n" + "=" * 100)
+        print("                    每笔交易明细")
+        print("=" * 100)
+        print(f"{'日期':<12} {'代码':<8} {'方向':<6} {'建仓信号':<28} {'卖出信号':<32} {'价格':>8} {'盈亏':>10} {'盈亏%':>8} {'持天':>4}")
+        print("-" * 100)
+        for t in self.trades:
+            print(f"{t['date']:<12} {t['code']:<8} {t['direction']:<6} {t['entry_reason'][:27]:<28} {t['exit_reason'][:31]:<32} {t['price']:>8.3f} {t['pnl']:>+10.0f} {t['pnl_pct']:>+7.1f}% {t['hold_days']:>4d}")
+        print("-" * 100)
+        print(f"  总交易: {len(self.trades)} | 盈利: {self.win_trades} | 亏损: {self.loss_trades} | 胜率: {self.win_trades/len(self.trades)*100:.1f}%" if self.trades else "  无交易")
+        print("=" * 100)
 
 
 # ═══════════════════════════════════════════════
