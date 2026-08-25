@@ -61,8 +61,8 @@ def resolve_stop_signal(pos, stop_actions):
     return _rm_resolve_stop(pos, stop_actions)
 
 
-def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=None, ma20_slope_turn=False):
-    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=rsi_20d_max, ma20_slope_turn=ma20_slope_turn)
+def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
+    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
 
 
 def evaluate_t0(t, pos, price, today_str, atr_pct):
@@ -147,6 +147,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     pos_pf = pf_data["positions"].get(code, {})
                     p.shares = pos_pf.get("shares", 0)
                     if p.shares > 0:
+                        p.cost = pos_pf.get("total_cost", p.shares * pos_pf.get("avg_cost", 0))
                         p.avg_cost = pos_pf["avg_cost"]
                         p.current_price = pos_pf.get("current_price", 0.0)
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
@@ -414,22 +415,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # 无信号: 建仓/补仓/持有逻辑（统一入口，action仍为"持有"时进入）
         if action == "持有":
-            # 计算近20日RSI最高值（通道7强势回调用）
-            rsi_20d_max = None
-            if code in all_klines and len(all_klines[code]) >= 34:
-                klines = all_klines[code]
-                closes_all = [k["close"] for k in klines]
-                rsi_vals = []
-                for i in range(max(0, len(closes_all) - 20), len(closes_all)):
-                    rsi_v = calc_rsi_wilder(closes_all[:i+1], 14)
-                    if rsi_v is not None:
-                        rsi_vals.append(rsi_v)
-                if rsi_vals:
-                    rsi_20d_max = max(rsi_vals)
-
             entry_result = evaluate_entry(
-                pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak,
-                rsi_20d_max=rsi_20d_max
+                pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak
             )
             if entry_result is not None:
                 entry_action, entry_ratio, entry_trade_type, entry_reason = entry_result

@@ -67,8 +67,8 @@ def resolve_stop_signal(pos, stop_actions):
     return _rsi_macd_strategy.resolve_stop_signal(pos, stop_actions)
 
 
-def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=None, ma20_slope_turn=False):
-    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=rsi_20d_max, ma20_slope_turn=ma20_slope_turn)
+def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
+    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
 
 # ═══════════════════════════════════════════════
 #  Config (从 config.yaml 同步)
@@ -291,6 +291,7 @@ class ETFStrategy(bt.Strategy):
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
                 "pending_order": None, "stop_cooldown": False,
                 "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(最多3次)
+                "active_sell_until": "",  # 活动仓卖出冷却日期(已废弃，对齐实盘)
                 # 趋势止盈冷却机制: 单日最多3次，触发后3天冷却
                 "trend_sell_today": 0,  # 当日趋势止盈次数
                 "trend_sell_cooling_until": "",  # 趋势止盈冷却截止日期
@@ -439,7 +440,7 @@ class ETFStrategy(bt.Strategy):
         ps["stop_level"] = 0; ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
         ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
-        ps["active_sell_count"] = 0
+        ps["active_sell_count"] = 0; ps["active_sell_until"] = ""
         ps["trend_sell_today"] = 0; ps["trend_sell_cooling_until"] = ""
         ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
@@ -509,11 +510,6 @@ class ETFStrategy(bt.Strategy):
             # ═══ EXIT LOGIC ═══
             if has_pos:
                 if price > ps["peak_price"]: ps["peak_price"] = price
-
-                # P3: 趋势强度状态机 — MA20斜率>0.3% AND MACD红柱
-                ma20_prev = self.ma20[name][-1] if len(self.ma20[name]) > 1 else ma20_v
-                ma20_slope = (ma20_v - ma20_prev) / ma20_prev if ma20_prev > 0 else 0
-                trend_strong = ma20_slope > 0.003 and ms in ("金叉", "红柱放大")
 
                 # ── 极限方案C: 取消保本止盈 ──
                 # (保本止盈已移除，保留注释以标记)
@@ -606,10 +602,10 @@ class ETFStrategy(bt.Strategy):
                 if ps["stop_level"] == 2 and ms not in ("死叉", "绿柱放大") and ma20_v and price > ma20_v and dif_val > 0:
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
-                # 趋势止盈: MACD红柱缩短+破MA5+破MA10 → 卖10%活动仓 (P3: 强趋势跳过)
+                # 趋势止盈: MACD红柱缩短+破MA5+破MA10 → 卖10%活动仓 (冷却机制: 从config读取)
                 # 检查冷却期
                 trend_cooling = ps["trend_sell_cooling_until"] and date_str <= ps["trend_sell_cooling_until"]
-                if (not trend_strong and not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
+                if (not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
                         and ma10_v and price < ma10_v and ps["trend_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.10 / 100) * 100
@@ -624,10 +620,10 @@ class ETFStrategy(bt.Strategy):
                                 except:
                                     ps["trend_sell_cooling_until"] = ""
 
-                # 破MA5卖活动仓5%: RSI>50时 (P3: 强趋势跳过)
+                # 破MA5卖活动仓5%: RSI>50时 (冷却机制: 从config读取)
                 # 检查冷却期
                 ma5_cooling = ps["ma5_sell_cooling_until"] and date_str <= ps["ma5_sell_cooling_until"]
-                if (not trend_strong and not ma5_cooling and name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
+                if (not ma5_cooling and name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
                         and ps["ma5_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.05 / 100) * 100
@@ -729,19 +725,6 @@ class ETFStrategy(bt.Strategy):
                 continue  # 防御标的弱势，全市场暂停建仓（防御标自身除外）
 
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and atr_ok:
-                # 通道7: 强势回调入场 (RSI近20日曾>70, 当前RSI 45-55, 价格站MA20) → 20%
-                rsi_20d_max = max(self.rsi[name].rsi.get(size=20), default=0) if len(self.rsi[name].rsi) >= 20 else 0
-                if rsi_val is not None and 45 <= rsi_val <= 55 and rsi_20d_max > 70 and ma20_v and price > ma20_v:
-                    if self._buy(d, 0.20, f"强势回调20% RSI20d高={rsi_20d_max:.1f}→{rsi_val:.1f}"):
-                        self._init_on_entry(ps, price)
-                        continue
-
-                # 通道8: MACD零轴上金叉 (DIF>0 + 金叉 + 站MA20) → 20%
-                if dif_val is not None and dif_val > 0 and ms == "金叉" and ma20_v and price > ma20_v:
-                    if self._buy(d, 0.20, f"零轴金叉20% DIF={dif_val:.4f}"):
-                        self._init_on_entry(ps, price)
-                        continue
-
                 # 多头排列: MA5>MA10>MA20才允许建仓
                 if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
                     continue
@@ -786,13 +769,8 @@ class ETFStrategy(bt.Strategy):
                 if dip < -0.05 and ms not in ("死叉", "绿柱放大") and ps["add_count"] < 5 and (rsi_val is None or rsi_val < 40):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
-                        # 加权平均更新 entry_avg_cost
-                        buy_target = int(min(TOTAL_FUND * 0.15, TOTAL_FUND * POSITION_CAP) / price / 100) * 100
-                        need = max(buy_target - shares, 100)
-                        if ps["entry_avg_cost"] > 0 and shares > 0:
-                            ps["entry_avg_cost"] = (ps["entry_avg_cost"] * shares + price * need) / (shares + need)
 
-                # 确认加仓分批: 分2次每次30%, 当天可加仓
+                # 确认加仓分批: 分2次每次30%, 间隔1天
                 elif (price > ps["first_price"] or ps["ma5_touch_count"] >= 2) and ps["build_phase"] == 1:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
@@ -803,7 +781,9 @@ class ETFStrategy(bt.Strategy):
                             ps["confirm_batch_count"] = 0
                         if "confirm_batch_date" not in ps:
                             ps["confirm_batch_date"] = ""
-                        if ps["confirm_batch_count"] >= 2:
+                        if ps.get("confirm_batch_date") == date_str:
+                            pass  # 同日已加仓, 等下个交易日
+                        elif ps["confirm_batch_count"] >= 2:
                             ps["build_phase"] = 2
                             ps["bought_today"] = True
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
@@ -814,11 +794,6 @@ class ETFStrategy(bt.Strategy):
                                 ps["confirm_batch_count"] += 1
                                 ps["confirm_batch_date"] = date_str
                                 ps["add_count"] += 1
-                                # 加权平均更新 entry_avg_cost
-                                buy_target = int(min(TOTAL_FUND * 0.30, TOTAL_FUND * POSITION_CAP) / price / 100) * 100
-                                need = max(buy_target - shares, 100)
-                                if ps["entry_avg_cost"] > 0 and shares > 0:
-                                    ps["entry_avg_cost"] = (ps["entry_avg_cost"] * shares + price * need) / (shares + need)
                                 if ps["confirm_batch_count"] >= 2:
                                     ps["build_phase"] = 2; ps["bought_today"] = True
                                     ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
@@ -857,6 +832,7 @@ class ETFStrategy(bt.Strategy):
                 avg = self._get_avg_cost(d)
                 pos.shares = int(self._get_shares(d))
                 pos.avg_cost = avg
+                pos.cost = avg * pos.shares
                 pos.base_price = ps["base"] if ps["base"] > 0 else avg
                 pos.peak_price = ps["peak_price"]
                 pos.build_phase = ps["build_phase"]

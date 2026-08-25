@@ -227,14 +227,14 @@ class RSIMACDStrategy(BaseStrategy):
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # P1: 趋势止盈(MACD红柱缩短+破MA5+破MA10) — P3: 强趋势跳过
-        if not t.get("trend_strong", False) and t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
+        # P1: 趋势止盈(MACD红柱缩短+破MA5+破MA10) — 带冷却检查 (B6)
+        if t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
             if pos.can_trend_profit_today(today_str):
                 stop_actions.append((f"趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
                 pos.record_trend_profit(today_str)
 
-        # 破MA5卖活动仓5%(active=0时不触发) — P3: 强趋势跳过
-        if not t.get("trend_strong", False) and price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
+        # 破MA5卖活动仓5%(active=0时不触发) — 带冷却检查 (B6)
+        if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
             if pos.active_shares > 0 and pos.can_ma5_sell_today(today_str):
                 stop_actions.append((f"破MA5卖活动仓5%", "sell_active_5pct"))
                 pos.record_ma5_sell(today_str)
@@ -258,7 +258,7 @@ class RSIMACDStrategy(BaseStrategy):
                 return sig_name
         return stop_actions[0][0]
 
-    def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, rsi_20d_max=None, ma20_slope_turn=False):
+    def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
         """6通道建仓判定 + 补仓/确认加仓
 
         返回:
@@ -287,18 +287,6 @@ class RSIMACDStrategy(BaseStrategy):
         bullish_align = t["ma5"] and t.get("ma10") and t["ma20"] and t["ma5"] > t["ma10"] > t["ma20"]
 
         if pos.build_phase == 0:
-            # 通道7: 强势回调入场 (RSI近20日曾>70, 当前RSI 45-55, 价格站MA20) → 20%
-            if rsi_20d_max is not None and rsi_20d_max > 70 and t["rsi"] is not None and 45 <= t["rsi"] <= 55 and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
-                action, position_ratio, trade_type = pos._enter_position(today_str, price, "20%(强势回调)")
-                self._update_entry_cost(pos, price, 0.20, code)
-                return (action, position_ratio, trade_type, f"强势回调:RSI20d高{rsi_20d_max:.1f}→{t['rsi']:.1f}+站MA20")
-
-            # 通道8: MACD零轴上金叉 (DIF>0 + 金叉 + 站MA20) → 20%
-            if t["dif"] is not None and t["dif"] > 0 and t["macd_status"] == "金叉" and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
-                action, position_ratio, trade_type = pos._enter_position(today_str, price, "20%(零轴金叉)")
-                self._update_entry_cost(pos, price, 0.20, code)
-                return (action, position_ratio, trade_type, f"零轴金叉:DIF={t['dif']:.4f}>0+金叉+站MA20")
-
             # 所有建仓通道要求多头排列
             if not bullish_align:
                 return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA10={t.get('ma10',0):.3f},MA20={t['ma20']:.3f}),暂停建仓")
@@ -358,7 +346,7 @@ class RSIMACDStrategy(BaseStrategy):
                     pos.add_count += 1
                     return ("买入", "15%(补仓)", "buy", f"逆势补仓:跌{dip_pct*100:.0f}%加仓15%(MACD{t['macd_status']})")
 
-            # ── 确认加仓: 突破首笔价或回踩MA5站稳 → 分3次每次30%，当天可加仓 ──
+            # ── 确认加仓: 突破首笔价或回踩MA5站稳 → 分3次每次30%，间隔1天 ──
             if price > pos.build_first_price or pos.ma5_touch_count >= 2:
                 ao_now = t.get("ao_now")
                 ao_5ago = t.get("ao_5ago")
@@ -368,11 +356,13 @@ class RSIMACDStrategy(BaseStrategy):
                 elif _position_capped:
                     return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 elif pos.can_buy_today(today_str, atr_pct):
-                    # 确认加仓分批: 最多3次, 每次30%, 当天可加仓
+                    # 确认加仓分批: 最多3次, 每次30%, 间隔1天
                     if not hasattr(pos, 'confirm_batch_count'):
                         pos.confirm_batch_count = 0
                     if not hasattr(pos, 'confirm_batch_date'):
                         pos.confirm_batch_date = None
+                    if pos.confirm_batch_date == today_str:
+                        return ("持有(等确认)", None, None, f"确认加仓{pos.confirm_batch_count+1}/3批: 同日已加仓, 等下个交易日")
                     if pos.confirm_batch_count >= 3:
                         pos.build_phase = 2
                         pos.base_price = pos.avg_cost

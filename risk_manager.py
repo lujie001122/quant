@@ -27,7 +27,7 @@ from typing import Tuple
 
 # 从 position_info 导入统一常量
 from position_info import (
-    TOTAL_FUND, MAX_POSITION_RATIO,
+    TOTAL_FUND, MAX_POSITION_RATIO, MAX_DAILY_LOSS_PCT,
     DEAD_RATIO, ACTIVE_RATIO,
 )
 
@@ -37,7 +37,7 @@ _config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'conf
 try:
     with open(_config_path, 'r') as _f:
         _cfg = _yaml.safe_load(_f) or {}
-    _daily_loss = _cfg.get('stop_loss', {}).get('daily_loss_limit_pct', 0.20)
+    _daily_loss = _cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)
 except Exception:
     _daily_loss = 0.20
 
@@ -206,14 +206,14 @@ class RiskManager:
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # 趋势止盈(MACD红柱缩短+破MA5+破MA10) — P3: 强趋势跳过
-        if not t.get("trend_strong", False) and t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
+        # 趋势止盈(MACD红柱缩短+破MA5+破MA10) — 带冷却机制
+        if t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
             if pos.can_trend_profit_today(today_str):
                 stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
                 pos.record_trend_profit(today_str)
 
-        # 破MA5卖活动仓5% — P3: 强趋势跳过
-        if not t.get("trend_strong", False) and price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
+        # 破MA5卖活动仓5% — 带冷却机制
+        if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
             if pos.active_shares > 0 and pos.can_ma5_sell_today(today_str):
                 stop_actions.append(("破MA5卖活动仓5%", "sell_active_5pct"))
                 pos.record_ma5_sell(today_str)
@@ -316,6 +316,7 @@ class RiskManager:
                 pos = PositionInfo()
                 pos.shares = pos_data.get("shares", 0)
                 pos.avg_cost = pos_data.get("avg_cost", 0.0)
+                pos.cost = pos.avg_cost * pos.shares
                 capped, ratio = self.is_position_capped(pos, order_intent.price)
                 if capped:
                     return False, (
