@@ -97,6 +97,7 @@ def sync():
                     'name': name,
                     'shares': shares_val,
                     'avg_cost': cost,
+                    'entry_avg_cost': cost,
                     'current_price': cur_price,
                     'market_price': cur_price,
                     'market_value': float(row[11]),

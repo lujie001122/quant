@@ -382,29 +382,29 @@
   "positions": {
     "159516": {
       "name": "半导体设备ETF",
-      "shares": 125700,
-      "avg_cost": 0.719,
-      "current_price": 0.738,
-      "market_price": 0.738,
-      "market_value": 92766.6,
-      "pnl": 2350.48,
-      "pnl_pct": 2.6
+      "shares": 88200,
+      "avg_cost": 0.715,
+      "current_price": 0.705,
+      "market_price": 0.705,
+      "market_value": 62181.0,
+      "pnl": -871.07,
+      "pnl_pct": -1.38
     },
     "515880": {
       "name": "通信ETF",
-      "shares": 57400,
-      "avg_cost": 0.662,
-      "current_price": 0.676,
-      "market_price": 0.676,
-      "market_value": 38802.4,
-      "pnl": 825.53,
-      "pnl_pct": 2.17
+      "shares": 59700,
+      "avg_cost": 0.653,
+      "current_price": 0.648,
+      "market_price": 0.648,
+      "market_value": 38685.6,
+      "pnl": -307.61,
+      "pnl_pct": -0.79
     }
   },
   "account": {
-    "total_asset": 223086.01,
-    "cash": 91517.01,
-    "market_value": 131569.0
+    "total_asset": 218731.32,
+    "cash": 117864.72,
+    "market_value": 100866.6
   },
-  "last_updated": "2026-08-25 15:02"
+  "last_updated": "2026-08-25 17:06"
 }
