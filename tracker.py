@@ -40,7 +40,7 @@ def _load_pool():
     try:
         with open(_POOL_PATH, "r", encoding="utf-8") as f:
             pool = json.load(f)
-        if pool.get("codes") and len(pool["codes"]) >= 3:
+        if pool.get("etf_pool") and len(pool["etf_pool"]) >= 3:
             return pool
     except Exception:
         pass
@@ -68,7 +68,7 @@ def get_tracked_codes():
 
     codes = set()
     if pool:
-        codes.update(pool["codes"])
+        codes.update(pool["etf_pool"])
     else:
         codes.update(_DEFAULT_CODES)
     codes.update(pf.get("positions", {}).keys())
@@ -124,7 +124,7 @@ def get_etfs_config(fund_per_etf=44000):
     etfs = {}
 
     if pool:
-        codes = pool["codes"]
+        codes = pool["etf_pool"]
         names = pool.get("names", {})
         for code in codes:
             etfs[code] = {

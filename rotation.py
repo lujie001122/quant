@@ -993,7 +993,7 @@ def load_etf_pool():
         try:
             with open(pool_path, "r", encoding="utf-8") as f:
                 pool = json.load(f)
-            if pool.get("codes") and len(pool["codes"]) >= 3:
+            if pool.get("etf_pool") and len(pool["etf_pool"]) >= 3:
                 return pool
         except Exception:
             pass
