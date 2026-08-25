@@ -259,12 +259,20 @@ class PositionInfo:
         self.peak_price = price
         self.update_dead_active()
 
+    def add_shares(self, buy_price, buy_shares):
+        """加仓/做T买入：加权平均更新 entry_avg_cost。卖出时不变。"""
+        old_shares = self.shares
+        new_shares = old_shares + buy_shares
+        if self.entry_avg_cost > 0 and old_shares > 0:
+            self.entry_avg_cost = (self.entry_avg_cost * old_shares + buy_price * buy_shares) / new_shares
+        else:
+            self.entry_avg_cost = buy_price
+
     def _enter_position(self, date_str, price, channel_name):
         self.record_buy(date_str)
         self.build_phase = 1
         self.build_first_price = price
         self.base_price = price
-        self.entry_avg_cost = price
         self.empty_days = 0
         return "买入", channel_name, "buy"
 

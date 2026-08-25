@@ -277,6 +277,7 @@ class DecisionEngine:
             pos.breakeven_activated = pdata.get("breakeven_activated", False)
             pos.add_count = pdata.get("add_count", 0)
             pos.empty_days = pdata.get("empty_days", 0)
+            pos.entry_avg_cost = pdata.get("entry_avg_cost", 0.0)
             pos.active_sell_count = pdata.get("active_sell_count", 0)
             positions[code] = pos
         return positions
