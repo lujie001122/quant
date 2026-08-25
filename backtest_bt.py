@@ -510,6 +510,11 @@ class ETFStrategy(bt.Strategy):
             if has_pos:
                 if price > ps["peak_price"]: ps["peak_price"] = price
 
+                # P3: 趋势强度状态机 — MA20斜率>0.3% AND MACD红柱
+                ma20_prev = self.ma20[name][-1] if len(self.ma20[name]) > 1 else ma20_v
+                ma20_slope = (ma20_v - ma20_prev) / ma20_prev if ma20_prev > 0 else 0
+                trend_strong = ma20_slope > 0.003 and ms in ("金叉", "红柱放大")
+
                 # ── 极限方案C: 取消保本止盈 ──
                 # (保本止盈已移除，保留注释以标记)
 
@@ -601,10 +606,10 @@ class ETFStrategy(bt.Strategy):
                 if ps["stop_level"] == 2 and ms not in ("死叉", "绿柱放大") and ma20_v and price > ma20_v and dif_val > 0:
                     ps["stop_level"] = 0; ps["below_ma20"] = 0
 
-                # 趋势止盈: MACD红柱缩短+破MA5+破MA10 → 卖10%活动仓 (冷却机制: 从config读取)
+                # 趋势止盈: MACD红柱缩短+破MA5+破MA10 → 卖10%活动仓 (P3: 强趋势跳过)
                 # 检查冷却期
                 trend_cooling = ps["trend_sell_cooling_until"] and date_str <= ps["trend_sell_cooling_until"]
-                if (not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
+                if (not trend_strong and not trend_cooling and name not in self._order_pending and ms == "红柱缩短" and price < ma5_v
                         and ma10_v and price < ma10_v and ps["trend_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.10 / 100) * 100
@@ -619,10 +624,10 @@ class ETFStrategy(bt.Strategy):
                                 except:
                                     ps["trend_sell_cooling_until"] = ""
 
-                # 破MA5卖活动仓5%: RSI>50时 (冷却机制: 从config读取)
+                # 破MA5卖活动仓5%: RSI>50时 (P3: 强趋势跳过)
                 # 检查冷却期
                 ma5_cooling = ps["ma5_sell_cooling_until"] and date_str <= ps["ma5_sell_cooling_until"]
-                if (not ma5_cooling and name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
+                if (not trend_strong and not ma5_cooling and name not in self._order_pending and price < ma5_v and rsi_val is not None and rsi_val > 50
                         and ps["ma5_sell_today"] < TREND_PROFIT_MAX_DAILY):
                     active_shares = int(shares * ACTIVE_RATIO)
                     sell_shares = int(active_shares * 0.05 / 100) * 100

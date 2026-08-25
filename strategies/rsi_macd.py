@@ -227,14 +227,14 @@ class RSIMACDStrategy(BaseStrategy):
             pos.below_ma20_count = 0
             pos.below_ma20_date = None
 
-        # P1: 趋势止盈(MACD红柱缩短+破MA5+破MA10) — 带冷却检查 (B6)
-        if t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
+        # P1: 趋势止盈(MACD红柱缩短+破MA5+破MA10) — P3: 强趋势跳过
+        if not t.get("trend_strong", False) and t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
             if pos.can_trend_profit_today(today_str):
                 stop_actions.append((f"趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
                 pos.record_trend_profit(today_str)
 
-        # 破MA5卖活动仓5%(active=0时不触发) — 带冷却检查 (B6)
-        if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
+        # 破MA5卖活动仓5%(active=0时不触发) — P3: 强趋势跳过
+        if not t.get("trend_strong", False) and price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
             if pos.active_shares > 0 and pos.can_ma5_sell_today(today_str):
                 stop_actions.append((f"破MA5卖活动仓5%", "sell_active_5pct"))
                 pos.record_ma5_sell(today_str)
