@@ -35,9 +35,9 @@ def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """做T买入评分(基于5分钟分时): RSI超卖+MACD多头确认+量能温和
 
     ★ RSI极端兜底通道: RSI < 25 直接返回3分(跳过MACD/量比检查)
-    - RSI_5min 25-45: 原有3项共振评分逻辑
-    - RSI_5min < 45 必须满足(超卖才摊低)
-    - MACD_5min 金叉或红柱(趋势确认)
+    - RSI_5min 25-50: 原有3项共振评分逻辑
+    - RSI_5min < 50 必须满足(超卖才摊低，震荡市放宽)
+    - MACD_5min 金叉或红柱(趋势确认，加分项；死叉/绿柱不归零，仅不加分)
     - 量比 < 1.5(不放量砸盘)
     """
     if rsi_5min is None:
@@ -46,9 +46,7 @@ def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
         return 0
     if rsi_5min < 25:
         return 3
-    if rsi_5min >= 45:
-        return 0
-    if macd_5min_status in ["死叉", "绿柱放大"]:
+    if rsi_5min >= 50:
         return 0
     score = 1
     if macd_5min_status in ["金叉", "红柱放大"]:
@@ -63,9 +61,9 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
 
     ★ RSI极端互斥: RSI < 25 时只允许买入，卖出强制归零
     - RSI > 75: 极端兜底直接满分
-    - RSI_5min 55-75: 原有3项共振评分逻辑
-    - RSI_5min > 55 必须满足(超买才卖)
-    - MACD_5min 死叉或绿柱(趋势结束)
+    - RSI_5min 50-75: 原有3项共振评分逻辑
+    - RSI_5min > 50 必须满足(超买才卖，震荡市放宽)
+    - MACD_5min 死叉或绿柱(趋势结束，加分项；金叉/红柱不归零，仅不加分)
     - 量比 > 1.2(放量拉升)
     """
     if rsi_5min is None:
@@ -74,9 +72,7 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
         return 0
     if rsi_5min > 75:
         return 3
-    if rsi_5min <= 55:
-        return 0
-    if macd_5min_status in ["金叉", "红柱放大"]:
+    if rsi_5min <= 50:
         return 0
     score = 1
     if macd_5min_status in ["死叉", "绿柱放大"]:
