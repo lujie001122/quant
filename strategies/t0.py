@@ -35,7 +35,7 @@ class T0Strategy(BaseStrategy):
         is_market_hours = market_open <= now <= market_close
         in_auction = is_auction_time(now)
 
-        if not is_market_hours or rsi_5min is None or in_auction or now.hour < 11:
+        if not is_market_hours or rsi_5min is None or in_auction:
             buy_score = 0
             sell_score = 0
         else:
