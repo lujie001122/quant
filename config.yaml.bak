@@ -1,0 +1,126 @@
+active_ratio: 0.7
+ai_signal:
+  confidence_threshold: 0.65
+  enabled: false
+  max_tokens: 1024
+  model: claude-sonnet-4-20250514
+  request_timeout: 30
+  temperature: 0.3
+atr_high_threshold: 0.05
+backtest:
+  fee: 5
+  periods:
+    1y:
+    - '2025-08-01'
+    - '2026-07-27'
+    2y:
+    - '2024-08-01'
+    - '2026-07-27'
+    3m:
+    - '2026-04-27'
+    - '2026-07-27'
+    3y:
+    - '2023-08-01'
+    - '2026-07-27'
+    5y:
+    - '2021-08-01'
+    - '2026-07-27'
+    6m:
+    - '2026-01-27'
+    - '2026-07-27'
+  risk_free_rate: 0.02
+  slippage_pct: 0.001
+  trade_end: '2026-07-27'
+  trade_start: '2021-08-01'
+broker_type: sim
+cooldown_days: 0
+dead_ratio: 0.3
+defense_code: '159611'
+max_positions: 5
+entry:
+  add_count_limit: 5
+  confirm_entry_ratio: 1.0
+  dip_pct: -0.03
+  position_cap: 1.0
+  rsi_min: 40
+  rsi_minimal: 30
+  test_cap_rsi: 35
+grid_buy_levels: 5
+grid_reset:
+  lower_levels: 6
+  upper_levels: 4
+grid_sell_levels: 3
+grid_tolerance: 0.15
+inverted_weights:
+- 0.2
+- 0.15
+- 0.2
+- 0.35
+- 0.4
+market_data:
+  ao_long: 34
+  ao_short: 5
+  api_delay: 1
+  atr_period: 14
+  dynamic_spacing:
+    max_factor: 2.0
+    min_factor: 0.5
+    weight_atr: 0.4
+    weight_base: 0.6
+  fetch_retries: 3
+  kline_limit: 1200
+  ma_periods:
+  - 5
+  - 10
+  - 20
+  macd_5min_fast: 5
+  macd_5min_signal: 5
+  macd_5min_slow: 34
+  macd_fast: 12
+  macd_signal: 9
+  macd_slow: 26
+  rsi_period: 14
+  vol_ratio_5min_period: 20
+  vol_ratio_period: 20
+max_daily_buys: 1
+max_daily_t0: 2
+max_per_etf: 220000
+order:
+  max_retries: 3
+  retry_interval: 5
+  timeout_seconds: 300
+profit_take:
+  hard_take_profit: 0.6
+  sell_active_ratio: 0.05
+  trailing_15pct: 0.08
+  trailing_8pct: 0.1
+  trend_profit_ratio: 0.1
+signal:
+  before_11: '11:00'
+  max_retries: 3
+  retry_timeout: 120
+  t0_sell_full_ratio: 0.2
+  t0_sell_half_ratio: 0.1
+stop_loss:
+  breakeven_margin: 0.02
+  breakeven_trigger: 0.3
+  daily_loss_limit_pct: 0.2
+  hard_stop_pct: 0.25
+t0:
+  ma20_slope_buy_cap: -0.005
+  ma20_slope_sell_cap: 0.003
+  min_hour: 11
+  min_spread: 200
+  pair_atr_multiplier: 1.1
+  pair_ratio: 0.3
+  rsi_buy_max: 45
+  rsi_extreme_buy: 25
+  rsi_extreme_sell: 75
+  rsi_sell_min: 55
+total_fund: 220000
+trend:
+  empty_days_threshold: 0
+  ma20_slope_period: 5
+trend_profit:
+  cooldown_days: 0
+  max_daily: 2
