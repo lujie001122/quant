@@ -770,7 +770,7 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.15, f"补仓15% 跌{dip*100:.0f}%"):
                         ps["bought_today"] = True; ps["add_count"] += 1
 
-                # 确认加仓分批: 分2次每次30%, 间隔1天
+                # 确认加仓分批: 分2次每次30%, 当天可加仓
                 elif (price > ps["first_price"] or ps["ma5_touch_count"] >= 2) and ps["build_phase"] == 1:
                     ao_ok = True
                     if ao_val is not None and ao_5ago is not None and ao_val <= ao_5ago:
@@ -781,9 +781,7 @@ class ETFStrategy(bt.Strategy):
                             ps["confirm_batch_count"] = 0
                         if "confirm_batch_date" not in ps:
                             ps["confirm_batch_date"] = ""
-                        if ps.get("confirm_batch_date") == date_str:
-                            pass  # 同日已加仓, 等下个交易日
-                        elif ps["confirm_batch_count"] >= 2:
+                        if ps["confirm_batch_count"] >= 2:
                             ps["build_phase"] = 2
                             ps["bought_today"] = True
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price

@@ -346,7 +346,7 @@ class RSIMACDStrategy(BaseStrategy):
                     pos.add_count += 1
                     return ("买入", "15%(补仓)", "buy", f"逆势补仓:跌{dip_pct*100:.0f}%加仓15%(MACD{t['macd_status']})")
 
-            # ── 确认加仓: 突破首笔价或回踩MA5站稳 → 分3次每次30%，间隔1天 ──
+            # ── 确认加仓: 突破首笔价或回踩MA5站稳 → 分3次每次30%，当天可加仓 ──
             if price > pos.build_first_price or pos.ma5_touch_count >= 2:
                 ao_now = t.get("ao_now")
                 ao_5ago = t.get("ao_5ago")
@@ -356,13 +356,11 @@ class RSIMACDStrategy(BaseStrategy):
                 elif _position_capped:
                     return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 elif pos.can_buy_today(today_str, atr_pct):
-                    # 确认加仓分批: 最多3次, 每次30%, 间隔1天
+                    # 确认加仓分批: 最多3次, 每次30%, 当天可加仓
                     if not hasattr(pos, 'confirm_batch_count'):
                         pos.confirm_batch_count = 0
                     if not hasattr(pos, 'confirm_batch_date'):
                         pos.confirm_batch_date = None
-                    if pos.confirm_batch_date == today_str:
-                        return ("持有(等确认)", None, None, f"确认加仓{pos.confirm_batch_count+1}/3批: 同日已加仓, 等下个交易日")
                     if pos.confirm_batch_count >= 3:
                         pos.build_phase = 2
                         pos.base_price = pos.avg_cost
