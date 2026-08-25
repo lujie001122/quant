@@ -265,7 +265,6 @@ class DecisionEngine:
             pos.shares = pdata.get("shares", 0)
             pos.avg_cost = pdata.get("avg_cost", 0.0)
             pos.cost = pos.avg_cost * pos.shares
-            pos.entry_avg_cost = pdata.get("entry_avg_cost", 0.0)
             pos.base_price = pdata.get("base_price", pos.avg_cost)
             pos.peak_price = pdata.get("peak_price", 0.0)
             pos.build_phase = pdata.get("build_phase", 0)

@@ -385,7 +385,6 @@
       "shares": 88200,
       "avg_cost": 0.715,
       "current_price": 0.705,
-      "market_price": 0.705,
       "market_value": 62181.0,
       "pnl": -871.07,
       "pnl_pct": -1.38
@@ -395,7 +394,6 @@
       "shares": 59700,
       "avg_cost": 0.653,
       "current_price": 0.648,
-      "market_price": 0.648,
       "market_value": 38685.6,
       "pnl": -307.61,
       "pnl_pct": -0.79
@@ -406,5 +404,5 @@
     "cash": 117864.72,
     "market_value": 100866.6
   },
-  "last_updated": "2026-08-25 17:06"
+  "last_updated": "2026-08-25 17:25"
 }
