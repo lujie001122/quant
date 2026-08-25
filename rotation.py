@@ -75,6 +75,7 @@ ETF_CANDIDATES = {
     "512170": {"name": "医疗ETF",        "sid": "sh512170", "sector": "医药"},
     "512010": {"name": "医药ETF",        "sid": "sh512010", "sector": "医药"},
     "159929": {"name": "医药ETF",        "sid": "sz159929", "sector": "医药"},
+    "513780": {"name": "港股创新药ETF",   "sid": "sh513780", "sector": "医药"},
     # ── 周期/有色/煤炭/稀土 ──
     "512400": {"name": "有色ETF",        "sid": "sh512400", "sector": "周期"},
     "515220": {"name": "煤炭ETF",        "sid": "sh515220", "sector": "周期"},
