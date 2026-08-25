@@ -141,11 +141,13 @@ class RSIMACDStrategy(BaseStrategy):
 
     @staticmethod
     def _update_entry_cost(pos, price, ratio, code):
-        """买入时加权平均更新 entry_avg_cost"""
+        """买入时加权平均更新 entry_avg_cost（不回改shares，回测引擎自己管理）"""
         fund = ETFS.get(code, {}).get("fund", 44000)
         shares = int(fund * ratio / price / 100) * 100
-        if shares >= 100:
-            pos.add_shares(price, shares)
+        if shares >= 100 and pos.shares > 0 and pos.entry_avg_cost > 0:
+            pos.entry_avg_cost = (pos.entry_avg_cost * pos.shares + price * shares) / (pos.shares + shares)
+        elif shares >= 100:
+            pos.entry_avg_cost = price
 
     def evaluate_stop(self, pos, t, price, today_str):
         """评估止盈止损信号
