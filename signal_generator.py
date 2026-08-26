@@ -34,9 +34,6 @@ from position_info import (
 
 # ── 策略判定 ──
 from strategies.rsi_macd import (
-    is_auction_time,
-    t0_buy_score, t0_sell_score,
-    _compute_stop_loss_price, _compute_breakeven_price, _compute_trailing_stop,
     check_defense,
 )
 from strategies.grid import (
@@ -147,7 +144,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     pos_pf = pf_data["positions"].get(code, {})
                     p.shares = pos_pf.get("shares", 0)
                     if p.shares > 0:
-                        p.cost = pos_pf.get("total_cost", p.shares * pos_pf.get("avg_cost", 0))
                         p.avg_cost = pos_pf["avg_cost"]
                         p.current_price = pos_pf.get("current_price", 0.0)
                         p.base_price = pos_pf.get("base_price") or pos_pf["avg_cost"]
@@ -535,9 +531,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "strategy_policy": {
             "stop_loss": "均价止损12%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
             "profit_take": "移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈30%→清仓",
-            "t0_signal": "弹性做T(5分钟分时:RSI5m<45买入+MACD5m金叉/红柱+量比<1.5; RSI5m>55卖出+MACD5m死叉/绿柱+量比>1.2,配对ATR×1.1,30%数量,11点后运行)",
-            "entry": "6通道(RSI抄底/趋势跟踪/突破入场/分批建仓/Test抄底/试探)统一30%→确认70%→补仓15%",
-            "frequency": "正常1买2T/天, ATR>5%时2买3T/天, 11:00后只做T不买入",
+            "t0_signal": "弹性做T(5分钟分时:RSI5m<50买入+MACD5m金叉/红柱+量比<1.5; RSI5m>50卖出+MACD5m死叉/绿柱+量比>1.2,30%数量,开盘后即可运行)",
+            "entry": "6通道(RSI抄底/趋势跟踪/突破入场/分批建仓/Test抄底/试探)统一30%→确认2次→补仓15%",
+            "frequency": "正常1买2T/天, ATR>5%时2买3T/天",
         },
     }
 

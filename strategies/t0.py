@@ -113,7 +113,7 @@ class T0Strategy(BaseStrategy):
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_shares = int(pos.shares * 0.30 / 100) * 100
+                    pair_shares = max(int(pos.shares * 0.30 / 100) * 100, 5000)
                     pair_price = calc_t0_pair_price(price, pair_shares, True)  # 固定+230价差
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(pair_price - price) * pair_shares
@@ -132,11 +132,11 @@ class T0Strategy(BaseStrategy):
             elif "卖出" in t0_signal:
                 if record_t0:
                     pos.record_t0(today_str)
-                ratio = 0.1 if "半" in t0_signal else 0.2
+                ratio = 0.2
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_shares = int(pos.shares * 0.30 / 100) * 100
+                    pair_shares = max(int(pos.shares * 0.30 / 100) * 100, 5000)
                     pair_price = calc_t0_pair_price(price, pair_shares, False)  # 固定+230价差
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(price - pair_price) * pair_shares

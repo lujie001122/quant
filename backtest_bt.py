@@ -290,8 +290,8 @@ class ETFStrategy(bt.Strategy):
                 "cooldown_until": "", "peak_price": 0.0,
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
                 "pending_order": None, "stop_cooldown": False,
-                "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(最多3次)
-                "active_sell_until": "",  # 活动仓卖出冷却日期(已废弃，对齐实盘)
+                "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(已废弃)
+                "active_sell_until": "",  # 已废弃，对齐实盘冷却机制
                 # 趋势止盈冷却机制: 单日最多3次，触发后3天冷却
                 "trend_sell_today": 0,  # 当日趋势止盈次数
                 "trend_sell_cooling_until": "",  # 趋势止盈冷却截止日期
@@ -306,6 +306,7 @@ class ETFStrategy(bt.Strategy):
                 "last_grid_trigger": None,  # 上次网格触发
                 "last_reset_date": "",  # 上次网格重置日期
                 "grid_entry_avg": 0.0,  # 网格买入均价(独立止损用)
+                "grid_entry_shares": 0,  # 网格买入总股数(加权平均用)
             }
 
         # 统计
@@ -448,6 +449,7 @@ class ETFStrategy(bt.Strategy):
         ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
         ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
         ps["grid_entry_avg"] = 0.0
+        ps["grid_entry_shares"] = 0
         ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -676,12 +678,16 @@ class ETFStrategy(bt.Strategy):
                             pct = grid_weight  # 网格权重 (0.20-0.40)
                             if self._buy(d, pct, f"网格{grid_signal}"):
                                 ps["bought_today"] = True
-                                # 更新网格买入均价
+                                # 更新网格买入均价（加权平均）
                                 if ps["grid_entry_avg"] == 0.0:
                                     ps["grid_entry_avg"] = price
+                                    ps["grid_entry_shares"] = int(TOTAL_FUND * pct / price / 100) * 100
                                 else:
-                                    # 加权平均
-                                    ps["grid_entry_avg"] = (ps["grid_entry_avg"] * 0.5 + price * 0.5)
+                                    old_avg = ps["grid_entry_avg"]
+                                    old_shares = ps["grid_entry_shares"]
+                                    new_shares = int(TOTAL_FUND * pct / price / 100) * 100
+                                    ps["grid_entry_avg"] = (old_avg * old_shares + price * new_shares) / (old_shares + new_shares)
+                                    ps["grid_entry_shares"] += new_shares
                                 if "熔断" in grid_signal:
                                     ps["grid_frozen"] = True
                             # B3: 不立即重置，跨天重置

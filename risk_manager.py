@@ -37,7 +37,7 @@ _config_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'conf
 try:
     with open(_config_path, 'r') as _f:
         _cfg = _yaml.safe_load(_f) or {}
-    _daily_loss = _cfg.get('stop_loss', {}).get('avg_cost_pct', 0.20)
+    _daily_loss = _cfg.get('stop_loss', {}).get('daily_loss_limit_pct', 0.20)
 except Exception:
     _daily_loss = 0.20
 
@@ -140,6 +140,8 @@ class RiskManager:
         return self._evaluate_stop_loss(pos, t, price, today_str)
 
     def _evaluate_stop_loss(self, pos, t, price, today_str):
+        # TODO(P1-6): 统一止损逻辑 — risk_manager.py 和 rsi_macd.py 有重复的 _evaluate_stop_loss,
+        # 应统一为单一来源。当前暂不修改，风险太大，等回测验证后再统一。
         """止盈止损评估核心逻辑"""
         stop_actions = []
 
@@ -189,10 +191,13 @@ class RiskManager:
             stop_actions.append(("分级止损2级:DIF<0再减30%", "reduce_30pct_all"))
             pos.stop_level = 2
 
-        # Level 1c: MACD死叉/绿柱放大 → 清仓
+        # Level 1c: MACD死叉/绿柱放大 → 清仓（需额外确认: price<MA20持续3天 或 RSI<35）
         if pos.stop_level == 2 and t["macd_status"] in ["死叉", "绿柱放大"]:
-            stop_actions.append(("分级止损3级:MACD趋势恶化清仓", "liquidate_trend"))
-            pos.stop_level = 3
+            below_ma20_3days = pos.below_ma20_count >= 3
+            rsi_low = t["rsi"] is not None and t["rsi"] < 35
+            if below_ma20_3days or rsi_low:
+                stop_actions.append(("分级止损3级:MACD趋势恶化清仓", "liquidate_trend"))
+                pos.stop_level = 3
 
         # 分级止损恢复
         if pos.stop_level > 0 and t["ma20"] and price > t["ma20"] and t["dif"] is not None and t["dif"] > 0 and t["macd_status"] in ["红柱放大", "红柱缩短"]:

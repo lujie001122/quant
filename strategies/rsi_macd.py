@@ -12,7 +12,7 @@ RSIMACDStrategy — RSI+MACD建仓止损策略
 
 from strategies.base import BaseStrategy
 from datetime import datetime
-from position_info import DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, GRID_BUY_LEVELS, GRID_SELL_LEVELS, MAX_DAILY_BUYS, MAX_DAILY_T0, DEFENSE_CODE, COOLDOWN_DAYS, INVERTED_WEIGHTS, MAX_POSITION_RATIO
+from position_info import TOTAL_FUND, MAX_POSITION_RATIO
 from market_data import ETFS
 
 # ═══════════════════════════════════════════════
@@ -296,8 +296,8 @@ class RSIMACDStrategy(BaseStrategy):
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"RSI抄底:MACD金叉(RSI={t['rsi']})")
 
-            # 通道2: 趋势跟踪 (空仓>10天+MACD红柱) → 30%(极限方案C: 去掉MA20过滤)
-            if pos.empty_days > 10 and t["macd_status"] in ["红柱放大", "红柱缩短"] and pos.can_buy_today(today_str, atr_pct):
+            # 通道2: 趋势跟踪 (空仓>5天+MACD红柱) → 30%(极限方案C: 去掉MA20过滤)
+            if pos.empty_days > 5 and t["macd_status"] in ["红柱放大", "红柱缩短"] and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(趋势跟踪)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"趋势跟踪:价>MA20+{t['macd_status']}")
@@ -356,25 +356,25 @@ class RSIMACDStrategy(BaseStrategy):
                 elif _position_capped:
                     return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 elif pos.can_buy_today(today_str, atr_pct):
-                    # 确认加仓分批: 最多3次, 每次30%, 间隔1天
+                    # 确认加仓分批: 最多2次, 每次30%, 间隔1天
                     if not hasattr(pos, 'confirm_batch_count'):
                         pos.confirm_batch_count = 0
                     if not hasattr(pos, 'confirm_batch_date'):
                         pos.confirm_batch_date = None
                     if pos.confirm_batch_date == today_str:
-                        return ("持有(等确认)", None, None, f"确认加仓{pos.confirm_batch_count+1}/3批: 同日已加仓, 等下个交易日")
-                    if pos.confirm_batch_count >= 3:
+                        return ("持有(等确认)", None, None, f"确认加仓{pos.confirm_batch_count+1}/2批: 同日已加仓, 等下个交易日")
+                    if pos.confirm_batch_count >= 2:
                         pos.build_phase = 2
                         pos.base_price = pos.avg_cost
                         pos.peak_price = price
                         pos.add_count += 1
-                        return ("持有(建仓完成)", None, None, "确认加仓3批已完成, 进入phase2")
+                        return ("持有(建仓完成)", None, None, "确认加仓2批已完成, 进入phase2")
                     pos.record_buy(today_str)
                     self._update_entry_cost(pos, price, 0.30, code)
                     pos.confirm_batch_count += 1
                     pos.confirm_batch_date = today_str
                     pos.add_count += 1
-                    if pos.confirm_batch_count >= 3:
+                    if pos.confirm_batch_count >= 2:
                         pos.build_phase = 2
                         pos.base_price = pos.avg_cost
                         pos.peak_price = price

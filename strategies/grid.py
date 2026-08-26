@@ -10,6 +10,7 @@ GridStrategy — 网格加仓减仓策略
 
 from strategies.base import BaseStrategy
 from position_info import GRID_BUY_LEVELS, GRID_SELL_LEVELS, INVERTED_WEIGHTS
+import math
 
 
 # 常量（从 position_info 统一导入，避免跨文件定义不一致）
@@ -60,7 +61,6 @@ class GridStrategy(BaseStrategy):
         """计算网格表"""
         if base_price is None:
             return None
-        import math
         table = {"base": base_price, "spacing": spacing, "buy": [], "sell": []}
         for i in range(1, GRID_BUY_LEVELS + 1):
             p = base_price * (1 - spacing * i)
