@@ -177,8 +177,46 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             klines = [k for k in klines if start_dt <= k["date"] <= end_dt]
             return klines
     except Exception as e:
-        logger.warning(f"{code} 腾讯接口失败: {e}, 降级为akshare")
-        print(f"[WARN] {code} 腾讯接口失败: {e}, 降级为akshare")
+        logger.warning(f"{code} 腾讯接口失败: {e}, 降级为Sina")
+        print(f"[WARN] {code} 腾讯接口失败: {e}, 降级为Sina")
+
+    # 降级: Sina (新浪财经K线)
+    try:
+        sina_url = (f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                    f"CN_MarketData.getKLineData?symbol={sid}&scale=240&ma=no&datalen=5000")
+        req = urllib.request.Request(sina_url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        if not raw:
+            raise RuntimeError(f"{code} Sina接口返回空数据")
+        klines = []
+        for item in raw:
+            try:
+                o, c, h, l = float(item["open"]), float(item["close"]), float(item["high"]), float(item["low"])
+                v = float(item["volume"])
+                pct = round((c - o) / o * 100, 2) if o > 0 else 0
+                klines.append({
+                    "date": item["day"],
+                    "open": o, "close": c, "high": h, "low": l,
+                    "volume": v, "amount": 0, "pct": pct,
+                })
+            except (ValueError, KeyError, IndexError):
+                continue
+        if klines:
+            # 按 start/end 过滤（start/end 为 YYYYMMDD 格式，K线日期为 YYYY-MM-DD）
+            start_dt = datetime.strptime(start, "%Y%m%d").strftime("%Y-%m-%d")
+            end_dt = datetime.strptime(end, "%Y%m%d").strftime("%Y-%m-%d")
+            klines = [k for k in klines if start_dt <= k["date"] <= end_dt]
+            for k in klines:
+                k["source"] = "sina"
+            logger.warning(f"{code} 使用降级数据源 Sina，指标计算可能偏差")
+            return klines
+    except Exception as e2:
+        logger.warning(f"{code} Sina接口失败: {e2}, 降级为akshare")
+        print(f"[WARN] {code} Sina接口失败: {e2}, 降级为akshare")
 
     # 降级: akshare
     try:

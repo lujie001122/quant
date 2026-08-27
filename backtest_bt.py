@@ -260,6 +260,7 @@ class ETFStrategy(bt.Strategy):
         ("fund_per_etf", 44000),  # 每只ETF资金基数，默认44000（与实盘一致）
         ("rotation_mode", False),  # 全仓轮动: 每周一满仓动量第1名
         ("concentrated_mode", False),  # 集中持仓: 只持有TOP2最强ETF
+        ("concentrated_pyramid_mode", False),  # 集中TOP2+50%建仓+趋势加码
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
     )
 
@@ -477,6 +478,182 @@ class ETFStrategy(bt.Strategy):
 
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
+
+        # ═══ 集中TOP2+50%建仓+趋势加码模式 ═══
+        if self.p.concentrated_pyramid_mode:
+            # 计算20日动量排名
+            momentum_scores = {}
+            for d in self.datas:
+                name = d._name
+                if d.volume[0] < 0:
+                    momentum_scores[name] = -999
+                elif len(d.close) >= 21:
+                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                else:
+                    momentum_scores[name] = -999
+            ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+            top2 = set(name for name, _ in ranked[:2])
+            top4 = set(name for name, _ in ranked[:4])
+
+            # 每日重置
+            for ps in self.ps.values():
+                ps["bought_today"] = False
+
+            for d in self.datas:
+                name = d._name
+                ps = self.ps[name]
+                price = d.close[0]
+
+                if d.volume[0] < 0:
+                    continue
+                if name in self._order_pending:
+                    continue
+
+                rsi_val = self.rsi[name].rsi[0]
+                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                dif_val = self.macd[name].dif[0]
+                ma5_v = self.ma5[name][0]
+                ma10_v = self.ma10[name][0]
+                ma20_v = self.ma20[name][0]
+                atr_val = self.atr[name].atr[0]
+
+                has_pos = self._has_position(d)
+                shares = self._get_shares(d)
+                avg = self._get_avg_cost(d)
+
+                if has_pos:
+                    # 跌出TOP4则清仓
+                    if name not in top4:
+                        self._close(d, f"集中金字塔清仓: 跌出TOP4 排名{momentum_scores.get(name, -999):.1f}%")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                    if price > ps["peak_price"]:
+                        ps["peak_price"] = price
+
+                    # 均价止损: 用锁定建仓均价
+                    entry_cost = ps.get("entry_avg_cost", 0) or avg
+                    if entry_cost > 0:
+                        pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                        if pos_ratio > 0.80:
+                            stop_pct = 0.15
+                        elif pos_ratio >= 0.50:
+                            stop_pct = 0.20
+                        else:
+                            stop_pct = 0.25
+                        if price <= entry_cost * (1 - stop_pct):
+                            self._close(d, f"集中金字塔均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                            self._full_liquidate_state(ps, date_str)
+                            continue
+
+                    # 硬止损25%
+                    if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                        self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                    # 移动止盈
+                    pp = (price - avg) / avg if avg > 0 else 0
+                    if pp >= 0.08 and not ps["reached_8"]:
+                        ps["reached_8"] = True
+                    if pp >= 0.15 and not ps["reached_15"]:
+                        ps["reached_15"] = True
+                        ps["trail"] = avg * 1.05
+                    if ps["reached_15"] and ps["peak_price"] > 0:
+                        ps["trail"] = ps["peak_price"] * 0.93
+                    if ps["trail"] > 0 and price <= ps["trail"]:
+                        label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
+                        self._close(d, f"{label} trail={ps['trail']:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                    # ═══ 金字塔加码逻辑 ═══
+                    if "pyramid_count" not in ps:
+                        ps["pyramid_count"] = 0
+                    if "base_shares" not in ps:
+                        ps["base_shares"] = 0
+
+                    if entry_cost > 0 and price > entry_cost:
+                        float_profit = (price - entry_cost) / entry_cost
+                        current_value = shares * price
+                        max_value = TOTAL_FUND * 0.50  # 单只ETF仓位上限50%
+
+                        if ps["pyramid_count"] == 0 and float_profit > 0.05:
+                            # 加仓金额 = 首次建仓金额 × 0.5
+                            # 首次建仓金额 = fund_per_etf * 0.50, 所以加仓 pct = 0.25
+                            add_pct = 0.25
+                            add_value = self.p.fund_per_etf * add_pct
+                            if current_value + add_value <= max_value:
+                                if self._buy(d, add_pct, f"集中金字塔加仓1 浮盈{float_profit*100:.1f}%"):
+                                    ps["pyramid_count"] = 1
+                                    ps["bought_today"] = True
+                        elif ps["pyramid_count"] == 1 and float_profit > 0.10:
+                            add_pct = 0.25
+                            add_value = self.p.fund_per_etf * add_pct
+                            if current_value + add_value <= max_value:
+                                if self._buy(d, add_pct, f"集中金字塔加仓2 浮盈{float_profit*100:.1f}%"):
+                                    ps["pyramid_count"] = 2
+                                    ps["bought_today"] = True
+                else:
+                    # 只对TOP2 ETF允许建仓
+                    if name not in top2:
+                        continue
+                    if ps["build_phase"] > 0:
+                        continue
+                    if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
+                        continue
+
+                    atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+                    if not atr_ok:
+                        continue
+
+                    # 多头排列
+                    if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                        continue
+
+                    # 10日新高
+                    h10 = None
+                    if len(d.close) >= 11:
+                        h10 = max(d.close.get(size=10, ago=1))
+
+                    entered = False
+
+                    # 通道1: RSI抄底 → 50%建仓
+                    if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
+                        if self._buy(d, 0.50, f"集中金字塔RSI抄底50% RSI={rsi_val:.1f}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道2: 趋势跟踪 → 50%建仓
+                    if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
+                        if self._buy(d, 0.50, f"集中金字塔趋势跟踪50% 空仓{ps['empty_days']}d"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道3: 突破入场 → 50%建仓
+                    if not entered and h10 is not None and price > h10 and ms == "金叉":
+                        if self._buy(d, 0.50, f"集中金字塔突破入场50% 10日高={h10:.3f}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道4: 分批建仓 → 50%建仓
+                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                        if self._buy(d, 0.50, f"集中金字塔分批建仓50% MACD{ms}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+            # 更新empty_days
+            for name, ps in self.ps.items():
+                if not any(self._has_position(d) for d in self.datas if d._name == name):
+                    if ps["build_phase"] == 0:
+                        ps["empty_days"] += 1
+                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                ps["prev_macd_status"] = ms
+
+            # 记录每日净值
+            total = self.broker.getvalue()
+            self.daily_values.append((date_str, total, self.broker.getcash()))
+            return
 
         # ═══ 集中持仓模式 ═══
         if self.p.concentrated_mode:
@@ -1200,6 +1377,7 @@ def main():
     run_515880 = "--515880" in sys.argv
     run_rotation = "--rotation" in sys.argv  # 全仓轮动模式
     run_concentrated = "--concentrated" in sys.argv  # 集中持仓模式
+    run_concentrated_pyramid = "--concentrated-pyramid" in sys.argv  # 集中TOP2+50%建仓+趋势加码
     run_pyramid = "--pyramid" in sys.argv  # 趋势加码模式
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
@@ -1290,9 +1468,10 @@ def main():
 
     # 计算每只ETF的资金基数（与实盘一致：total_fund / ETF数量）
     # 集中持仓模式: 每只ETF = TOTAL_FUND / 2
-    if run_concentrated:
+    if run_concentrated or run_concentrated_pyramid:
         FUND_PER_ETF = TOTAL_FUND // 2
-        print(f"▸ 集中持仓模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / 2)")
+        mode_label = "集中金字塔" if run_concentrated_pyramid else "集中持仓"
+        print(f"▸ {mode_label}模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / 2)")
     else:
         FUND_PER_ETF = TOTAL_FUND // len(active_codes)
         print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {len(active_codes)}只)")
@@ -1304,6 +1483,7 @@ def main():
     cerebro.addstrategy(ETFStrategy, fund_per_etf=FUND_PER_ETF,
                         rotation_mode=run_rotation,
                         concentrated_mode=run_concentrated,
+                        concentrated_pyramid_mode=run_concentrated_pyramid,
                         pyramid_mode=run_pyramid)
 
     # Analyzers
