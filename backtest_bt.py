@@ -257,6 +257,7 @@ class ETFStrategy(bt.Strategy):
     params = (
         ("max_per_etf", MAX_PER_ETF),
         ("cooldown_days", COOLDOWN_DAYS),
+        ("fund_per_etf", 44000),  # 每只ETF资金基数，默认44000（与实盘一致）
     )
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -388,9 +389,9 @@ class ETFStrategy(bt.Strategy):
         return self.getposition(data).size > 0
 
     def _buy(self, data, pct, reason):
-        """按总资金比例买入，与实盘一致：使用 TOTAL_FUND 而非动态 portfolio value"""
+        """按每只ETF资金基数买入，与实盘一致：使用 fund_per_etf 而非 TOTAL_FUND"""
         name = data._name
-        target_value = min(TOTAL_FUND * pct, TOTAL_FUND * POSITION_CAP)
+        target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * POSITION_CAP)
         price = data.close[0]
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
@@ -530,7 +531,7 @@ class ETFStrategy(bt.Strategy):
                 # 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% — B1: 用锁定建仓均价而非动态均价
                 entry_cost = ps.get("entry_avg_cost", 0) or avg
                 if entry_cost > 0:
-                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
+                    pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
                     if pos_ratio > 0.80:
                         stop_pct = 0.15
                     elif pos_ratio >= 0.50:
@@ -687,11 +688,11 @@ class ETFStrategy(bt.Strategy):
                                 # 更新网格买入均价（加权平均）
                                 if ps["grid_entry_avg"] == 0.0:
                                     ps["grid_entry_avg"] = price
-                                    ps["grid_entry_shares"] = int(TOTAL_FUND * pct / price / 100) * 100
+                                    ps["grid_entry_shares"] = int(self.p.fund_per_etf * pct / price / 100) * 100
                                 else:
                                     old_avg = ps["grid_entry_avg"]
                                     old_shares = ps["grid_entry_shares"]
-                                    new_shares = int(TOTAL_FUND * pct / price / 100) * 100
+                                    new_shares = int(self.p.fund_per_etf * pct / price / 100) * 100
                                     ps["grid_entry_avg"] = (old_avg * old_shares + price * new_shares) / (old_shares + new_shares)
                                     ps["grid_entry_shares"] += new_shares
                                 if "熔断" in grid_signal:
@@ -1036,11 +1037,15 @@ def main():
 
     cerebro = bt.Cerebro()
 
+    # 计算每只ETF的资金基数（与实盘一致：total_fund / ETF数量）
+    FUND_PER_ETF = TOTAL_FUND // len(active_codes)
+    print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {len(active_codes)}只)")
+
     for code, df in dataframes.items():
         data = bt.feeds.PandasData(dataname=df, name=code)
         cerebro.adddata(data, name=code)
 
-    cerebro.addstrategy(ETFStrategy)
+    cerebro.addstrategy(ETFStrategy, fund_per_etf=FUND_PER_ETF)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
