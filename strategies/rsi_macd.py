@@ -157,7 +157,7 @@ class RSIMACDStrategy(BaseStrategy):
             pos.entry_avg_cost = price
 
     def evaluate_stop(self, pos, t, price, today_str):
-        """评估止盈止损信号
+        """评估止盈止损信号（统一入口：委托给 RiskManager，避免逻辑重复）
 
         返回:
           stop_actions: [(signal_name, signal_type), ...]
@@ -166,104 +166,13 @@ class RSIMACDStrategy(BaseStrategy):
                          "reduce_30pct_all" | "liquidate_trend" |
                          "trend_profit_sell" | "sell_active_5pct"
         """
-        stop_actions = []
-
-        if not pos.has_position:
-            return stop_actions
-
-        # ── 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% ──
-        if pos.entry_cost > 0:
-            pos_ratio = pos.shares * price / TOTAL_FUND if price > 0 else 0
-            if pos_ratio > 0.80:
-                stop_pct = 0.15
-            elif pos_ratio >= 0.50:
-                stop_pct = 0.20
-            else:
-                stop_pct = 0.25
-            if price <= pos.entry_cost * (1 - stop_pct):
-                stop_actions.append((f"均价止损{stop_pct*100:.0f}%(仓位{pos_ratio*100:.0f}%,avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
-
-        # ── 硬止盈60%: base_price*1.60(极限方案C) ──
-        if pos.base_price and price >= pos.base_price * 1.60:
-            stop_actions.append((f"硬止盈60%(基准{pos.base_price:.3f}→现价{price:.3f})", "liquidate_60pct"))
-
-        # ── 移动止盈 ──
-        if pos.trailing_stop_price > 0 and price <= pos.trailing_stop_price:
-            label = "移动止盈8%(成本+5%)" if not pos.reached_15pct else "移动止盈15%(峰值回撤5%)"
-            stop_actions.append((f"{label}:触线{pos.trailing_stop_price:.3f}", "liquidate_trailing"))
-
-        # ── 硬止损25%: 从价格峰值回撤25%清仓(极限方案C: 放宽) ──
-        if pos.peak_price > 0 and price < pos.peak_price * 0.75:
-            stop_actions.append((f"硬止损25%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_25pct"))
-
-        # Level 1a: 连续2天破MA20 → 减30%总仓
-        if t["ma20"] and pos.stop_level == 0:
-            if price < t["ma20"]:
-                if pos.below_ma20_date != today_str:
-                    pos.below_ma20_count += 1
-                    pos.below_ma20_date = today_str
-                if pos.below_ma20_count >= 2:
-                    stop_actions.append(("分级止损1级:连续2天破MA20减30%", "reduce_30pct_all"))
-                    pos.stop_level = 1
-            else:
-                pos.below_ma20_count = 0
-                pos.below_ma20_date = None
-
-        # Level 1b: DIF<0 → 再减30%
-        if pos.stop_level == 1 and t["dif"] is not None and t["dif"] < 0:
-            stop_actions.append(("分级止损2级:DIF<0再减30%", "reduce_30pct_all"))
-            pos.stop_level = 2
-
-        # Level 1c: MACD死叉/绿柱放大 → 清仓（需额外确认: price<MA20持续3天 或 RSI<35）
-        if pos.stop_level == 2 and t["macd_status"] in ["死叉", "绿柱放大"]:
-            below_ma20_3days = pos.below_ma20_count >= 3
-            rsi_low = t["rsi"] is not None and t["rsi"] < 35
-            if below_ma20_3days or rsi_low:
-                stop_actions.append(("分级止损3级:MACD趋势恶化清仓", "liquidate_trend"))
-                pos.stop_level = 3
-
-        # 分级止损恢复(价>MA20+DIF>0+MACD红柱)
-        if pos.stop_level > 0 and t["ma20"] and price > t["ma20"] and t["dif"] is not None and t["dif"] > 0 and t["macd_status"] in ["红柱放大", "红柱缩短"]:
-            pos.stop_level = 0
-            pos.below_ma20_count = 0
-            pos.below_ma20_date = None
-
-        # 分级止损恢复: stop_level=2 但 MACD 未恶化且价格恢复 → 重置
-        if pos.stop_level == 2 and t["macd_status"] not in ["死叉", "绿柱放大"] and t["ma20"] and price > t["ma20"] and t["dif"] is not None and t["dif"] > 0:
-            pos.stop_level = 0
-            pos.below_ma20_count = 0
-            pos.below_ma20_date = None
-
-        # P1: 趋势止盈(MACD红柱缩短+破MA5+破MA10) — 带冷却检查 (B6)
-        if t["macd_status"] == "红柱缩短" and price < t["ma5"] and t.get("ma10") and price < t["ma10"]:
-            if pos.can_trend_profit_today(today_str):
-                stop_actions.append((f"趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
-                pos.record_trend_profit(today_str)
-
-        # 破MA5卖活动仓5%(active=0时不触发) — 带冷却检查 (B6)
-        if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
-            if pos.active_shares > 0 and pos.can_ma5_sell_today(today_str):
-                stop_actions.append((f"破MA5卖活动仓5%", "sell_active_5pct"))
-                pos.record_ma5_sell(today_str)
-
-        return stop_actions
+        from risk_manager import check_stop_loss as _rm_check_stop
+        return _rm_check_stop(pos, t, price, today_str)
 
     def resolve_stop_signal(self, pos, stop_actions):
-        """从 stop_actions 列表解析最终止盈止损信号文本"""
-        if not stop_actions:
-            if pos.has_position:
-                return "未触发"
-            else:
-                return "未触发(无持仓)"
-
-        # 优先级: 清仓 > 减仓 > 卖活动仓
-        for sig_name, sig_type in stop_actions:
-            if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct", "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
-                return sig_name
-        for sig_name, sig_type in stop_actions:
-            if sig_type in ("reduce_30pct_all",):
-                return sig_name
-        return stop_actions[0][0]
+        """从 stop_actions 列表解析最终止盈止损信号文本（统一入口：委托给 RiskManager）"""
+        from risk_manager import resolve_stop_signal as _rm_resolve_stop
+        return _rm_resolve_stop(pos, stop_actions)
 
     def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
         """6通道建仓判定 + 补仓/确认加仓

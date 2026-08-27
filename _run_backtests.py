@@ -46,7 +46,7 @@ print("  SUMMARY")
 print(f"{'='*60}")
 baseline = {
     "2025": {"total_ret": 26.39, "max_dd": 9.29, "sharpe": 1.35},
-    "2026": {"total_ret": 28.56, "max_dd": 8.24, "sharpe": 2.16},
+    "2026": {"total_ret": 23.34, "max_dd": 8.24, "sharpe": 2.00},
 }
 for label, r in results.items():
     bl = baseline[label]

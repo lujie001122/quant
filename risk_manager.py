@@ -140,8 +140,8 @@ class RiskManager:
         return self._evaluate_stop_loss(pos, t, price, today_str)
 
     def _evaluate_stop_loss(self, pos, t, price, today_str):
-        # TODO(P1-6): 统一止损逻辑 — risk_manager.py 和 rsi_macd.py 有重复的 _evaluate_stop_loss,
-        # 应统一为单一来源。当前暂不修改，风险太大，等回测验证后再统一。
+        # P0-6: 已统一止损逻辑 — rsi_macd.py 的 evaluate_stop 和 resolve_stop_signal
+        # 现在委托给 risk_manager，单一来源。risk_manager 是唯一止损逻辑真相来源。
         """止盈止损评估核心逻辑"""
         stop_actions = []
 
