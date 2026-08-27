@@ -273,9 +273,14 @@ def get_etfs_config(fund_per_etf=None):
             with open(config_path, 'r') as f:
                 _cfg = yaml.safe_load(f) or {}
             max_per_etf = _cfg.get('max_per_etf', 220000)
-            pool = _load_pool()
-            n_etfs = len(pool['etf_pool']) if pool else len(_DEFAULT_CODES)
-            fund_per_etf = max_per_etf // n_etfs
+            # 集中模式：每只ETF分一半资金
+            if _cfg.get('concentrated_mode', False):
+                top_n = _cfg.get('concentrated_top_n', 2)
+                fund_per_etf = max_per_etf // top_n
+            else:
+                pool = _load_pool()
+                n_etfs = len(pool['etf_pool']) if pool else len(_DEFAULT_CODES)
+                fund_per_etf = max_per_etf // n_etfs
         except Exception:
             fund_per_etf = 44000
     pool = _load_pool()

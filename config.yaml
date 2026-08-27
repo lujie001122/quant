@@ -1,5 +1,7 @@
 active_ratio: 0.7
 atr_high_threshold: 0.05
+concentrated_mode: true
+concentrated_top_n: 2
 backtest:
   fee: 5
   periods:
@@ -33,7 +35,7 @@ entry:
   add_count_limit: 5
   confirm_entry_ratio: 1.0
   dip_pct: -0.03
-  position_cap: 1.0
+  position_cap: 0.50
   rsi_min: 40
   rsi_minimal: 30
   test_cap_rsi: 35

@@ -10,6 +10,7 @@ ETF轮动扫描器 v2.0
 import json
 import sys
 import os
+import yaml
 from datetime import datetime
 
 # ── 项目根目录 ──────────────────────────────────────────
@@ -335,8 +336,23 @@ def run_rotation(force_write=False):
     force_write=False: 输出到 /tmp/rotation_advice.json，不写 etf_pool.json
     force_write=True: 额外写入 etf_pool.json（原行为）
     """
-    print("▸ ETF轮动扫描 v2.0")
+    print("\u25b8 ETF轮动扫描 v2.0")
     print(f"  日期: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    # 读取集中模式配置
+    config_path_cfg = os.path.join(_DIR, "config.yaml")
+    concentrated_mode = False
+    concentrated_top_n = 2
+    if os.path.exists(config_path_cfg):
+        try:
+            with open(config_path_cfg, "r", encoding="utf-8") as f:
+                _cfg = yaml.safe_load(f) or {}
+            concentrated_mode = _cfg.get("concentrated_mode", False)
+            concentrated_top_n = _cfg.get("concentrated_top_n", 2)
+        except Exception:
+            pass
+    if concentrated_mode:
+        print(f"  \u26a1 集中TOP{concentrated_top_n}模式")
 
     # 1. 获取扫描范围
     targets = get_scan_targets()
@@ -570,6 +586,21 @@ def run_rotation(force_write=False):
     for c in defense_picks:
         pick_types[c] = "防御"
 
+    # ── 集中TOP2模式：覆盖 all_picks 为动量加权得分 TOP N ──
+    if concentrated_mode:
+        top_picks = []
+        top_picked_sectors = set()
+        for code, r in by_weighted:
+            if len(top_picks) >= concentrated_top_n:
+                break
+            sector = r.get("sector", "")
+            if sector not in top_picked_sectors:
+                top_picks.append(code)
+                top_picked_sectors.add(sector)
+        all_picks = top_picks
+        pick_types = {c: "集中TOP" for c in all_picks}
+        print(f"  \u26a1 集中TOP{concentrated_top_n}模式: {', '.join(c + '(' + str(round(results[c]['weighted_score'], 1)) + ')' for c in all_picks)}")
+
     # 当前 etf_pool.json 中的标的
     current_pool_codes = set()
     if os.path.exists(pool_path):
@@ -585,15 +616,18 @@ def run_rotation(force_write=False):
         reasons = []
         advice = "保持"
 
-        if code in momentum_picks:
+        if code in all_picks:
             advice = "调入"
-            reasons.append(f"动量TOP{momentum_count} (加权={r['weighted_score']:.1f}, 4w={r['momentum_4w']*100:+.2f}%, 8w={r['momentum_8w']*100:+.2f}% rf)" if r['momentum_8w'] else f"动量TOP{momentum_count} (加权={r['weighted_score']:.1f})")
-        elif code in defense_picks:
+            if concentrated_mode:
+                reasons.append(f"集中TOP{concentrated_top_n} (加权={r['weighted_score']:.1f}, 4w={r['momentum_4w']*100:+.2f}%, 8w={r['momentum_8w']*100:+.2f}% rf)" if r['momentum_8w'] else f"集中TOP{concentrated_top_n} (加权={r['weighted_score']:.1f})")
+            else:
+                reasons.append(f"动量TOP{momentum_count} (加权={r['weighted_score']:.1f}, 4w={r['momentum_4w']*100:+.2f}%, 8w={r['momentum_8w']*100:+.2f}% rf)" if r['momentum_8w'] else f"动量TOP{momentum_count} (加权={r['weighted_score']:.1f})")
+        elif code in defense_picks and not concentrated_mode:
             advice = "调入"
             reasons.append(f"防御优选 (回撤={r['max_drawdown']:.1f}%, 动量={r['momentum_4w']*100:+.2f}%, 波动={r['volatility']:.1f}%)")
         elif code in current_pool_codes and code not in all_picks:
             advice = "调出"
-            reasons.append("不在新一轮TOP3/防御中，动量不足或被替换")
+            reasons.append("不在新一轮TOP3/防御中，动量不足或被替换" if not concentrated_mode else f"不在集中TOP{concentrated_top_n}中，动量不足或被替换")
         else:
             # 检查是否为持仓标的
             if code in current_pool_codes:

@@ -112,6 +112,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
     today_str = datetime.now().strftime("%Y-%m-%d")
 
+    # 读取 etf_pool.json 获取监控池标的（非监控池仅允许卖出）
+    pool_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etf_pool.json")
+    pool_codes = set()
+    if os.path.exists(pool_path):
+        try:
+            with open(pool_path) as _f:
+                _pool = json.load(_f)
+            pool_codes = set(_pool.get("codes", []))
+        except Exception:
+            pass
+
     # 读取 portfolio.json 判断哪些标的今日已交易
     pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
     already_traded_today = set()
@@ -471,6 +482,14 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # 兜底：position_ratio 为 None 时设为 "0%"
         if position_ratio is None:
             position_ratio = "0%"
+
+        # ── 非监控池标的：只允许卖出/清仓，禁止买入 ──
+        if pool_codes and code not in pool_codes:
+            if trade_type in ("buy",) or (trade_type == "t0" and "买入" in action):
+                action = "持有(非监控池)"
+                position_ratio = "0%"
+                reason = f"非监控池标的，仅允许卖出; {reason}"
+                trade_type = None
 
         signals_output[code] = {
             "price": f"{price:.3f}",
