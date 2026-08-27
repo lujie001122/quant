@@ -41,7 +41,6 @@ ETF_CANDIDATES = {
     "515050": {"name": "中证全指ETF",    "sid": "sh515050", "sector": "通信"},
     # ── 宽基 ──
     "512100": {"name": "中证1000ETF",    "sid": "sh512100", "sector": "宽基"},
-    "510050": {"name": "上证50ETF",      "sid": "sh510050", "sector": "宽基"},
     "510300": {"name": "沪深300ETF",     "sid": "sh510300", "sector": "宽基"},
     "159915": {"name": "创业板ETF",      "sid": "sz159915", "sector": "宽基"},
     "510500": {"name": "中证500ETF",     "sid": "sh510500", "sector": "宽基"},
@@ -82,7 +81,6 @@ ETF_CANDIDATES = {
     "516150": {"name": "稀土ETF",        "sid": "sh516150", "sector": "周期"},
     # ── 农业/畜牧 ──
     "516670": {"name": "畜牧ETF",        "sid": "sz516670", "sector": "农业"},
-    "159865": {"name": "养殖ETF",        "sid": "sz159865", "sector": "农业"},
     # ── 公用/电力/基建 ──
     "159611": {"name": "电力ETF",        "sid": "sz159611", "sector": "公用"},
     "516970": {"name": "基建ETF",        "sid": "sh516970", "sector": "基建"},
