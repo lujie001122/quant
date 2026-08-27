@@ -19,7 +19,6 @@
   mm.update_build_phase(pos, price, tech)
 """
 
-import math
 
 # 从 position_info 导入统一常量
 from position_info import TOTAL_FUND, DEAD_RATIO, ACTIVE_RATIO, MAX_PER_ETF
@@ -96,11 +95,6 @@ class MoneyManager:
         """获取首笔建仓比例 (根据通道)"""
         # 6通道统一返回30%，build_phase逻辑由策略层处理
         return 0.30
-
-    @staticmethod
-    def get_confirm_entry_ratio(pos):
-        """获取确认加仓比例 (极限方案C: 100%全仓)"""
-        return 1.00
 
     @staticmethod
     def get_build_ratio(pos):

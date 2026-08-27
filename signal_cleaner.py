@@ -12,8 +12,8 @@ signal_cleaner.py — AI信号清洗
   cleaned = clean_signals(result, portfolio_data)
 """
 
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Dict, Optional
 
 
 # ═══════════════════════════════════════════════════════

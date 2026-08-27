@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-backtrader 回测引擎 v3: 5 ETF 共享资金池量化策略
+backtrader 回测引擎 v3: 9 ETF 共享资金池量化策略
 用 backtrader 原生 order/broker 体系，策略只管信号+仓位比例
 
 核心:
-  - 5只ETF共享一个broker资金池(backtrader天然支持)
-  - 每只ETF资金=总资金20%, 按比例下单
+  - 9只ETF共享一个broker资金池(backtrader天然支持)
+  - 每只ETF资金=总资金/9, 按比例下单
   - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 

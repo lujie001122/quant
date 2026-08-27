@@ -21,7 +21,6 @@ executor.py — 交易执行器
 Phase 4: 从 trade.py 提取抽象层，为回测和实盘提供统一接口。
 """
 
-import json
 import os
 import sys
 import time
