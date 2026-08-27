@@ -117,7 +117,7 @@ t0:
   rsi_sell_min: 50
 total_fund: 220000
 trend:
-  empty_days_threshold: 10
+  empty_days_threshold: 5
   ma20_slope_period: 5
 trend_profit:
   cooldown_days: 2

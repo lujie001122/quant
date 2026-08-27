@@ -339,6 +339,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = "10%(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
+                    # P1-6: 只减活动仓（当前dead_shares=0，活动仓=总仓，语义等价）
                     pos.reduce_shares(pct=10, price=price)
                     break
                 elif sig_type == "sell_active_5pct":

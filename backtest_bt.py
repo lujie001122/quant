@@ -96,7 +96,7 @@ _DEFAULT_CODES = {
     "000725": {"name": "京东方A", "sid": "sz000725"},
 }
 
-from state_center import get_code_map
+from state_center import get_code_map, get_etfs_config
 
 CODES = get_code_map()
 # 保留 000725 用于 --000725 模式
@@ -279,8 +279,10 @@ class ETFStrategy(bt.Strategy):
 
         # 每ETF状态
         self.ps = {}
+        _etfs_config = get_etfs_config()
         for d in self.datas:
             n = d._name
+            _base_spacing = _etfs_config.get(n, {}).get("base_spacing", 0.025)
             self.ps[n] = {
                 "base": 0.0, "first_price": 0.0, "build_phase": 0,
                 "bought_today": False, "stop_level": 0,
@@ -307,6 +309,7 @@ class ETFStrategy(bt.Strategy):
                 "last_reset_date": "",  # 上次网格重置日期
                 "grid_entry_avg": 0.0,  # 网格买入均价(独立止损用)
                 "grid_entry_shares": 0,  # 网格买入总股数(加权平均用)
+                "base_spacing": _base_spacing,  # ETF基础网格间距
             }
 
         # 统计
@@ -539,13 +542,15 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
                         continue
 
-                # 硬止盈60%(极限方案C)
-                if ps["base"] > 0 and price >= ps["base"] * 1.60:
-                    self._close(d, f"硬止盈60% base={ps['base']:.3f}")
+                # 硬止盈(从config读取，极限方案C)
+                hard_tp = 1 + CONF['profit_take']['hard_take_profit']
+                if ps["base"] > 0 and price >= ps["base"] * hard_tp:
+                    self._close(d, f"硬止盈{CONF['profit_take']['hard_take_profit']*100:.0f}% base={ps['base']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
 
                 # 移动止盈(8%后不改线，15%后再设)
+                # TODO(P1-2): 移动止盈阈值(0.08/0.15/1.05/0.93)也应从config读取
                 pp = (price - avg) / avg if avg > 0 else 0
                 if pp >= 0.08 - 0.0001 and not ps["reached_8"]:
                     ps["reached_8"] = True
@@ -652,9 +657,10 @@ class ETFStrategy(bt.Strategy):
                     ps["grid_frozen"] = False
 
                 if ps["grid_base_price"] > 0:
-                    # 计算动态间距 (ATR/price 钳制)
+                    # 计算动态间距 (使用ETF的base_spacing，与实盘dynamic_spacing一致)
                     atr_pct_grid = atr_val / price if atr_val and price > 0 else 0.025
-                    spacing = round(max(0.0125, min(0.05, 0.6 * 0.025 + 0.4 * atr_pct_grid)), 4)
+                    base_sp = ps.get("base_spacing", 0.025)
+                    spacing = round(max(base_sp * 0.5, min(base_sp * 2.0, 0.6 * base_sp + 0.4 * atr_pct_grid)), 4)
 
                     # 网格重置检查
                     upper_limit = ps["grid_base_price"] * (1 + spacing * 4)
@@ -741,8 +747,8 @@ class ETFStrategy(bt.Strategy):
                     if self._buy(d, 0.30, f"RSI抄底30% RSI={rsi_val:.1f}"):
                         self._init_on_entry(ps, price); entered = True
 
-                # 通道2: 趋势跟踪 (空仓>5天+MACD红柱，去掉MA20过滤对齐实盘)
-                if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
+                # 通道2: 趋势跟踪 (空仓>N天+MACD红柱，去掉MA20过滤对齐实盘)
+                if not entered and ps["empty_days"] > CONF['trend']['empty_days_threshold'] and ms in ("红柱放大", "红柱缩短"):
                     if self._buy(d, 0.30, f"趋势跟踪30% 空仓{ps['empty_days']}d"):
                         self._init_on_entry(ps, price); entered = True
 

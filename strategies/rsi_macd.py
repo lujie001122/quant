@@ -14,6 +14,13 @@ from strategies.base import BaseStrategy
 from datetime import datetime
 from position_info import TOTAL_FUND, MAX_POSITION_RATIO
 from market_data import ETFS
+import os, yaml
+
+# ── 加载 config.yaml ──
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yaml')
+with open(_CONFIG_PATH) as f:
+    _CONF = yaml.safe_load(f)
+EMPTY_DAYS_THRESHOLD = _CONF['trend']['empty_days_threshold']
 
 # ═══════════════════════════════════════════════
 # 常量（从 position_info 统一导入，避免跨文件定义不一致）
@@ -296,8 +303,8 @@ class RSIMACDStrategy(BaseStrategy):
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"RSI抄底:MACD金叉(RSI={t['rsi']})")
 
-            # 通道2: 趋势跟踪 (空仓>5天+MACD红柱) → 30%(极限方案C: 去掉MA20过滤)
-            if pos.empty_days > 5 and t["macd_status"] in ["红柱放大", "红柱缩短"] and pos.can_buy_today(today_str, atr_pct):
+            # 通道2: 趋势跟踪 (空仓>N天+MACD红柱) → 30%(极限方案C: 去掉MA20过滤)
+            if pos.empty_days > EMPTY_DAYS_THRESHOLD and t["macd_status"] in ["红柱放大", "红柱缩短"] and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(趋势跟踪)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"趋势跟踪:价>MA20+{t['macd_status']}")
