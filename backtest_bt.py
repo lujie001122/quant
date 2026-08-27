@@ -258,6 +258,9 @@ class ETFStrategy(bt.Strategy):
         ("max_per_etf", MAX_PER_ETF),
         ("cooldown_days", COOLDOWN_DAYS),
         ("fund_per_etf", 44000),  # 每只ETF资金基数，默认44000（与实盘一致）
+        ("rotation_mode", False),  # 全仓轮动: 每周一满仓动量第1名
+        ("concentrated_mode", False),  # 集中持仓: 只持有TOP2最强ETF
+        ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
     )
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -312,6 +315,9 @@ class ETFStrategy(bt.Strategy):
                 "grid_entry_shares": 0,  # 网格买入总股数(加权平均用)
                 "base_spacing": _base_spacing,  # ETF基础网格间距
             }
+        # 全仓轮动状态
+        self._rotation_etf = None  # 当前持有的ETF名称
+        self._rotation_entry_price = 0.0  # 轮动入场价(止损用)
 
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
@@ -438,6 +444,7 @@ class ETFStrategy(bt.Strategy):
         ps["build_phase"] = 1; ps["bought_today"] = True
         ps["add_count"] = 0; ps["empty_days"] = 0; ps["stop_cooldown"] = False
         ps["entry_avg_cost"] = price  # B1: 锁定建仓均价供止损判断
+        ps["pyramid_count"] = 0  # 金字塔加仓次数
 
     def _full_liquidate_state(self, ps, date_str):
         """清仓后重置状态"""
@@ -455,13 +462,232 @@ class ETFStrategy(bt.Strategy):
         ps["grid_entry_avg"] = 0.0
         ps["grid_entry_shares"] = 0
         ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
+        ps["pyramid_count"] = 0  # 重置金字塔加仓次数
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
         except: ps["cooldown_until"] = ""
 
+    def _is_monday(self, date_str):
+        """判断是否为周一（0=Monday）"""
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").weekday() == 0
+        except:
+            return False
+
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
+
+        # ═══ 集中持仓模式 ═══
+        if self.p.concentrated_mode:
+            # 计算20日动量排名
+            momentum_scores = {}
+            for d in self.datas:
+                name = d._name
+                if d.volume[0] < 0:
+                    momentum_scores[name] = -999
+                elif len(d.close) >= 21:
+                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                else:
+                    momentum_scores[name] = -999
+            ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+            top2 = set(name for name, _ in ranked[:2])
+            top4 = set(name for name, _ in ranked[:4])
+
+            # 每日重置
+            for ps in self.ps.values():
+                ps["bought_today"] = False
+
+            for d in self.datas:
+                name = d._name
+                ps = self.ps[name]
+                price = d.close[0]
+
+                if d.volume[0] < 0:
+                    continue
+                if name in self._order_pending:
+                    continue
+
+                rsi_val = self.rsi[name].rsi[0]
+                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                dif_val = self.macd[name].dif[0]
+                ma5_v = self.ma5[name][0]
+                ma10_v = self.ma10[name][0]
+                ma20_v = self.ma20[name][0]
+                atr_val = self.atr[name].atr[0]
+
+                has_pos = self._has_position(d)
+                shares = self._get_shares(d)
+                avg = self._get_avg_cost(d)
+
+                if has_pos:
+                    # 跌出TOP4则清仓
+                    if name not in top4:
+                        self._close(d, f"集中持仓清仓: 跌出TOP4 排名{momentum_scores.get(name, -999):.1f}%")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                    if price > ps["peak_price"]:
+                        ps["peak_price"] = price
+
+                    # 均价止损: 用锁定建仓均价
+                    entry_cost = ps.get("entry_avg_cost", 0) or avg
+                    if entry_cost > 0:
+                        pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                        if pos_ratio > 0.80:
+                            stop_pct = 0.15
+                        elif pos_ratio >= 0.50:
+                            stop_pct = 0.20
+                        else:
+                            stop_pct = 0.25
+                        if price <= entry_cost * (1 - stop_pct):
+                            self._close(d, f"集中持仓均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                            self._full_liquidate_state(ps, date_str)
+                            continue
+
+                    # 硬止损25%
+                    if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                        self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                    # 移动止盈
+                    pp = (price - avg) / avg if avg > 0 else 0
+                    if pp >= 0.08 and not ps["reached_8"]:
+                        ps["reached_8"] = True
+                    if pp >= 0.15 and not ps["reached_15"]:
+                        ps["reached_15"] = True
+                        ps["trail"] = avg * 1.05
+                    if ps["reached_15"] and ps["peak_price"] > 0:
+                        ps["trail"] = ps["peak_price"] * 0.93
+                    if ps["trail"] > 0 and price <= ps["trail"]:
+                        label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
+                        self._close(d, f"{label} trail={ps['trail']:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+                else:
+                    # 只对TOP2 ETF允许建仓
+                    if name not in top2:
+                        continue
+                    if ps["build_phase"] > 0:
+                        continue
+                    if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
+                        continue
+
+                    atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+                    if not atr_ok:
+                        continue
+
+                    # 多头排列
+                    if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                        continue
+
+                    # 10日新高
+                    h10 = None
+                    if len(d.close) >= 11:
+                        h10 = max(d.close.get(size=10, ago=1))
+
+                    entered = False
+
+                    # 通道1: RSI抄底
+                    if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
+                        if self._buy(d, 0.30, f"集中RSI抄底30% RSI={rsi_val:.1f}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道2: 趋势跟踪
+                    if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
+                        if self._buy(d, 0.30, f"集中趋势跟踪30% 空仓{ps['empty_days']}d"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道3: 突破入场
+                    if not entered and h10 is not None and price > h10 and ms == "金叉":
+                        if self._buy(d, 0.30, f"集中突破入场30% 10日高={h10:.3f}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道4: 分批建仓
+                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                        if self._buy(d, 0.30, f"集中分批建仓30% MACD{ms}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+            # 更新empty_days
+            for name, ps in self.ps.items():
+                if not any(self._has_position(d) for d in self.datas if d._name == name):
+                    if ps["build_phase"] == 0:
+                        ps["empty_days"] += 1
+                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                ps["prev_macd_status"] = ms
+
+            # 记录每日净值
+            total = self.broker.getvalue()
+            self.daily_values.append((date_str, total, self.broker.getcash()))
+            return
+
+        # ═══ 全仓轮动模式 ═══
+        if self.p.rotation_mode:
+            # 计算20日动量排名
+            momentum_scores = {}
+            for d in self.datas:
+                name = d._name
+                if d.volume[0] < 0:
+                    momentum_scores[name] = -999
+                elif len(d.close) >= 21:
+                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                else:
+                    momentum_scores[name] = -999
+            top_etf = max(momentum_scores, key=momentum_scores.get)
+            top_momentum = momentum_scores[top_etf]
+
+            # 找到当前持仓ETF
+            held_etf = None
+            held_data = None
+            for d in self.datas:
+                if self._has_position(d):
+                    held_etf = d._name
+                    held_data = d
+                    break
+
+            # 止损检查: 从买入价回撤10%
+            if held_etf and self._rotation_entry_price > 0:
+                held_price = held_data.close[0]
+                if held_price <= self._rotation_entry_price * 0.90:
+                    self._close(held_data, f"轮动止损-10% entry={self._rotation_entry_price:.3f}")
+                    held_etf = None
+                    self._rotation_etf = None
+                    self._rotation_entry_price = 0.0
+
+            # 每周一检查轮动
+            if self._is_monday(date_str):
+                if held_etf and held_etf != top_etf:
+                    # 轮动: 清仓旧的，买入新的
+                    self._close(held_data, f"轮动换仓 {held_etf}→{top_etf} 动量{top_momentum:.1f}%")
+                    held_etf = None
+                    self._rotation_etf = None
+                    self._rotation_entry_price = 0.0
+
+                if not held_etf and top_momentum > -999:
+                    # 买入动量第1名
+                    for d in self.datas:
+                        if d._name == top_etf:
+                            price = d.close[0]
+                            # 100%资金买入
+                            target_value = TOTAL_FUND * 0.98  # 留2%给手续费
+                            target_shares = int(target_value / price / 100) * 100
+                            if target_shares >= 100:
+                                cost = target_shares * price * (1 + SLIPPAGE_PCT) + FEE
+                                if cost <= self.broker.getcash():
+                                    self._order_pending[top_etf] = self.buy(data=d, size=target_shares)
+                                    self.ps[top_etf]['_last_entry_reason'] = f"轮动买入 动量{top_momentum:.1f}%"
+                                    self._rotation_etf = top_etf
+                                    self._rotation_entry_price = price
+
+            # 记录每日净值
+            total = self.broker.getvalue()
+            self.daily_values.append((date_str, total, self.broker.getcash()))
+            return  # 轮动模式不执行其他逻辑
 
         # 每日计数器重置: 新交易日重置趋势止盈和破MA5卖活动仓的当日计数
         if date_str != self._last_date:
@@ -716,6 +942,28 @@ class ETFStrategy(bt.Strategy):
                                         ps["grid_base_price"] = round(price, 3)  # 上移基准价
                             # B3: 不立即重置，跨天重置
 
+                # ═══ 趋势加码逻辑 (金字塔加仓) ═══
+                if self.p.pyramid_mode:
+                    entry_cost = ps.get("entry_avg_cost", 0) or avg
+                    if entry_cost > 0 and price > entry_cost:
+                        float_profit = (price - entry_cost) / entry_cost
+                        if "pyramid_count" not in ps:
+                            ps["pyramid_count"] = 0
+                        current_value = shares * price
+                        max_value = TOTAL_FUND * 0.50
+                        if ps["pyramid_count"] == 0 and float_profit > 0.05:
+                            add_value = self.p.fund_per_etf * 0.30
+                            if current_value + add_value <= max_value:
+                                if self._buy(d, 0.30, f"金字塔加仓1 浮盈{float_profit*100:.1f}%"):
+                                    ps["pyramid_count"] = 1
+                                    ps["bought_today"] = True
+                        elif ps["pyramid_count"] == 1 and float_profit > 0.10:
+                            add_value = self.p.fund_per_etf * 0.30
+                            if current_value + add_value <= max_value:
+                                if self._buy(d, 0.30, f"金字塔加仓2 浮盈{float_profit*100:.1f}%"):
+                                    ps["pyramid_count"] = 2
+                                    ps["bought_today"] = True
+
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
@@ -950,6 +1198,9 @@ def main():
     # ── 命令行参数 ──
     run_000725 = "--000725" in sys.argv
     run_515880 = "--515880" in sys.argv
+    run_rotation = "--rotation" in sys.argv  # 全仓轮动模式
+    run_concentrated = "--concentrated" in sys.argv  # 集中持仓模式
+    run_pyramid = "--pyramid" in sys.argv  # 趋势加码模式
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -1038,14 +1289,22 @@ def main():
     cerebro = bt.Cerebro()
 
     # 计算每只ETF的资金基数（与实盘一致：total_fund / ETF数量）
-    FUND_PER_ETF = TOTAL_FUND // len(active_codes)
-    print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {len(active_codes)}只)")
+    # 集中持仓模式: 每只ETF = TOTAL_FUND / 2
+    if run_concentrated:
+        FUND_PER_ETF = TOTAL_FUND // 2
+        print(f"▸ 集中持仓模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / 2)")
+    else:
+        FUND_PER_ETF = TOTAL_FUND // len(active_codes)
+        print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {len(active_codes)}只)")
 
     for code, df in dataframes.items():
         data = bt.feeds.PandasData(dataname=df, name=code)
         cerebro.adddata(data, name=code)
 
-    cerebro.addstrategy(ETFStrategy, fund_per_etf=FUND_PER_ETF)
+    cerebro.addstrategy(ETFStrategy, fund_per_etf=FUND_PER_ETF,
+                        rotation_mode=run_rotation,
+                        concentrated_mode=run_concentrated,
+                        pyramid_mode=run_pyramid)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
