@@ -25,7 +25,6 @@ from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
 # ═══════════════════════════════════════════════════════
 ETF_CANDIDATES = {
     # ── 科技/半导体/芯片 ──
-    "512480": {"name": "半导体ETF",      "sid": "sh512480", "sector": "半导体"},
     "159995": {"name": "芯片ETF",        "sid": "sz159995", "sector": "芯片"},
     "588000": {"name": "科创50ETF",      "sid": "sh588000", "sector": "科创"},
     # ── AI/机器人/算力 ──
