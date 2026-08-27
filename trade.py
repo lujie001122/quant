@@ -56,13 +56,14 @@ def _call_evolving(method_name, *args, e=None):
 # ─── 数量校验 ──────────────────────────────────────────────────────────
 
 def _validate_shares(shares):
-    """校验数量是 100 的整数倍，且不低于 5000 股"""
+    """校验数量是 100 的整数倍，且不低于 5000 股。不足5000自动修正为5000。"""
     if shares < 5000:
-        print(f"❌ 数量 {shares} 低于 5000 股下限")
-        sys.exit(1)
+        print(f"⚠️ 数量 {shares} 低于 5000 股下限，自动修正为 5000")
+        shares = 5000
     if shares % 100 != 0:
         print(f"❌ 数量 {shares} 不是 100 的整数倍")
         sys.exit(1)
+    return shares
 
 
 # ─── sync ──────────────────────────────────────────────────────────────
@@ -414,8 +415,8 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     6. 做T：挂配对反方向单（复用 e 实例）→ 同样直接认为成功
     7. _write_order 写入订单（默认成功，不检查 ok/contract）
     """
-    # 1. 校验100倍数
-    _validate_shares(shares)
+    # 1. 校验100倍数，不足5000自动修正
+    shares = _validate_shares(shares)
 
     is_t0 = action in ('t0_buy', 't0_sell')
 
