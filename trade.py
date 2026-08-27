@@ -12,7 +12,7 @@
 
 铁律:
   1. 只用 EvolvingSim 公开接口: getHoldingShares/getAccountInfo/buy/sell/getEntrust/revokeEntrust
-  2. 数量必须是 100 整数倍
+  2. 数量必须是 100 整数倍，且不低于 5000 股
   3. 调 EvolvingSim 前先 open -a 同花顺 + sleep 1，调完后 sleep 2
   4. 不用子进程 subprocess 包装 EvolvingSim
   5. 不调底层私有函数（issuingEntrust 等）
@@ -56,7 +56,10 @@ def _call_evolving(method_name, *args, e=None):
 # ─── 数量校验 ──────────────────────────────────────────────────────────
 
 def _validate_shares(shares):
-    """校验数量是 100 的整数倍"""
+    """校验数量是 100 的整数倍，且不低于 5000 股"""
+    if shares < 5000:
+        print(f"❌ 数量 {shares} 低于 5000 股下限")
+        sys.exit(1)
     if shares % 100 != 0:
         print(f"❌ 数量 {shares} 不是 100 的整数倍")
         sys.exit(1)
