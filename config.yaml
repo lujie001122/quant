@@ -1,11 +1,4 @@
 active_ratio: 0.7
-ai_signal:
-  confidence_threshold: 0.65
-  enabled: false
-  max_tokens: 1024
-  model: claude-sonnet-4-20250514
-  request_timeout: 30
-  temperature: 0.3
 atr_high_threshold: 0.05
 backtest:
   fee: 5

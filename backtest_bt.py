@@ -22,7 +22,7 @@ backtrader 回测引擎 v3: 9 ETF 共享资金池量化策略
 
 3. Intent 去重:
    - 回测: 无 intent 文件去重机制，每根K线独立决策
-   - 实盘: decision_engine → order_manager 写入 orders/intent/*.json 做去重，
+   - 实盘: 通过 order_manager 写入 orders/intent/*.json 做去重，
            避免同一信号重复下单
 
 4. 滑点与成交价:
@@ -32,7 +32,7 @@ backtrader 回测引擎 v3: 9 ETF 共享资金池量化策略
 5. 信号生成链路:
    - 回测: 直接调用 strategies.rsi_macd 的 evaluate_entry/evaluate_stop
            （简化路径，指标由 backtrader 内置计算）
-   - 实盘: signal_generator.generate_signals() → decision_engine.decide()
+   - 实盘: signal_generator.generate_signals() → order_manager.create_order()
            → order_manager.create_order() → executor.execute()
            （完整链路，含信号清洗、风控、仓位管理）
 ═══════════════════════════════════════════════════════════════════
@@ -928,39 +928,6 @@ class ETFStrategy(bt.Strategy):
 
             if entry_result and entry_result[0] == "买入":
                 print(f"[VALIDATE] {date_str} {name} strategy.py入场: {entry_result[1]} {entry_result[3]}")
-
-        # P1-6: DecisionEngine 交叉验证 — 已禁用：generate_signals() 联网拉实时行情，
-        # 回测每个 bar 都调导致极慢（3个月回测10分钟+），需离线数据源后才能启用
-        # self._validate_decision_engine(date_str, strategy_positions)
-
-    def _validate_decision_engine(self, date_str, strategy_positions):
-        """P1-6: 回测通过 DecisionEngine 管线做交叉验证。
-        调用 DecisionEngine.process_signals() 生成 OrderIntent，
-        与回测实际交易方向对比，差异记录日志。"""
-        try:
-            from decision_engine import DecisionEngine
-            from signal_generator import generate_signals
-
-            # 构建简化的 result dict（模拟 signal_generator 输出）
-            engine = DecisionEngine()
-            result = generate_signals()
-            if result is None:
-                return
-
-            # 构建 realtime
-            realtime = {}
-            for d in self.datas:
-                realtime[d._name] = {"price": d.close[0]}
-
-            # 传入真实持仓状态
-            intents = engine.process(result, strategy_positions, realtime, mode='buy_sell')
-            if intents:
-                for intent in intents:
-                    print(f"[DE-VALIDATE] {date_str} {intent.code} "
-                          f"DecisionEngine: {intent.action} {intent.shares}股 "
-                          f"@{intent.price:.3f} ({intent.trade_type}) {intent.reason[:60]}")
-        except Exception as e:
-            pass  # DecisionEngine 不可用时静默跳过
 
     def stop(self):
         print("\n" + "=" * 100)

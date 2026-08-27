@@ -745,7 +745,10 @@ def run_rotation(force_write=False):
         if removed_codes:
             print(f"\n{'─' * 60}")
             print(f"  【轮动清理】移除 {len(removed_codes)} 只标的: {removed_codes}")
-            cleanup_removed_symbols(old_pool_codes, all_picks, results)
+            rm = RotationManager()
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            for symbol in removed_codes:
+                rm.mark_removed(symbol, today_str)
 
     return output
 
@@ -879,88 +882,6 @@ class RotationManager:
                 return False
 
         return True
-
-
-# ═══════════════════════════════════════════════════════
-#  轮动清理：选池后自动撤单被移除标的的未成交挂单
-# ═══════════════════════════════════════════════════════
-
-def cleanup_removed_symbols(old_pool, new_pool,
-                            results=None):
-    """
-    轮动选池后自动清理被移除标的的未成交挂单。
-
-    参数:
-      old_pool: 旧选池代码列表
-      new_pool: 新选池代码列表
-      results: 轮动扫描结果（可选，用于日志）
-
-    返回:
-      {cancelled: int, skipped: int, errors: list}
-    """
-    removed = set(old_pool) - set(new_pool)
-    result = {"cancelled": 0, "skipped": 0, "errors": []}
-
-    if not removed:
-        return result
-
-    # 记录被移出标的到 RotationManager 观察期
-    rm = RotationManager()
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    for symbol in removed:
-        rm.mark_removed(symbol, today_str)
-
-    for symbol in removed:
-        try:
-            # 尝试使用 order_manager 撤单
-            from order_manager import OrderManager
-            om = OrderManager()
-            pending = om.get_pending_orders(symbol)
-            if pending:
-                for order in pending:
-                    try:
-                        om.cancel_order(order.order_id)
-                        print(f"  🔄 轮动移除 {symbol}，已撤单 {order.order_id}")
-                        result["cancelled"] += 1
-                    except Exception as e:
-                        print(f"  ⚠ 撤单失败 {order.order_id}: {e}")
-                        result["errors"].append(str(e))
-            else:
-                print(f"  ℹ 轮动移除 {symbol}，无未成交挂单")
-                result["skipped"] += 1
-        except ImportError:
-            # order_manager 不可用时，通过文件系统清理
-            try:
-                import os as _os
-                orders_dir = _os.path.join(_DIR, "orders")
-                if _os.path.exists(orders_dir):
-                    cancelled_local = 0
-                    for fname in _os.listdir(orders_dir):
-                        if fname.endswith(".json") and symbol in fname:
-                            fpath = _os.path.join(orders_dir, fname)
-                            try:
-                                import json as _json
-                                with open(fpath, "r") as f:
-                                    od = _json.load(f)
-                                if od.get("status") == "pending":
-                                    od["status"] = "revoked"
-                                    od["revoke_reason"] = f"轮动移除 {symbol}"
-                                    with open(fpath, "w") as f:
-                                        _json.dump(od, f, ensure_ascii=False)
-                                    cancelled_local += 1
-                                    print(f"  🔄 轮动移除 {symbol}，标记已撤单 {fname}")
-                            except Exception:
-                                pass
-                    result["cancelled"] = cancelled_local
-                    if cancelled_local == 0:
-                        result["skipped"] += 1
-                else:
-                    result["skipped"] += 1
-            except Exception as e:
-                print(f"  ⚠ 清理失败 {symbol}: {e}")
-                result["errors"].append(str(e))
-
-    return result
 
 
 # ═══════════════════════════════════════════════════════
