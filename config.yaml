@@ -108,14 +108,13 @@ stop_loss:
 t0:
   ma20_slope_buy_cap: -0.005
   ma20_slope_sell_cap: 0.003
-  min_hour: 11
   min_spread: 200
   pair_atr_multiplier: 1.1
   pair_ratio: 0.3
-  rsi_buy_max: 45
+  rsi_buy_max: 50
   rsi_extreme_buy: 25
   rsi_extreme_sell: 75
-  rsi_sell_min: 55
+  rsi_sell_min: 50
 total_fund: 220000
 trend:
   empty_days_threshold: 10

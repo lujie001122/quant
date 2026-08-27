@@ -850,6 +850,7 @@ class ETFStrategy(bt.Strategy):
                 pos.reached_15pct = ps["reached_15"]
                 pos.trailing_stop_price = ps["trail"]
                 pos.breakeven_activated = ps["breakeven_activated"]
+                pos.entry_avg_cost = ps.get("entry_avg_cost", 0.0)
                 pos.add_count = ps["add_count"]
                 pos.ma5_touch_count = ps["ma5_touch_count"]
                 pos.empty_days = ps["empty_days"]
@@ -907,7 +908,8 @@ class ETFStrategy(bt.Strategy):
                 all_klines_simple = {}
                 for dd in self.datas:
                     n = dd._name
-                    closes = [float(dd.close[-i]) for i in range(min(21, len(dd.close)), 0, -1)]
+                    n_bars = min(21, len(dd.close))
+                    closes = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]  # 旧→新顺序
                     all_klines_simple[n] = [{"close": c} for c in closes]
                 entry_result = evaluate_entry(
                     pos, t, price, realtime, strategy_positions,

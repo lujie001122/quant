@@ -184,7 +184,10 @@ def _write_order(code, action, shares, price, contract, status='pending'):
     """写订单到 orders/ 目录。"""
     os.makedirs(ORDERS_DIR, exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
-    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
+    # 序号从该目录下已有文件数计算，避免同日同方向覆盖
+    existing = len([f for f in os.listdir(ORDERS_DIR) if f.startswith(today) and f.endswith('.json')])
+    seq = existing + 1
+    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}_{seq}.json')
 
     order = {
         'code': code,
@@ -208,10 +211,15 @@ def _write_order(code, action, shares, price, contract, status='pending'):
 def _update_order_status(code, action, new_status):
     """更新 orders/ 中订单的状态。"""
     today = datetime.now().strftime('%Y%m%d')
-    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}.json')
-
-    if not os.path.exists(order_path):
-        print(f"  ⚠️ 订单文件不存在: {order_path}")
+    # 查找匹配的订单文件（支持序号后缀）
+    order_path = None
+    if os.path.exists(ORDERS_DIR):
+        for fname in sorted(os.listdir(ORDERS_DIR), reverse=True):
+            if fname.startswith(f'{today}_{code}_{action}') and fname.endswith('.json'):
+                order_path = os.path.join(ORDERS_DIR, fname)
+                break
+    if not order_path or not os.path.exists(order_path):
+        print(f"  ⚠️ 订单文件不存在: {today}_{code}_{action}_*.json")
         return
 
     try:

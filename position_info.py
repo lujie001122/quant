@@ -299,6 +299,8 @@ class PositionInfo:
             "daily_trade_log": {today_str: self.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
             "trend_profit_trigger_date": self.trend_profit_trigger_date,
             "ma5_sell_trigger_date": self.ma5_sell_trigger_date,
+            "confirm_batch_count": getattr(self, 'confirm_batch_count', 0),
+            "confirm_batch_date": getattr(self, 'confirm_batch_date', None),
             "shares": self.shares,
             "avg_cost": self.avg_cost,
             "current_price": self.current_price,
@@ -334,4 +336,6 @@ class PositionInfo:
         self.entry_avg_cost = data.get("entry_avg_cost", 0.0)
         self.trend_profit_trigger_date = data.get("trend_profit_trigger_date")
         self.ma5_sell_trigger_date = data.get("ma5_sell_trigger_date")
+        self.confirm_batch_count = data.get("confirm_batch_count", 0)
+        self.confirm_batch_date = data.get("confirm_batch_date", None)
         self.base_price = data.get("base_price")

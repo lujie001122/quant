@@ -292,6 +292,7 @@ class RiskManager:
 
     def check_daily_loss_limit(self, order_intent=None) -> Tuple[bool, str]:
         """检查当日亏损是否已达上限（极限方案C: 取消日亏损限额，始终通过）"""
+        # 极限方案C: 取消日亏损限额
         return True, "极限方案C: 日亏损限额已取消"
 
     def check_order(self, order_intent) -> Tuple[bool, str]:
