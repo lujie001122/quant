@@ -26,25 +26,19 @@ from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
 ETF_CANDIDATES = {
     # ── 科技/半导体/芯片 ──
     "512480": {"name": "半导体ETF",      "sid": "sh512480", "sector": "半导体"},
-    "512760": {"name": "半导体设备ETF",  "sid": "sh512760", "sector": "半导体"},
-    "588200": {"name": "科创芯片ETF",    "sid": "sh588200", "sector": "芯片"},
     "159995": {"name": "芯片ETF",        "sid": "sz159995", "sector": "芯片"},
     "588000": {"name": "科创50ETF",      "sid": "sh588000", "sector": "科创"},
     # ── AI/机器人/算力 ──
     "159819": {"name": "AI龙头ETF",      "sid": "sz159819", "sector": "AI"},
     "159770": {"name": "机器人ETF",      "sid": "sz159770", "sector": "机器人"},
-    "562500": {"name": "机器人ETF基金",  "sid": "sh562500", "sector": "机器人"},
     "516510": {"name": "云计算ETF",      "sid": "sh516510", "sector": "算力"},
     "515000": {"name": "科技ETF",        "sid": "sh515000", "sector": "科技"},
     # ── 通信/5G ──
     "515880": {"name": "通信ETF",        "sid": "sh515880", "sector": "通信"},
     "515050": {"name": "中证全指ETF",    "sid": "sh515050", "sector": "通信"},
     # ── 宽基 ──
-    "512100": {"name": "中证1000ETF",    "sid": "sh512100", "sector": "宽基"},
     "510300": {"name": "沪深300ETF",     "sid": "sh510300", "sector": "宽基"},
     "159915": {"name": "创业板ETF",      "sid": "sz159915", "sector": "宽基"},
-    "510500": {"name": "中证500ETF",     "sid": "sh510500", "sector": "宽基"},
-    "159845": {"name": "中证1000ETF",    "sid": "sz159845", "sector": "宽基"},
     # ── 军工/国防 ──
     "512660": {"name": "军工ETF",        "sid": "sh512660", "sector": "军工"},
     "512670": {"name": "国防ETF",        "sid": "sh512670", "sector": "军工"},
@@ -65,16 +59,12 @@ ETF_CANDIDATES = {
     "512070": {"name": "非银ETF",        "sid": "sh512070", "sector": "金融"},
     # ── 红利/高股息 ──
     "510880": {"name": "红利ETF",        "sid": "sh510880", "sector": "红利"},
-    "517090": {"name": "共赢ETF",        "sid": "sh517090", "sector": "红利"},
     # ── 医药/创新药 ──
     "512170": {"name": "医疗ETF",        "sid": "sh512170", "sector": "医药"},
-    "512010": {"name": "医药ETF",        "sid": "sh512010", "sector": "医药"},
-    "159929": {"name": "医药ETF",        "sid": "sz159929", "sector": "医药"},
     "513780": {"name": "港股创新药ETF",   "sid": "sh513780", "sector": "医药"},
     # ── 周期/有色/煤炭/稀土 ──
     "512400": {"name": "有色ETF",        "sid": "sh512400", "sector": "周期"},
     "515220": {"name": "煤炭ETF",        "sid": "sh515220", "sector": "周期"},
-    "516150": {"name": "稀土ETF",        "sid": "sh516150", "sector": "周期"},    # ── 黄金/贵金属 ──
     "518880": {"name": "黄金ETF",        "sid": "sh518880", "sector": "黄金"},
     # ── 医药细分 ──
     "159992": {"name": "创新药ETF",      "sid": "sz159992", "sector": "创新药"},
@@ -87,7 +77,6 @@ ETF_CANDIDATES = {
     # ── 商品 ──
     "159985": {"name": "豆粕ETF",        "sid": "sz159985", "sector": "商品"},
     # ── 券商 ──
-    "512000": {"name": "券商ETF",        "sid": "sh512000", "sector": "券商"},
     # ── 创业板 ──
     "159949": {"name": "创业板50ETF",     "sid": "sz159949", "sector": "创业板"},
     # ── 红利低波 ──
