@@ -259,12 +259,16 @@ class ETFStrategy(bt.Strategy):
         ("cooldown_days", COOLDOWN_DAYS),
         ("fund_per_etf", 44000),  # 每只ETF资金基数，默认44000（与实盘一致）
         ("rotation_mode", False),  # 全仓轮动: 每周一满仓动量第1名
-        ("concentrated_mode", False),  # 集中持仓: 只持有TOP2最强ETF
-        ("concentrated_pyramid_mode", False),  # 集中TOP2+50%建仓+趋势加码
+        ("concentrated_mode", False),  # 集中持仓: 只持有TOP N最强ETF
+        ("concentrated_pyramid_mode", False),  # 集中TOP N+50%建仓+趋势加码
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
         ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
         ("trail_mode", "fixed"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
         ("init_pct", 0.50),  # 建仓比例: 0.30(30%) | 0.50(50%)
+        ("top_n", 2),  # 集中持仓TOP N只ETF
+        ("lookback", 20),  # 动量回看期(日)
+        ("ma60_filter", False),  # MA60趋势过滤: 价格>MA60才持有
+        ("dynamic_pct", False),  # 动态仓位: 动量越强仓位越大
     )
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -274,7 +278,7 @@ class ETFStrategy(bt.Strategy):
         # 指标
         self.rsi = {}; self.macd = {}; self.ao = {}
         self.atr = {}
-        self.ma5 = {}; self.ma20 = {}; self.ma10 = {}
+        self.ma5 = {}; self.ma20 = {}; self.ma10 = {}; self.ma60 = {}
         for d in self.datas:
             n = d._name
             self.rsi[n] = WilderRSI(d.close)
@@ -284,6 +288,7 @@ class ETFStrategy(bt.Strategy):
             self.ma5[n] = bt.indicators.SMA(d.close, period=5)
             self.ma10[n] = bt.indicators.SMA(d.close, period=10)
             self.ma20[n] = bt.indicators.SMA(d.close, period=20)
+            self.ma60[n] = bt.indicators.SMA(d.close, period=60)
 
         # 每ETF状态
         self.ps = {}
@@ -482,21 +487,23 @@ class ETFStrategy(bt.Strategy):
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
 
-        # ═══ 集中TOP2+50%建仓+趋势加码模式 ═══
+        # ═══ 集中TOP N+50%建仓+趋势加码模式 ═══
         if self.p.concentrated_pyramid_mode:
-            # 计算20日动量排名
+            # 计算lookback日动量排名
+            lb = self.p.lookback
             momentum_scores = {}
             for d in self.datas:
                 name = d._name
                 if d.volume[0] < 0:
                     momentum_scores[name] = -999
-                elif len(d.close) >= 21:
-                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                elif len(d.close) >= lb + 1:
+                    momentum_scores[name] = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
                 else:
                     momentum_scores[name] = -999
             ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
-            top2 = set(name for name, _ in ranked[:2])
-            top4 = set(name for name, _ in ranked[:4])
+            top_n = self.p.top_n
+            top_set = set(name for name, _ in ranked[:top_n])
+            top_drop = set(name for name, _ in ranked[:top_n * 2])
 
             # 每日重置
             for ps in self.ps.values():
@@ -525,9 +532,9 @@ class ETFStrategy(bt.Strategy):
                 avg = self._get_avg_cost(d)
 
                 if has_pos:
-                    # 跌出TOP4则清仓
-                    if name not in top4:
-                        self._close(d, f"集中金字塔清仓: 跌出TOP4 排名{momentum_scores.get(name, -999):.1f}%")
+                    # 跌出TOP_N*2则清仓
+                    if name not in top_drop:
+                        self._close(d, f"集中金字塔清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
                         self._full_liquidate_state(ps, date_str)
                         continue
 
@@ -598,8 +605,8 @@ class ETFStrategy(bt.Strategy):
                                     ps["pyramid_count"] = 2
                                     ps["bought_today"] = True
                 else:
-                    # 只对TOP2 ETF允许建仓
-                    if name not in top2:
+                    # 只对TOP N ETF允许建仓
+                    if name not in top_set:
                         continue
                     if ps["build_phase"] > 0:
                         continue
@@ -661,30 +668,41 @@ class ETFStrategy(bt.Strategy):
         # ═══ 集中持仓模式 ═══
         if self.p.concentrated_mode:
             # 动量评分: 根据 momentum_mode 参数选择
-            # simple: 20日涨幅
-            # c2: 20日涨幅×0.4 + MA20斜率×0.4 + ATR归一化×0.2
+            # simple: lookback日涨幅
+            # c2: lookback日涨幅×0.4 + MA_lookback斜率×0.4 + ATR归一化×0.2
+            lb = self.p.lookback
             momentum_scores = {}
             for d in self.datas:
                 name = d._name
                 if d.volume[0] < 0:
                     momentum_scores[name] = -999
-                elif len(d.close) >= 21:
+                elif len(d.close) >= lb + 1:
                     if self.p.momentum_mode == "simple":
-                        momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                        momentum_scores[name] = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
                     else:  # c2 (default)
-                        ret20 = (d.close[0] - d.close[-20]) / d.close[-20] * 100
-                        ma20_now = self.ma20[name][0]
-                        ma20_20ago = self.ma20[name][-20] if len(self.ma20[name]) >= 21 else ma20_now
-                        ma20_slope = (ma20_now - ma20_20ago) / ma20_20ago * 100 if ma20_20ago and ma20_20ago > 0 else 0
+                        ret_lb = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
+                        ma_lb_now = self.ma20[name][0] if lb == 20 else sum(d.close.get(size=lb)) / lb
+                        if lb == 20:
+                            ma_lb_now = self.ma20[name][0]
+                            ma_lb_ago = self.ma20[name][-lb] if len(self.ma20[name]) >= lb + 1 else ma_lb_now
+                        else:
+                            # 使用对应的MA lookback
+                            if len(d.close) >= lb * 2:
+                                ma_lb_now = sum(d.close.get(size=lb)) / lb
+                                ma_lb_ago = sum(d.close.get(size=lb, ago=lb)) / lb
+                            else:
+                                ma_lb_now = ma_lb_ago = d.close[0]
+                        ma_slope = (ma_lb_now - ma_lb_ago) / ma_lb_ago * 100 if ma_lb_ago and ma_lb_ago > 0 else 0
                         atr_val = self.atr[name].atr[0]
                         price = d.close[0]
                         atr_norm = (atr_val / price * 100) if atr_val and price > 0 else 0
-                        momentum_scores[name] = ret20 * 0.4 + ma20_slope * 0.4 + atr_norm * 0.2
+                        momentum_scores[name] = ret_lb * 0.4 + ma_slope * 0.4 + atr_norm * 0.2
                 else:
                     momentum_scores[name] = -999
             ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
-            top2 = set(name for name, _ in ranked[:2])
-            top4 = set(name for name, _ in ranked[:4])
+            top_n = self.p.top_n
+            top_set = set(name for name, _ in ranked[:top_n])
+            top_drop = set(name for name, _ in ranked[:top_n * 2])  # 跌出TOP_N*2才清仓
 
             # 每日重置
             for ps in self.ps.values():
@@ -713,9 +731,17 @@ class ETFStrategy(bt.Strategy):
                 avg = self._get_avg_cost(d)
 
                 if has_pos:
-                    # 跌出TOP4则清仓
-                    if name not in top4:
-                        self._close(d, f"集中持仓清仓: 跌出TOP4 排名{momentum_scores.get(name, -999):.1f}%")
+                    # MA60趋势过滤: 价格<MA60则清仓
+                    if self.p.ma60_filter:
+                        ma60_v = self.ma60[name][0]
+                        if ma60_v and price < ma60_v:
+                            self._close(d, f"MA60过滤清仓 price={price:.3f}<MA60={ma60_v:.3f}")
+                            self._full_liquidate_state(ps, date_str)
+                            continue
+
+                    # 跌出TOP_N*2则清仓
+                    if name not in top_drop:
+                        self._close(d, f"集中持仓清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
                         self._full_liquidate_state(ps, date_str)
                         continue
 
@@ -796,13 +822,19 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
                         continue
                 else:
-                    # 只对TOP2 ETF允许建仓
-                    if name not in top2:
+                    # 只对TOP N ETF允许建仓
+                    if name not in top_set:
                         continue
                     if ps["build_phase"] > 0:
                         continue
                     if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
                         continue
+
+                    # MA60趋势过滤: 价格<MA60不允许建仓
+                    if self.p.ma60_filter:
+                        ma60_v = self.ma60[name][0]
+                        if ma60_v and price < ma60_v:
+                            continue
 
                     atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
                     if not atr_ok:
@@ -817,29 +849,41 @@ class ETFStrategy(bt.Strategy):
                     if len(d.close) >= 11:
                         h10 = max(d.close.get(size=10, ago=1))
 
+                    # 动态仓位: 根据动量得分调整
+                    if self.p.dynamic_pct:
+                        mom_score = momentum_scores.get(name, 0)
+                        if mom_score > 15:
+                            pct = self.p.init_pct * 1.2
+                        elif mom_score >= 8:
+                            pct = self.p.init_pct
+                        else:
+                            pct = self.p.init_pct * 0.6
+                    else:
+                        pct = self.p.init_pct
+
                     entered = False
 
                     # 通道1: RSI抄底
                     if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
-                        if self._buy(d, self.p.init_pct, f"集中RSI抄底{self.p.init_pct*100:.0f}% RSI={rsi_val:.1f}"):
+                        if self._buy(d, pct, f"集中RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
                     # 通道2: 趋势跟踪
                     if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                        if self._buy(d, self.p.init_pct, f"集中趋势跟踪{self.p.init_pct*100:.0f}% 空仓{ps['empty_days']}d"):
+                        if self._buy(d, pct, f"集中趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
                             self._init_on_entry(ps, price)
                             entered = True
 
                     # 通道3: 突破入场
                     if not entered and h10 is not None and price > h10 and ms == "金叉":
-                        if self._buy(d, self.p.init_pct, f"集中突破入场{self.p.init_pct*100:.0f}% 10日高={h10:.3f}"):
+                        if self._buy(d, pct, f"集中突破入场{pct*100:.0f}% 10日高={h10:.3f}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
                     # 通道4: 分批建仓
                     if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
-                        if self._buy(d, self.p.init_pct, f"集中分批建仓{self.p.init_pct*100:.0f}% MACD{ms}"):
+                        if self._buy(d, pct, f"集中分批建仓{pct*100:.0f}% MACD{ms}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
@@ -1437,6 +1481,10 @@ def main():
     momentum_mode = "c2"  # simple | c2
     trail_mode = "fixed"  # fixed | e1 | e2
     init_pct = 0.50       # 0.30 | 0.50
+    top_n = 2             # 集中持仓TOP N只ETF
+    lookback = 20         # 动量回看期(日)
+    ma60_filter = False   # MA60趋势过滤
+    dynamic_pct = False   # 动态仓位
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -1452,6 +1500,14 @@ def main():
             trail_mode = arg.split("=", 1)[1]
         elif arg.startswith("--init-pct="):
             init_pct = float(arg.split("=", 1)[1])
+        elif arg.startswith("--top-n="):
+            top_n = int(arg.split("=", 1)[1])
+        elif arg.startswith("--lookback="):
+            lookback = int(arg.split("=", 1)[1])
+        elif arg == "--ma60-filter":
+            ma60_filter = True
+        elif arg == "--dynamic-pct":
+            dynamic_pct = True
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
@@ -1539,11 +1595,11 @@ def main():
     cerebro = bt.Cerebro()
 
     # 计算每只ETF的资金基数（与实盘一致：total_fund / ETF数量）
-    # 集中持仓模式: 每只ETF = TOTAL_FUND / 2
+    # 集中持仓模式: 每只ETF = TOTAL_FUND / top_n
     if run_concentrated or run_concentrated_pyramid:
-        FUND_PER_ETF = TOTAL_FUND // 2
+        FUND_PER_ETF = TOTAL_FUND // top_n
         mode_label = "集中金字塔" if run_concentrated_pyramid else "集中持仓"
-        print(f"▸ {mode_label}模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / 2)")
+        print(f"▸ {mode_label}模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {top_n})")
     else:
         FUND_PER_ETF = TOTAL_FUND // len(active_codes)
         print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {len(active_codes)}只)")
@@ -1559,7 +1615,11 @@ def main():
                         pyramid_mode=run_pyramid,
                         momentum_mode=momentum_mode,
                         trail_mode=trail_mode,
-                        init_pct=init_pct)
+                        init_pct=init_pct,
+                        top_n=top_n,
+                        lookback=lookback,
+                        ma60_filter=ma60_filter,
+                        dynamic_pct=dynamic_pct)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
@@ -1579,7 +1639,7 @@ def main():
     print(f"▸ 引擎: backtrader v{bt.__version__}")
     print(f"▸ 共享资金池: ¥{TOTAL_FUND:,}")
     if run_concentrated:
-        print(f"▸ 策略参数: momentum={momentum_mode} trail={trail_mode} init_pct={init_pct}")
+        print(f"▸ 策略参数: momentum={momentum_mode} trail={trail_mode} init_pct={init_pct} top_n={top_n} lookback={lookback} ma60={ma60_filter} dynamic_pct={dynamic_pct}")
     if run_000725:
         print(f"▸ 单标的模式: 000725 京东方A")
 
