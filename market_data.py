@@ -347,7 +347,7 @@ def fetch_klines_daily_df(code, start="20250101", end="20261231", adjust="qfq"):
     return df
 
 
-def fetch_klines_5min(code, today=None):
+def fetch_klines_5min(code):
     """获取5分钟K线(腾讯接口, 48根覆盖4小时交易时段)
     返回: [{"time","open","close","high","low","volume","amount"}, ...]
     非交易时段返回空列表

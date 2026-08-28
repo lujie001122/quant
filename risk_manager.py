@@ -295,9 +295,9 @@ class RiskManager:
     # ═══════════════════════════════════════════════
 
     def check_daily_loss_limit(self, order_intent=None) -> Tuple[bool, str]:
-        """检查当日亏损是否已达上限（极限方案C: 取消日亏损限额，始终通过）"""
-        # 极限方案C: 取消日亏损限额
-        return True, "极限方案C: 日亏损限额已取消"
+        """检查当日亏损是否已达上限（已取消：此功能在极限方案C中永久禁用，始终返回True）"""
+        # 日亏损限额已取消，保留方法签名以兼容调用方
+        return True, "日亏损限额已取消"
 
     def check_order(self, order_intent) -> Tuple[bool, str]:
         """统一风控入口（P0 修复）

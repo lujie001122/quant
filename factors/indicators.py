@@ -16,6 +16,11 @@ factors/ — 指标计算因子模块
 
 from typing import List, Dict, Optional
 
+# 从独立因子文件导入（避免重复定义）
+from factors.macd import calc_macd
+from factors.atr import calc_atr
+from factors.ao import calc_ao
+
 
 # ═══════════════════════════════════════════════════════
 # 基础指标
@@ -46,105 +51,6 @@ def calc_rsi_wilder(closes: list, period: int = 14) -> Optional[float]:
         return 100.0
     rs = avg_gain / avg_loss
     return round(100 - 100 / (1 + rs), 2)
-
-
-def calc_macd(closes: list, fast: int = 12, slow: int = 26, sig: int = 9):
-    """
-    SMA-init MACD — 与 backtest_bt.py 完全一致
-    返回: (dif, dea, bar, status)
-    status: "金叉"/"死叉"/"红柱放大"/"红柱缩短"/"绿柱放大"/"绿柱缩短"/"震荡"/"数据不足"
-    """
-    if len(closes) < slow + sig:
-        return None, None, None, "数据不足"
-
-    # EMA初始化
-    e12 = sum(closes[:fast]) / fast
-    e26 = sum(closes[:slow]) / slow
-
-    difs = []
-    for i in range(len(closes)):
-        if i < fast:
-            difs.append(e12 - e26)
-            continue
-        e12 = closes[i] * (2 / (fast + 1)) + e12 * (1 - 2 / (fast + 1))
-        if i < slow:
-            difs.append(e12 - e26)
-            continue
-        e26 = closes[i] * (2 / (slow + 1)) + e26 * (1 - 2 / (slow + 1))
-        difs.append(e12 - e26)
-
-    e9 = difs[slow]
-    deas = []
-    for d in difs[slow + 1:]:
-        e9 = d * (2 / (sig + 1)) + e9 * (1 - 2 / (sig + 1))
-        deas.append(e9)
-
-    if len(deas) < 2:
-        return None, None, None, "数据不足"
-
-    d_now, d_prev = difs[-1], difs[-2]
-    e_now, e_prev = deas[-1], deas[-2]
-    h_now = 2 * (d_now - e_now)
-    h_prev = 2 * (d_prev - e_prev)
-
-    if d_now > e_now and d_prev <= e_prev:
-        s = "金叉"
-    elif d_now < e_now and d_prev >= e_prev:
-        s = "死叉"
-    elif d_now > e_now and h_now > h_prev:
-        s = "红柱放大"
-    elif d_now > e_now and h_now < h_prev:
-        s = "红柱缩短"
-    elif d_now < e_now and h_now < h_prev:
-        s = "绿柱放大"
-    elif d_now < e_now and h_now > h_prev:
-        s = "绿柱缩短"
-    else:
-        s = "震荡"
-
-    return round(d_now, 4), round(e_now, 4), round(h_now, 4), s
-
-
-def calc_atr(klines: list, period: int = 14) -> Optional[float]:
-    """Wilder平滑ATR"""
-    if len(klines) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(klines)):
-        k_prev, k_curr = klines[i - 1], klines[i]
-        tr = max(
-            k_curr["high"] - k_curr["low"],
-            abs(k_curr["high"] - k_prev["close"]),
-            abs(k_curr["low"] - k_prev["close"]),
-        )
-        trs.append(tr)
-    if len(trs) < period:
-        return None
-    atr = sum(trs[:period]) / period
-    for i in range(period, len(trs)):
-        atr = (atr * (period - 1) + trs[i]) / period
-    return round(atr, 4)
-
-
-def calc_ao(highs: list, lows: list, short: int = 5, long: int = 34):
-    """
-    Awesome Oscillator: SMA5(median) - SMA34(median)
-    返回: (ao_now, ao_5ago)
-    """
-    if len(highs) < long:
-        return None, None
-    medians = [(h + l) / 2 for h, l in zip(highs, lows)]
-    sma5 = sum(medians[-short:]) / short
-    sma34 = sum(medians[-long:]) / long
-    ao_now = sma5 - sma34
-    # AO 5 bars ago
-    if len(medians) >= long + 5:
-        sma5_5 = sum(medians[-short - 5:-5]) / short
-        sma34_5 = sum(medians[-long - 5:-5]) / long
-    else:
-        sma5_5, sma34_5 = sma5, sma34
-    ao_5ago = sma5_5 - sma34_5
-    return ao_now, ao_5ago
 
 
 def calc_vol_ratio(volumes: list, period: int = 20) -> Optional[float]:

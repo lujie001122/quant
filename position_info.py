@@ -41,9 +41,9 @@ def _load_config():
         _DEFAULTS['defense_code'] = cfg.get('defense_code', _DEFAULTS['defense_code'])
         _DEFAULTS['cooldown_days'] = cfg.get('cooldown_days', _DEFAULTS['cooldown_days'])
         _DEFAULTS['inverted_weights'] = cfg.get('inverted_weights', _DEFAULTS['inverted_weights'])
-        _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 极限方案C: 100%
-        _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 极限方案C
-        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('daily_loss_limit_pct', 0.20)  # 极限方案C
+        _DEFAULTS['max_per_etf'] = cfg.get('max_per_etf', 220000)  # 单只ETF资金上限
+        _DEFAULTS['max_position_ratio'] = cfg.get('entry', {}).get('position_cap', 1.00)  # 仓位上限比例
+        _DEFAULTS['max_daily_loss_pct'] = cfg.get('stop_loss', {}).get('daily_loss_limit_pct', 0.20)  # 日亏损限额(已取消)
         _DEFAULTS['trend_profit_max_daily'] = cfg.get('trend_profit', {}).get('max_daily', 5)
         _DEFAULTS['trend_profit_cooldown_days'] = cfg.get('trend_profit', {}).get('cooldown_days', 1)
     except Exception:

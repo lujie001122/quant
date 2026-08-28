@@ -94,6 +94,9 @@ _DEFAULT_CODES = {
     "159532": {"name": "中证2000ETF", "sid": "sz159532"},
     "515050": {"name": "中证全指ETF", "sid": "sh515050"},
     "159611": {"name": "电力ETF", "sid": "sz159611"},
+    "513780": {"name": "港股创新药ETF", "sid": "sh513780"},
+    "512400": {"name": "有色金属ETF", "sid": "sh512400"},
+    "515220": {"name": "煤炭ETF", "sid": "sh515220"},
 }
 
 from state_center import get_code_map, get_etfs_config
@@ -319,7 +322,6 @@ class ETFStrategy(bt.Strategy):
                 "cooldown_until": "", "peak_price": 0.0,
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
                 "pending_order": None, "stop_cooldown": False,
-                "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(已废弃)
                 # 趋势止盈冷却机制: 单日最多3次，触发后3天冷却
                 "trend_sell_today": 0,  # 当日趋势止盈次数
                 "trend_sell_cooling_until": "",  # 趋势止盈冷却截止日期
@@ -473,7 +475,6 @@ class ETFStrategy(bt.Strategy):
         ps["stop_level"] = 0; ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
         ps["reached_activation"] = False; ps["reached_lockin"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
-        ps["active_sell_count"] = 0
         ps["trend_sell_today"] = 0; ps["trend_sell_cooling_until"] = ""
         ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
@@ -525,6 +526,12 @@ class ETFStrategy(bt.Strategy):
             # 每日重置
             for ps in self.ps.values():
                 ps["bought_today"] = False
+
+            # 更新empty_days（移到入口逻辑前，确保实际等待threshold天而非threshold+1天）
+            for name, ps in self.ps.items():
+                if not any(self._has_position(d) for d in self.datas if d._name == name):
+                    if ps["build_phase"] == 0:
+                        ps["empty_days"] += 1
 
             for d in self.datas:
                 name = d._name
@@ -668,11 +675,8 @@ class ETFStrategy(bt.Strategy):
                             self._init_on_entry(ps, price)
                             entered = True
 
-            # 更新empty_days
+            # 更新prev_macd_status
             for name, ps in self.ps.items():
-                if not any(self._has_position(d) for d in self.datas if d._name == name):
-                    if ps["build_phase"] == 0:
-                        ps["empty_days"] += 1
                 ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
                 ps["prev_macd_status"] = ms
 
@@ -772,6 +776,12 @@ class ETFStrategy(bt.Strategy):
             # ── 每日重置 ──
             for ps in self.ps.values():
                 ps["bought_today"] = False
+
+            # 更新empty_days（移到入口逻辑前，确保实际等待threshold天而非threshold+1天）
+            for name, ps in self.ps.items():
+                if not any(self._has_position(d) for d in self.datas if d._name == name):
+                    if ps["build_phase"] == 0:
+                        ps["empty_days"] += 1
 
             # ── 每日风控检查: 止损/止盈 (不受rebalance影响) ──
             for d in self.datas:
@@ -978,11 +988,8 @@ class ETFStrategy(bt.Strategy):
                                 self._init_on_entry(ps, price)
                                 entered = True
 
-            # 更新empty_days
+            # 更新prev_macd_status
             for name, ps in self.ps.items():
-                if not any(self._has_position(d) for d in self.datas if d._name == name):
-                    if ps["build_phase"] == 0:
-                        ps["empty_days"] += 1
                 ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
                 ps["prev_macd_status"] = ms
 
@@ -1327,6 +1334,12 @@ class ETFStrategy(bt.Strategy):
                                     ps["pyramid_count"] = 2
                                     ps["bought_today"] = True
 
+            # 更新empty_days（移到入口逻辑前，确保实际等待threshold天而非threshold+1天）
+            for name, ps in self.ps.items():
+                if not any(self._has_position(d) for d in self.datas if d._name == name):
+                    if ps["build_phase"] == 0:
+                        ps["empty_days"] += 1
+
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
@@ -1429,9 +1442,6 @@ class ETFStrategy(bt.Strategy):
 
         # ── End of day ──
         for name, ps in self.ps.items():
-            if not any(self._has_position(d) for d in self.datas if d._name == name):
-                if ps["build_phase"] == 0:
-                    ps["empty_days"] += 1
             ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
             ps["prev_macd_status"] = ms
 

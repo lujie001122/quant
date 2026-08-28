@@ -176,7 +176,7 @@ def get_tracked_with_keywords():
 
     # 从 pool 构建
     if pool:
-        codes = pool.get("codes", [])
+        codes = pool.get("etf_pool", [])
         names = pool.get("names", {})
         for code in codes:
             name = names.get(code, code)

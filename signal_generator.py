@@ -402,22 +402,27 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     if "熔断" in grid_signal:
                         pos.grid_frozen = True
             elif grid_signal != "无" and "卖出" in grid_signal:
-                # 提取卖出档位做去重（与买入侧对称）
-                grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
-                if pos.last_grid_trigger == grid_key:
-                    action = "持有(等下一档)"
-                    reason = f"网格{grid_key}今日已触发,等下一档"
-                elif pos.active_shares > 0:
-                    pos.last_grid_trigger = grid_key
-                    # 更新base_price到当前价，使网格上移，防止同一档位重复触发
-                    pos.base_price = round(price, 3)
-                    action = "卖出"
-                    position_ratio = "5%(活动仓)"
-                    reason = grid_signal
-                    trade_type = "sell"
+                # 趋势止盈互斥: 当天趋势止盈已触发则跳过网格卖出
+                if any(sig_type == "trend_profit_sell" for _, sig_type in stop_actions):
+                    action = "持有(趋势止盈优先)"
+                    reason = "趋势止盈已触发,跳过网格卖出"
                 else:
-                    action = "持有"
-                    reason = grid_signal + "(活动仓为0,不卖底仓)"
+                    # 提取卖出档位做去重（与买入侧对称）
+                    grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                    if pos.last_grid_trigger == grid_key:
+                        action = "持有(等下一档)"
+                        reason = f"网格{grid_key}今日已触发,等下一档"
+                    elif pos.active_shares > 0:
+                        pos.last_grid_trigger = grid_key
+                        # 更新base_price到当前价，使网格上移，防止同一档位重复触发
+                        pos.base_price = round(price, 3)
+                        action = "卖出"
+                        position_ratio = "5%(活动仓)"
+                        reason = grid_signal
+                        trade_type = "sell"
+                    else:
+                        action = "持有"
+                        reason = grid_signal + "(活动仓为0,不卖底仓)"
 
         # 无信号: 建仓/补仓/持有逻辑（统一入口，action仍为"持有"时进入）
         if action == "持有":
