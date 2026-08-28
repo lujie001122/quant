@@ -166,11 +166,7 @@ class RiskManager:
         # ── 移动止盈 ──
         if pos.trailing_stop_price > 0 and price <= pos.trailing_stop_price:
             trail_pct = _cfg.get('trail_pct', 0.12)
-            concentrated = _cfg.get('concentrated_mode', False)
-            if concentrated:
-                label = f"移动止盈{trail_pct*100:.0f}%(峰值回撤{trail_pct*100:.0f}%)"
-            else:
-                label = "移动止盈8%(成本+5%)" if not pos.reached_15pct else "移动止盈15%(峰值回撤5%)"
+            label = f"移动止盈{trail_pct*100:.0f}%(峰值回撤{trail_pct*100:.0f}%)"
             stop_actions.append((f"{label}:触线{pos.trailing_stop_price:.3f}", "liquidate_trailing"))
 
         # ── 硬止损25%: 从价格峰值回撤25%清仓(极限方案C: 放宽) ──

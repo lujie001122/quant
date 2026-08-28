@@ -586,17 +586,20 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
                         continue
 
-                    # 移动止盈
+                    # 移动止盈（从config读取trail_pct）
+                    trail_pct_val = self.p.trail_pct
+                    trail_activation = trail_pct_val + 0.01
+                    trail_lockin = trail_pct_val + 0.08
                     pp = (price - avg) / avg if avg > 0 else 0
-                    if pp >= 0.08 and not ps["reached_activation"]:
+                    if pp >= trail_activation and not ps["reached_activation"]:
                         ps["reached_activation"] = True
-                    if pp >= 0.15 and not ps["reached_lockin"]:
+                    if pp >= trail_lockin and not ps["reached_lockin"]:
                         ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
                     if ps["reached_lockin"] and ps["peak_price"] > 0:
-                        ps["trail"] = ps["peak_price"] * 0.93
+                        ps["trail"] = ps["peak_price"] * (1 - trail_pct_val)
                     if ps["trail"] > 0 and price <= ps["trail"]:
-                        label = "移动止盈8%" if not ps["reached_lockin"] else "移动止盈15%"
+                        label = f"移动止盈{trail_pct_val*100:.0f}%"
                         self._close(d, f"{label} trail={ps['trail']:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
@@ -842,12 +845,12 @@ class ETFStrategy(bt.Strategy):
                 # ── 移动止盈 (方向C: --trail-pct) ──
                 pp = (price - avg) / avg if avg > 0 else 0
                 atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
+                trail_pct = self.p.trail_pct
+                trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
+                trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
 
                 if self.p.trail_mode == "fixed":
                     # 可配置回撤止盈: trail_pct (默认0.12=12%)
-                    trail_pct = self.p.trail_pct
-                    trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
-                    trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
                     if pp >= trail_activation and not ps["reached_activation"]:
                         ps["reached_activation"] = True
                     if pp >= trail_lockin and not ps["reached_lockin"]:
@@ -863,9 +866,9 @@ class ETFStrategy(bt.Strategy):
                         trail_mult = 0.93; trail_label = "7%"
                     else:
                         trail_mult = 0.95; trail_label = "5%"
-                    if pp >= 0.08 and not ps["reached_activation"]:
+                    if pp >= trail_activation and not ps["reached_activation"]:
                         ps["reached_activation"] = True
-                    if pp >= 0.15 and not ps["reached_lockin"]:
+                    if pp >= trail_lockin and not ps["reached_lockin"]:
                         ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
                     if ps["reached_lockin"] and ps["peak_price"] > 0:
@@ -877,9 +880,9 @@ class ETFStrategy(bt.Strategy):
                         trail_mult = 0.92; trail_label = "8%"
                     else:
                         trail_mult = 0.95; trail_label = "5%"
-                    if pp >= 0.08 and not ps["reached_activation"]:
+                    if pp >= trail_activation and not ps["reached_activation"]:
                         ps["reached_activation"] = True
-                    if pp >= 0.15 and not ps["reached_lockin"]:
+                    if pp >= trail_lockin and not ps["reached_lockin"]:
                         ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
                     if ps["reached_lockin"] and ps["peak_price"] > 0:
@@ -1152,18 +1155,20 @@ class ETFStrategy(bt.Strategy):
                     self._full_liquidate_state(ps, date_str)
                     continue
 
-                # 移动止盈(8%后不改线，15%后再设)
-                # TODO(P1-2): 移动止盈阈值(0.08/0.15/1.05/0.93)也应从config读取
+                # 移动止盈（从config读取trail_pct）
+                trail_pct_val = self.p.trail_pct
+                trail_activation = trail_pct_val + 0.01
+                trail_lockin = trail_pct_val + 0.08
                 pp = (price - avg) / avg if avg > 0 else 0
-                if pp >= 0.08 - 0.0001 and not ps["reached_activation"]:
+                if pp >= trail_activation - 0.0001 and not ps["reached_activation"]:
                     ps["reached_activation"] = True
-                if pp >= 0.15 - 0.0001 and not ps["reached_lockin"]:
+                if pp >= trail_lockin - 0.0001 and not ps["reached_lockin"]:
                     ps["reached_lockin"] = True; ps["trail"] = avg * 1.05
                 if ps["reached_lockin"] and ps["peak_price"] > 0:
-                    ps["trail"] = ps["peak_price"] * 0.93
+                    ps["trail"] = ps["peak_price"] * (1 - trail_pct_val)
 
                 if ps["trail"] > 0 and price <= ps["trail"]:
-                    label = "移动止盈8%" if not ps["reached_lockin"] else "移动止盈15%"
+                    label = f"移动止盈{trail_pct_val*100:.0f}%"
                     self._close(d, f"{label} trail={ps['trail']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue

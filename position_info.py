@@ -199,17 +199,11 @@ class PositionInfo:
     def update_trailing_stop(self, price):
         if not self.has_position or self.avg_cost == 0: return
         profit_pct = self.profit_pct(price)
-        # 从config读取trail_pct，集中模式用12%止盈，非集中模式保持7%止盈
+        # 从config读取trail_pct，统一使用
         trail_pct = _config.get('trail_pct', 0.12)
-        concentrated = _config.get('concentrated_mode', False)
-        if concentrated:
-            activation = trail_pct + 0.01
-            lockin = trail_pct + 0.08
-            trail_mult = 1 - trail_pct
-        else:
-            activation = 0.08
-            lockin = 0.15
-            trail_mult = 0.93
+        activation = trail_pct + 0.01
+        lockin = trail_pct + 0.08
+        trail_mult = 1 - trail_pct
         if profit_pct >= activation - 0.0001 and not self.reached_8pct:
             self.reached_8pct = True
         if profit_pct >= lockin - 0.0001 and not self.reached_15pct:
