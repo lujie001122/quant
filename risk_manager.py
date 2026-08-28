@@ -307,7 +307,7 @@ class RiskManager:
           2. 仓位上限检查（单只不超过50%）
 
         参数:
-          order_intent: OrderIntent 对象
+          order_intent: 订单意图（字典或对象，含 code/price/shares/direction 等字段）
 
         返回:
           (ok: bool, reason: str)

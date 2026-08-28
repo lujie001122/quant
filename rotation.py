@@ -17,9 +17,9 @@ from datetime import datetime
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
 # tracker.py 提供标准ETF名称
-# DELETED: import tracker
 from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr, fetch_klines_daily_arrays, calc_max_drawdown
 from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
+import state_center
 
 # ═══════════════════════════════════════════════════════
 #  45只ETF候选池 (扩容 v2.1 — 覆盖AI/机器人/芯片/新能源/军工/低空等)
@@ -96,7 +96,7 @@ def get_scan_targets():
                 pool = json.load(f)
             pool_names = pool.get("names", {})
             pool_sids = pool.get("sids", {})
-            for code in pool.get("codes", []):
+            for code in pool.get("etf_pool", []):
                 if code not in targets:
                     targets[code] = {
                         "name": pool_names.get(code, code),
@@ -607,7 +607,7 @@ def run_rotation(force_write=False):
         try:
             with open(pool_path, "r", encoding="utf-8") as f:
                 pool = json.load(f)
-            current_pool_codes = set(pool.get("codes", []))
+            current_pool_codes = set(pool.get("etf_pool", []))
         except Exception:
             pass
 
@@ -739,7 +739,7 @@ def run_rotation(force_write=False):
         old_pool_codes = list(current_pool_codes)
 
         pool_out = {
-            "codes": all_picks,
+            "etf_pool": all_picks,
             "names": {c: results[c]["name"] for c in all_picks},
             "sids": {c: results[c]["sid"] for c in all_picks},
             "momentum": {c: round(results[c]["momentum_4w"] * 100, 2) for c in all_picks},

@@ -119,7 +119,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         try:
             with open(pool_path) as _f:
                 _pool = json.load(_f)
-            pool_codes = set(_pool.get("codes", []))
+            pool_codes = set(_pool.get("etf_pool", []))
         except Exception:
             pass
 
@@ -368,7 +368,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 t0_pair = t0_exec[4] if len(t0_exec) > 4 else None
         elif buy_score >= 2 and pos.has_position and pos.can_t0_today(today_str, atr_pct):
             # 其他 action 被优先级1抢占时(如趋势止盈卖10%)，T0买入信号仍应生成配对挂单
-            print(f"[DEBUG {code}] elif branch: action={action!r}, t0_signal={t0_signal!r}")
             t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False)
             if t0_exec is not None:
                 t0_pair = t0_exec[4] if len(t0_exec) > 4 else None

@@ -338,7 +338,7 @@ def get_tracked_with_keywords():
     tracked = {}
 
     if pool:
-        codes = pool.get("codes", [])
+        codes = pool.get("etf_pool", [])
         names = pool.get("names", {})
         for code in codes:
             name = names.get(code, code)
@@ -813,28 +813,6 @@ def detect_error_type(stdout, stderr, returncode, exit_reason=None):
 
     return None, None
 
-
-# [注释] retry_cmd 不再使用
-# def build_retry_cmd(trade_script, code, trade_type, sig, price, shares):
-#     """构建重试命令字符串"""
-#     if trade_type in ("buy", "sell", "liquidate", "reduce"):
-#         return f"python3 trade.py {trade_type if trade_type in ('buy','sell') else 'sell'} {code} {shares} {price:.3f}"
-#     elif trade_type == "t0":
-#         t0_pair = sig.get("t0_pair")
-#         if t0_pair:
-#             pair_price = t0_pair.get("pair_price", 0)
-#             pair_shares = t0_pair.get("shares", 0)
-#             if "买入" in sig.get("action", ""):
-#                 return f"python3 trade.py t0_buy {code} {pair_shares} {price:.3f} {pair_price:.3f}"
-#             else:
-#                 return f"python3 trade.py t0_sell {code} {pair_shares} {price:.3f} {pair_price:.3f}"
-#         else:
-#             if "买入" in sig.get("action", ""):
-#                 return f"python3 trade.py buy {code} {shares} {price:.3f}"
-#             else:
-#                 return f"python3 trade.py sell {code} {shares} {price:.3f}"
-#     return ""
-# 
 
 def parse_position_ratio(ratio_str):
     """从 position_ratio 字符串中提取比例(0-1浮点数)

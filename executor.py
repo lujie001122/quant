@@ -580,7 +580,6 @@ class SignalExecutor:
             get_signal_direction,
             signal_direction,
             detect_error_type,
-            # build_retry_cmd,  # [注释] retry_cmd 不再使用
             cleanup_intent_files,
             cleanup_old_intent_files,
         )
@@ -597,7 +596,6 @@ class SignalExecutor:
         self._get_signal_direction = get_signal_direction
         self._signal_direction = signal_direction
         self._detect_error_type = detect_error_type
-        # self._build_retry_cmd = build_retry_cmd  # [注释] retry_cmd 不再使用
         self._cleanup_intent_files = cleanup_intent_files
         self._cleanup_old_intent_files = cleanup_old_intent_files
         self._imports_loaded = True
@@ -900,8 +898,6 @@ class SignalExecutor:
             print(f"\n[{i+1}/{len(actionable)}] {label}")
             print(f"  → {' '.join(cmd)}")
 
-            # [注释] retry_cmd 不再使用
-            # retry_cmd = self._build_retry_cmd(trade_script, code, trade_type, sig, price, shares)
             max_retries = 3
             success = False
             final_error = None
@@ -978,7 +974,6 @@ class SignalExecutor:
                         if stderr_out:
                             print(f"  [stderr] {stderr_out.strip()}")
                         alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单未成交(增量确认失败)。"
-                        # [注释] retry_cmd 不再使用
                         print(alert_msg, file=sys.stderr)
                         final_error = err_detail
                         final_error_type = err_type
@@ -999,7 +994,6 @@ class SignalExecutor:
                         print(f"  ⚠️ 超时，重试 ({attempt}/{max_retries})...")
                     else:
                         alert_msg = f"[ALERT] ❌ {code} {direction}失败: 下单超时(120s×3)。"
-                        # [注释] retry_cmd 不再使用
                         print(alert_msg, file=sys.stderr)
                         final_error = "超时"
                         final_error_type = "timeout"

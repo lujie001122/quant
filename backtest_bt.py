@@ -91,16 +91,14 @@ _DEFAULT_CODES = {
     "159516": {"name": "半导体设备ETF", "sid": "sz159516"},
     "515880": {"name": "通信ETF", "sid": "sh515880"},
     "588170": {"name": "科创半导体ETF", "sid": "sh588170"},
-    "159532": {"name": "ETF", "sid": "sz159532"},
+    "159532": {"name": "中证2000ETF", "sid": "sz159532"},
     "515050": {"name": "中证全指ETF", "sid": "sh515050"},
-    "000725": {"name": "京东方A", "sid": "sz000725"},
+    "159611": {"name": "电力ETF", "sid": "sz159611"},
 }
 
 from state_center import get_code_map, get_etfs_config
 
 CODES = get_code_map()
-# 保留 000725 用于 --000725 模式
-CODES["000725"] = _DEFAULT_CODES["000725"]
 
 # ═══════════════════════════════════════════════
 #  Data fetch (腾讯前复权)
@@ -278,7 +276,7 @@ class ETFStrategy(bt.Strategy):
 
     # 板块分类: 用于板块分散
     SECTOR_MAP = {
-        "159516": "半导体", "159532": "半导体",
+        "159516": "半导体", "159532": "宽基",
         "515880": "通信",
         "159611": "电力",
         "515050": "宽基", "588170": "宽基",
@@ -322,7 +320,6 @@ class ETFStrategy(bt.Strategy):
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
                 "pending_order": None, "stop_cooldown": False,
                 "active_sell_count": 0,  # 趋势止盈+破MA5累计卖出次数(已废弃)
-                "active_sell_until": "",  # 已废弃，对齐实盘冷却机制
                 # 趋势止盈冷却机制: 单日最多3次，触发后3天冷却
                 "trend_sell_today": 0,  # 当日趋势止盈次数
                 "trend_sell_cooling_until": "",  # 趋势止盈冷却截止日期
@@ -366,7 +363,6 @@ class ETFStrategy(bt.Strategy):
             if not dt_val:
                 return ''
             try:
-                from datetime import datetime
                 if isinstance(dt_val, datetime):
                     return dt_val.strftime('%Y-%m-%d')
                 return datetime.fromordinal(int(dt_val)).strftime('%Y-%m-%d')
@@ -381,7 +377,6 @@ class ETFStrategy(bt.Strategy):
             hold_days = 0
             if trade.dtopen and trade.dtclose:
                 try:
-                    from datetime import datetime
                     d_open = trade.dtopen if isinstance(trade.dtopen, datetime) else datetime.fromordinal(int(trade.dtopen))
                     d_close = trade.dtclose if isinstance(trade.dtclose, datetime) else datetime.fromordinal(int(trade.dtclose))
                     hold_days = (d_close - d_open).days
@@ -478,7 +473,7 @@ class ETFStrategy(bt.Strategy):
         ps["stop_level"] = 0; ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
         ps["reached_activation"] = False; ps["reached_lockin"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
-        ps["active_sell_count"] = 0; ps["active_sell_until"] = ""
+        ps["active_sell_count"] = 0
         ps["trend_sell_today"] = 0; ps["trend_sell_cooling_until"] = ""
         ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
@@ -1627,7 +1622,7 @@ def main():
             break
 
     if run_000725:
-        active_codes = {"000725": CODES["000725"]}
+        active_codes = {"000725": {"name": "京东方A", "sid": "sz000725"}}
         trade_start, trade_end = "2025-08-01", "2026-07-27"
     elif run_515880:
         active_codes = {"515880": CODES["515880"]}
