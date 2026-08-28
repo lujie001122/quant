@@ -107,11 +107,19 @@ def _compute_breakeven_price(avg_cost, margin=0.02):
 
 
 def _compute_trailing_stop(avg_cost, peak_price, reached_8pct, reached_15pct):
-    """计算移动止盈价格"""
-    if reached_15pct and peak_price > 0:
-        return peak_price * 0.93
-    if reached_8pct:
-        return avg_cost * 1.05
+    """计算移动止盈价格(从config读取trail_pct)"""
+    trail_pct = _CONF.get('trail_pct', 0.12)
+    concentrated = _CONF.get('concentrated_mode', False)
+    if concentrated:
+        if reached_15pct and peak_price > 0:
+            return peak_price * (1 - trail_pct)
+        if reached_8pct:
+            return avg_cost * 1.05
+    else:
+        if reached_15pct and peak_price > 0:
+            return peak_price * 0.93
+        if reached_8pct:
+            return avg_cost * 1.05
     return 0.0
 
 

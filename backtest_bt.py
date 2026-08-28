@@ -918,6 +918,9 @@ class ETFStrategy(bt.Strategy):
                         # 只对effective_top ETF允许建仓
                         if name not in effective_top:
                             continue
+                        # 换仓延迟确认: 连续N天在TOP才建仓
+                        if self.p.confirm_days > 0 and self._confirm_tracker.get(name, {}).get('in_top', 0) < self.p.confirm_days:
+                            continue
                         if ps["build_phase"] > 0:
                             continue
                         if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
@@ -1578,7 +1581,7 @@ def main():
     dynamic_pct = False   # 动态仓位
     rebalance = 5         # 重平衡周期(天)
     stop_loss = 0.08      # 固定止损比例
-    trail_pct = 0.12      # 移动止盈回撤比例(fixed模式)
+    trail_pct = CONF.get('trail_pct', 0.12)      # 移动止盈回撤比例(fixed模式): 从config读取
     sector_diversify = False  # 板块分散
     confirm_days = 0      # 换仓延迟确认天数
 
