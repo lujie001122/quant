@@ -2,6 +2,7 @@ active_ratio: 0.7
 atr_high_threshold: 0.05
 concentrated_mode: true
 concentrated_top_n: 3
+trail_pct: 0.12
 backtest:
   fee: 5
   periods:

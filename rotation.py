@@ -342,13 +342,13 @@ def run_rotation(force_write=False):
     # 读取集中模式配置
     config_path_cfg = os.path.join(_DIR, "config.yaml")
     concentrated_mode = False
-    concentrated_top_n = 2
+    concentrated_top_n = 3
     if os.path.exists(config_path_cfg):
         try:
             with open(config_path_cfg, "r", encoding="utf-8") as f:
                 _cfg = yaml.safe_load(f) or {}
             concentrated_mode = _cfg.get("concentrated_mode", False)
-            concentrated_top_n = _cfg.get("concentrated_top_n", 2)
+            concentrated_top_n = _cfg.get("concentrated_top_n", 3)
         except Exception:
             pass
     if concentrated_mode:

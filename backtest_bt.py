@@ -280,10 +280,11 @@ class ETFStrategy(bt.Strategy):
     SECTOR_MAP = {
         "159516": "半导体", "159532": "半导体",
         "515880": "通信",
-        "159611": "医药", "513780": "医药",
-        "588170": "科创", "515050": "科创",
+        "159611": "电力",
+        "515050": "宽基", "588170": "宽基",
+        "513780": "医药",
+        "512400": "有色",
         "515220": "煤炭",
-        "512400": "酒",
     }
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -315,7 +316,7 @@ class ETFStrategy(bt.Strategy):
                 "base": 0.0, "first_price": 0.0, "build_phase": 0,
                 "bought_today": False, "stop_level": 0,
                 "below_ma20": 0, "below_ma20_date": "",
-                "reached_8": False, "reached_15": False, "trail": 0.0,
+                "reached_activation": False, "reached_lockin": False, "trail": 0.0,
                 "add_count": 0, "empty_days": 0,
                 "cooldown_until": "", "peak_price": 0.0,
                 "ma5_touch_count": 0, "prev_macd_status": "震荡",
@@ -475,7 +476,7 @@ class ETFStrategy(bt.Strategy):
         """清仓后重置状态"""
         ps["base"] = 0; ps["first_price"] = 0; ps["build_phase"] = 0
         ps["stop_level"] = 0; ps["below_ma20"] = 0; ps["below_ma20_date"] = ""
-        ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
+        ps["reached_activation"] = False; ps["reached_lockin"] = False; ps["trail"] = 0
         ps["add_count"] = 0; ps["peak_price"] = 0; ps["ma5_touch_count"] = 0; ps["stop_cooldown"] = False
         ps["active_sell_count"] = 0; ps["active_sell_until"] = ""
         ps["trend_sell_today"] = 0; ps["trend_sell_cooling_until"] = ""
@@ -585,15 +586,15 @@ class ETFStrategy(bt.Strategy):
 
                     # 移动止盈
                     pp = (price - avg) / avg if avg > 0 else 0
-                    if pp >= 0.08 and not ps["reached_8"]:
-                        ps["reached_8"] = True
-                    if pp >= 0.15 and not ps["reached_15"]:
-                        ps["reached_15"] = True
+                    if pp >= 0.08 and not ps["reached_activation"]:
+                        ps["reached_activation"] = True
+                    if pp >= 0.15 and not ps["reached_lockin"]:
+                        ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
-                    if ps["reached_15"] and ps["peak_price"] > 0:
+                    if ps["reached_lockin"] and ps["peak_price"] > 0:
                         ps["trail"] = ps["peak_price"] * 0.93
                     if ps["trail"] > 0 and price <= ps["trail"]:
-                        label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
+                        label = "移动止盈8%" if not ps["reached_lockin"] else "移动止盈15%"
                         self._close(d, f"{label} trail={ps['trail']:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
@@ -601,8 +602,7 @@ class ETFStrategy(bt.Strategy):
                     # ═══ 金字塔加码逻辑 ═══
                     if "pyramid_count" not in ps:
                         ps["pyramid_count"] = 0
-                    if "base_shares" not in ps:
-                        ps["base_shares"] = 0
+                    
 
                     if entry_cost > 0 and price > entry_cost:
                         float_profit = (price - entry_cost) / entry_cost
@@ -769,11 +769,7 @@ class ETFStrategy(bt.Strategy):
                     name for name in momentum_scores
                     if self._confirm_tracker[name]['out_top'] < self.p.confirm_days
                 )
-                # 对于已有持仓的ETF，如果不在effective_top_drop中，也加入（保留持仓）
-                for d in self.datas:
-                    name = d._name
-                    if self._has_position(d) and name not in effective_top_drop:
-                        effective_top_drop.add(name)
+                
             else:
                 effective_top = top_set
                 effective_top_drop = top_drop
@@ -843,16 +839,16 @@ class ETFStrategy(bt.Strategy):
                 atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
 
                 if self.p.trail_mode == "fixed":
-                    # 可配置回撤止盈: trail_pct (默认0.07=7%)
+                    # 可配置回撤止盈: trail_pct (默认0.12=12%)
                     trail_pct = self.p.trail_pct
                     trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
                     trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
-                    if pp >= trail_activation and not ps["reached_8"]:
-                        ps["reached_8"] = True
-                    if pp >= trail_lockin and not ps["reached_15"]:
-                        ps["reached_15"] = True
+                    if pp >= trail_activation and not ps["reached_activation"]:
+                        ps["reached_activation"] = True
+                    if pp >= trail_lockin and not ps["reached_lockin"]:
+                        ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
-                    if ps["reached_15"] and ps["peak_price"] > 0:
+                    if ps["reached_lockin"] and ps["peak_price"] > 0:
                         ps["trail"] = ps["peak_price"] * (1 - trail_pct)
                     trail_label = f"{trail_pct*100:.0f}%"
                 elif self.p.trail_mode == "e1":
@@ -862,12 +858,12 @@ class ETFStrategy(bt.Strategy):
                         trail_mult = 0.93; trail_label = "7%"
                     else:
                         trail_mult = 0.95; trail_label = "5%"
-                    if pp >= 0.08 and not ps["reached_8"]:
-                        ps["reached_8"] = True
-                    if pp >= 0.15 and not ps["reached_15"]:
-                        ps["reached_15"] = True
+                    if pp >= 0.08 and not ps["reached_activation"]:
+                        ps["reached_activation"] = True
+                    if pp >= 0.15 and not ps["reached_lockin"]:
+                        ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
-                    if ps["reached_15"] and ps["peak_price"] > 0:
+                    if ps["reached_lockin"] and ps["peak_price"] > 0:
                         ps["trail"] = ps["peak_price"] * trail_mult
                 else:  # e2
                     if atr_pct > 5:
@@ -876,12 +872,12 @@ class ETFStrategy(bt.Strategy):
                         trail_mult = 0.92; trail_label = "8%"
                     else:
                         trail_mult = 0.95; trail_label = "5%"
-                    if pp >= 0.08 and not ps["reached_8"]:
-                        ps["reached_8"] = True
-                    if pp >= 0.15 and not ps["reached_15"]:
-                        ps["reached_15"] = True
+                    if pp >= 0.08 and not ps["reached_activation"]:
+                        ps["reached_activation"] = True
+                    if pp >= 0.15 and not ps["reached_lockin"]:
+                        ps["reached_lockin"] = True
                         ps["trail"] = avg * 1.05
-                    if ps["reached_15"] and ps["peak_price"] > 0:
+                    if ps["reached_lockin"] and ps["peak_price"] > 0:
                         ps["trail"] = ps["peak_price"] * trail_mult
 
                 if ps["trail"] > 0 and price <= ps["trail"]:
@@ -1148,15 +1144,15 @@ class ETFStrategy(bt.Strategy):
                 # 移动止盈(8%后不改线，15%后再设)
                 # TODO(P1-2): 移动止盈阈值(0.08/0.15/1.05/0.93)也应从config读取
                 pp = (price - avg) / avg if avg > 0 else 0
-                if pp >= 0.08 - 0.0001 and not ps["reached_8"]:
-                    ps["reached_8"] = True
-                if pp >= 0.15 - 0.0001 and not ps["reached_15"]:
-                    ps["reached_15"] = True; ps["trail"] = avg * 1.05
-                if ps["reached_15"] and ps["peak_price"] > 0:
+                if pp >= 0.08 - 0.0001 and not ps["reached_activation"]:
+                    ps["reached_activation"] = True
+                if pp >= 0.15 - 0.0001 and not ps["reached_lockin"]:
+                    ps["reached_lockin"] = True; ps["trail"] = avg * 1.05
+                if ps["reached_lockin"] and ps["peak_price"] > 0:
                     ps["trail"] = ps["peak_price"] * 0.93
 
                 if ps["trail"] > 0 and price <= ps["trail"]:
-                    label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
+                    label = "移动止盈8%" if not ps["reached_lockin"] else "移动止盈15%"
                     self._close(d, f"{label} trail={ps['trail']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
@@ -1417,7 +1413,7 @@ class ETFStrategy(bt.Strategy):
                             ps["build_phase"] = 2
                             ps["bought_today"] = True
                             ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
-                            ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
+                            ps["reached_activation"] = False; ps["reached_lockin"] = False; ps["trail"] = 0
                             ps["breakeven_activated"] = False
                         else:
                             if self._buy(d, 0.30, f"确认加仓{ps['confirm_batch_count']+1}/2批30%"):
@@ -1427,7 +1423,7 @@ class ETFStrategy(bt.Strategy):
                                 if ps["confirm_batch_count"] >= 2:
                                     ps["build_phase"] = 2; ps["bought_today"] = True
                                     ps["base"] = avg; ps["peak_price"] = price; ps["first_price"] = price
-                                    ps["reached_8"] = False; ps["reached_15"] = False; ps["trail"] = 0
+                                    ps["reached_activation"] = False; ps["reached_lockin"] = False; ps["trail"] = 0
                                     ps["breakeven_activated"] = False
                     else:
                         if price > ma5_v: ps["ma5_touch_count"] += 1
@@ -1470,8 +1466,8 @@ class ETFStrategy(bt.Strategy):
                 pos.stop_level = ps["stop_level"]
                 pos.below_ma20_count = ps["below_ma20"]
                 pos.below_ma20_date = ps["below_ma20_date"] if ps["below_ma20_date"] else None
-                pos.reached_8pct = ps["reached_8"]
-                pos.reached_15pct = ps["reached_15"]
+                pos.reached_8pct = ps["reached_activation"]
+                pos.reached_15pct = ps["reached_lockin"]
                 pos.trailing_stop_price = ps["trail"]
                 pos.breakeven_activated = ps["breakeven_activated"]
                 pos.entry_avg_cost = ps.get("entry_avg_cost", 0.0)
@@ -1569,7 +1565,7 @@ def main():
     run_515880 = "--515880" in sys.argv
     run_rotation = "--rotation" in sys.argv  # 全仓轮动模式
     run_concentrated = "--concentrated" in sys.argv  # 集中持仓模式
-    run_concentrated_pyramid = "--concentrated-pyramid" in sys.argv  # 集中TOP2+50%建仓+趋势加码
+    run_concentrated_pyramid = "--concentrated-pyramid" in sys.argv  # 集中TOP N+50%建仓+趋势加码
     run_pyramid = "--pyramid" in sys.argv  # 趋势加码模式
 
     # 集中持仓策略参数

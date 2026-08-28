@@ -275,7 +275,7 @@ def get_etfs_config(fund_per_etf=None):
             max_per_etf = _cfg.get('max_per_etf', 220000)
             # 集中模式：每只ETF分一半资金
             if _cfg.get('concentrated_mode', False):
-                top_n = _cfg.get('concentrated_top_n', 2)
+                top_n = _cfg.get('concentrated_top_n', 3)
                 fund_per_etf = max_per_etf // top_n
             else:
                 pool = _load_pool()
