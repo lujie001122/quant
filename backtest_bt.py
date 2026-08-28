@@ -275,6 +275,8 @@ class ETFStrategy(bt.Strategy):
         ("trail_pct", 0.12),  # 移动止盈回撤比例(fixed模式): peak_price*(1-trail_pct)
         ("sector_diversify", False),  # 板块分散: TOP3必须来自不同板块
         ("confirm_days", 0),  # 换仓延迟确认天数: 连续N天在/不在TOP N才换仓
+        ("trend_entry", False),  # 趋势建仓通道: TOP3+多头排列+空仓时直接50%建仓
+        ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
     )
 
     # 板块分类: 用于板块分散
@@ -655,7 +657,7 @@ class ETFStrategy(bt.Strategy):
                     entered = False
 
                     # 通道1: RSI抄底 → 50%建仓
-                    if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
+                    if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
                         if self._buy(d, 0.50, f"集中金字塔RSI抄底50% RSI={rsi_val:.1f}"):
                             self._init_on_entry(ps, price)
                             entered = True
@@ -967,8 +969,15 @@ class ETFStrategy(bt.Strategy):
 
                         entered = False
 
+                        # 方案A: 趋势建仓通道 (--trend-entry)
+                        # TOP3 C2动量 + 多头排列 + 空仓 → 直接50%建仓，不看RSI/MACD
+                        if not entered and self.p.trend_entry:
+                            if self._buy(d, 0.50, f"集中趋势建仓50% MA多头排列"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+
                         # 通道1: RSI抄底
-                        if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
+                        if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
                             if self._buy(d, pct, f"集中RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
                                 self._init_on_entry(ps, price)
                                 entered = True
@@ -1594,6 +1603,8 @@ def main():
     trail_pct = CONF.get('trail_pct', 0.12)      # 移动止盈回撤比例(fixed模式): 从config读取
     sector_diversify = False  # 板块分散
     confirm_days = 0      # 换仓延迟确认天数
+    trend_entry = False   # 趋势建仓通道
+    rsi_entry_max = 55    # RSI抄底上限
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -1627,6 +1638,10 @@ def main():
             sector_diversify = True
         elif arg.startswith("--confirm-days="):
             confirm_days = int(arg.split("=", 1)[1])
+        elif arg == "--trend-entry":
+            trend_entry = True
+        elif arg.startswith("--rsi-entry-max="):
+            rsi_entry_max = float(arg.split("=", 1)[1])
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
@@ -1743,7 +1758,9 @@ def main():
                         stop_loss=stop_loss,
                         trail_pct=trail_pct,
                         sector_diversify=sector_diversify,
-                        confirm_days=confirm_days)
+                        confirm_days=confirm_days,
+                        trend_entry=trend_entry,
+                        rsi_entry_max=rsi_entry_max)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
