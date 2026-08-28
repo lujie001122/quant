@@ -102,11 +102,6 @@ class T0Strategy(BaseStrategy):
               and pos.can_t0_today(today_str, atr_pct)):
 
             if "买入" in t0_signal:
-                _position_ratio_val = pos.shares * price / TOTAL_FUND
-                _position_capped = _position_ratio_val >= MAX_POSITION_RATIO
-                if _position_capped:
-                    return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None,
-                            f"做T买入信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 if record_t0:
                     pos.record_t0(today_str)
                 ratio = 0.30
