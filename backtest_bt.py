@@ -269,7 +269,22 @@ class ETFStrategy(bt.Strategy):
         ("lookback", 20),  # 动量回看期(日)
         ("ma60_filter", False),  # MA60趋势过滤: 价格>MA60才持有
         ("dynamic_pct", False),  # 动态仓位: 动量越强仓位越大
+        ("rebalance", 5),  # 重平衡周期(天): 每N天重排名换仓，默认5天
+        ("stop_loss", 0.08),  # 固定止损比例: 跌破entry_cost*(1-stop_loss)止损
+        ("trail_pct", 0.12),  # 移动止盈回撤比例(fixed模式): peak_price*(1-trail_pct)
+        ("sector_diversify", False),  # 板块分散: TOP3必须来自不同板块
+        ("confirm_days", 0),  # 换仓延迟确认天数: 连续N天在/不在TOP N才换仓
     )
+
+    # 板块分类: 用于板块分散
+    SECTOR_MAP = {
+        "159516": "半导体", "159532": "半导体",
+        "515880": "通信",
+        "159611": "医药", "513780": "医药",
+        "588170": "科创", "515050": "科创",
+        "515220": "煤炭",
+        "512400": "酒",
+    }
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
     MIN_WARMUP = 35
@@ -334,6 +349,7 @@ class ETFStrategy(bt.Strategy):
         self.daily_values = []
         self._order_pending = {}  # data_name -> order
         self._last_date = ""  # 上次交易日，用于每日计数器重置
+        self._day_count = 0  # 交易日计数器，用于重平衡周期判断
 
     def notify_order(self, order):
         """订单状态回调"""
@@ -486,6 +502,11 @@ class ETFStrategy(bt.Strategy):
 
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
+
+        # 交易日计数: 每天递增，用于重平衡周期判断
+        if date_str != self._last_date:
+            self._last_date = date_str
+            self._day_count += 1
 
         # ═══ 集中TOP N+50%建仓+趋势加码模式 ═══
         if self.p.concentrated_pyramid_mode:
@@ -667,9 +688,10 @@ class ETFStrategy(bt.Strategy):
 
         # ═══ 集中持仓模式 ═══
         if self.p.concentrated_mode:
-            # 动量评分: 根据 momentum_mode 参数选择
-            # simple: lookback日涨幅
-            # c2: lookback日涨幅×0.4 + MA_lookback斜率×0.4 + ATR归一化×0.2
+            # 判断是否为重平衡日
+            is_rebalance_day = (self._day_count % self.p.rebalance == 1)
+
+            # ── 动量评分 (每天计算，用于板块分散/确认延迟跟踪) ──
             lb = self.p.lookback
             momentum_scores = {}
             for d in self.datas:
@@ -681,12 +703,10 @@ class ETFStrategy(bt.Strategy):
                         momentum_scores[name] = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
                     else:  # c2 (default)
                         ret_lb = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
-                        ma_lb_now = self.ma20[name][0] if lb == 20 else sum(d.close.get(size=lb)) / lb
                         if lb == 20:
                             ma_lb_now = self.ma20[name][0]
                             ma_lb_ago = self.ma20[name][-lb] if len(self.ma20[name]) >= lb + 1 else ma_lb_now
                         else:
-                            # 使用对应的MA lookback
                             if len(d.close) >= lb * 2:
                                 ma_lb_now = sum(d.close.get(size=lb)) / lb
                                 ma_lb_ago = sum(d.close.get(size=lb, ago=lb)) / lb
@@ -701,13 +721,68 @@ class ETFStrategy(bt.Strategy):
                     momentum_scores[name] = -999
             ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
             top_n = self.p.top_n
-            top_set = set(name for name, _ in ranked[:top_n])
-            top_drop = set(name for name, _ in ranked[:top_n * 2])  # 跌出TOP_N*2才清仓
 
-            # 每日重置
+            # ── 板块分散: 同板块只取排名最高1只 ──
+            if self.p.sector_diversify:
+                top_set = set()
+                seen_sectors = set()
+                for name, _ in ranked:
+                    sector = self.SECTOR_MAP.get(name, name)
+                    if sector not in seen_sectors:
+                        seen_sectors.add(sector)
+                        top_set.add(name)
+                    if len(top_set) >= top_n:
+                        break
+                top_drop = set()
+                seen_sectors2 = set()
+                for name, _ in ranked:
+                    sector = self.SECTOR_MAP.get(name, name)
+                    if sector not in seen_sectors2:
+                        seen_sectors2.add(sector)
+                        top_drop.add(name)
+                    if len(top_drop) >= top_n * 2:
+                        break
+            else:
+                top_set = set(name for name, _ in ranked[:top_n])
+                top_drop = set(name for name, _ in ranked[:top_n * 2])
+
+            # ── 换仓延迟确认: 跟踪连续在/不在TOP N的天数 ──
+            if self.p.confirm_days > 0:
+                if not hasattr(self, '_confirm_tracker'):
+                    self._confirm_tracker = {}
+                for name in momentum_scores:
+                    if name not in self._confirm_tracker:
+                        self._confirm_tracker[name] = {'in_top': 0, 'out_top': 0}
+                    if name in top_set:
+                        self._confirm_tracker[name]['in_top'] += 1
+                        self._confirm_tracker[name]['out_top'] = 0
+                    else:
+                        self._confirm_tracker[name]['out_top'] += 1
+                        self._confirm_tracker[name]['in_top'] = 0
+                # 确认后的effective top_set: 连续N天在TOP才有效
+                effective_top = set(
+                    name for name in momentum_scores
+                    if self._confirm_tracker[name]['in_top'] >= self.p.confirm_days
+                )
+                # 确认后的effective top_drop: 连续N天不在TOP_N*2才清仓
+                effective_top_drop = set(
+                    name for name in momentum_scores
+                    if self._confirm_tracker[name]['out_top'] < self.p.confirm_days
+                )
+                # 对于已有持仓的ETF，如果不在effective_top_drop中，也加入（保留持仓）
+                for d in self.datas:
+                    name = d._name
+                    if self._has_position(d) and name not in effective_top_drop:
+                        effective_top_drop.add(name)
+            else:
+                effective_top = top_set
+                effective_top_drop = top_drop
+
+            # ── 每日重置 ──
             for ps in self.ps.values():
                 ps["bought_today"] = False
 
+            # ── 每日风控检查: 止损/止盈 (不受rebalance影响) ──
             for d in self.datas:
                 name = d._name
                 ps = self.ps[name]
@@ -717,175 +792,197 @@ class ETFStrategy(bt.Strategy):
                     continue
                 if name in self._order_pending:
                     continue
-
-                rsi_val = self.rsi[name].rsi[0]
-                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
-                dif_val = self.macd[name].dif[0]
-                ma5_v = self.ma5[name][0]
-                ma10_v = self.ma10[name][0]
-                ma20_v = self.ma20[name][0]
-                atr_val = self.atr[name].atr[0]
+                if not self._has_position(d):
+                    continue
 
                 has_pos = self._has_position(d)
                 shares = self._get_shares(d)
                 avg = self._get_avg_cost(d)
+                atr_val = self.atr[name].atr[0]
 
-                if has_pos:
-                    # MA60趋势过滤: 价格<MA60则清仓
-                    if self.p.ma60_filter:
-                        ma60_v = self.ma60[name][0]
-                        if ma60_v and price < ma60_v:
-                            self._close(d, f"MA60过滤清仓 price={price:.3f}<MA60={ma60_v:.3f}")
-                            self._full_liquidate_state(ps, date_str)
-                            continue
-
-                    # 跌出TOP_N*2则清仓
-                    if name not in top_drop:
-                        self._close(d, f"集中持仓清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
+                # MA60趋势过滤: 价格<MA60则清仓
+                if self.p.ma60_filter:
+                    ma60_v = self.ma60[name][0]
+                    if ma60_v and price < ma60_v:
+                        self._close(d, f"MA60过滤清仓 price={price:.3f}<MA60={ma60_v:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
 
-                    if price > ps["peak_price"]:
-                        ps["peak_price"] = price
+                if price > ps["peak_price"]:
+                    ps["peak_price"] = price
 
-                    # 均价止损: 用锁定建仓均价
-                    entry_cost = ps.get("entry_avg_cost", 0) or avg
-                    if entry_cost > 0:
-                        pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
-                        if pos_ratio > 0.80:
-                            stop_pct = 0.15
-                        elif pos_ratio >= 0.50:
-                            stop_pct = 0.20
-                        else:
-                            stop_pct = 0.25
-                        if price <= entry_cost * (1 - stop_pct):
-                            self._close(d, f"集中持仓均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
-                            self._full_liquidate_state(ps, date_str)
-                            continue
+                # ── 可配置固定止损 (方向B: --stop-loss) ──
+                entry_cost = ps.get("entry_avg_cost", 0) or avg
+                if entry_cost > 0 and price <= entry_cost * (1 - self.p.stop_loss):
+                    self._close(d, f"固定止损{self.p.stop_loss*100:.0f}% entry={entry_cost:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
 
-                    # 硬止损25%
-                    if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
-                        self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
-                        self._full_liquidate_state(ps, date_str)
-                        continue
-
-                    # 移动止盈: 根据 trail_mode 参数选择
-                    # fixed: 固定7%回撤止盈
-                    # e1: ATR>5%→10%, 3-5%→7%, <3%→5%
-                    # e2: ATR>5%→12%, 3-5%→8%, <3%→5%
-                    pp = (price - avg) / avg if avg > 0 else 0
-                    atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
-
-                    if self.p.trail_mode == "fixed":
-                        # 固定7%移动止盈
-                        if pp >= 0.08 and not ps["reached_8"]:
-                            ps["reached_8"] = True
-                        if pp >= 0.15 and not ps["reached_15"]:
-                            ps["reached_15"] = True
-                            ps["trail"] = avg * 1.05
-                        if ps["reached_15"] and ps["peak_price"] > 0:
-                            ps["trail"] = ps["peak_price"] * 0.93
-                        trail_label = "7%"
-                    elif self.p.trail_mode == "e1":
-                        # E1: ATR自适应 (ATR>5%→10%, 3-5%→7%, <3%→5%)
-                        if atr_pct > 5:
-                            trail_mult = 0.90; trail_label = "10%"
-                        elif atr_pct >= 3:
-                            trail_mult = 0.93; trail_label = "7%"
-                        else:
-                            trail_mult = 0.95; trail_label = "5%"
-                        if pp >= 0.08 and not ps["reached_8"]:
-                            ps["reached_8"] = True
-                        if pp >= 0.15 and not ps["reached_15"]:
-                            ps["reached_15"] = True
-                            ps["trail"] = avg * 1.05
-                        if ps["reached_15"] and ps["peak_price"] > 0:
-                            ps["trail"] = ps["peak_price"] * trail_mult
-                    else:  # e2 (default)
-                        # E2: ATR自适应 (ATR>5%→12%, 3-5%→8%, <3%→5%)
-                        if atr_pct > 5:
-                            trail_mult = 0.88; trail_label = "12%"
-                        elif atr_pct >= 3:
-                            trail_mult = 0.92; trail_label = "8%"
-                        else:
-                            trail_mult = 0.95; trail_label = "5%"
-                        if pp >= 0.08 and not ps["reached_8"]:
-                            ps["reached_8"] = True
-                        if pp >= 0.15 and not ps["reached_15"]:
-                            ps["reached_15"] = True
-                            ps["trail"] = avg * 1.05
-                        if ps["reached_15"] and ps["peak_price"] > 0:
-                            ps["trail"] = ps["peak_price"] * trail_mult
-
-                    if ps["trail"] > 0 and price <= ps["trail"]:
-                        self._close(d, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}")
-                        self._full_liquidate_state(ps, date_str)
-                        continue
-                else:
-                    # 只对TOP N ETF允许建仓
-                    if name not in top_set:
-                        continue
-                    if ps["build_phase"] > 0:
-                        continue
-                    if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
-                        continue
-
-                    # MA60趋势过滤: 价格<MA60不允许建仓
-                    if self.p.ma60_filter:
-                        ma60_v = self.ma60[name][0]
-                        if ma60_v and price < ma60_v:
-                            continue
-
-                    atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
-                    if not atr_ok:
-                        continue
-
-                    # 多头排列
-                    if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
-                        continue
-
-                    # 10日新高
-                    h10 = None
-                    if len(d.close) >= 11:
-                        h10 = max(d.close.get(size=10, ago=1))
-
-                    # 动态仓位: 根据动量得分调整
-                    if self.p.dynamic_pct:
-                        mom_score = momentum_scores.get(name, 0)
-                        if mom_score > 15:
-                            pct = self.p.init_pct * 1.2
-                        elif mom_score >= 8:
-                            pct = self.p.init_pct
-                        else:
-                            pct = self.p.init_pct * 0.6
+                # 均价分级止损 (保留原有逻辑，作为二级防护)
+                if entry_cost > 0:
+                    pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                    if pos_ratio > 0.80:
+                        stop_pct = 0.15
+                    elif pos_ratio >= 0.50:
+                        stop_pct = 0.20
                     else:
-                        pct = self.p.init_pct
+                        stop_pct = 0.25
+                    if price <= entry_cost * (1 - stop_pct):
+                        self._close(d, f"集中持仓均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
 
-                    entered = False
+                # 硬止损25%
+                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                    self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
 
-                    # 通道1: RSI抄底
-                    if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
-                        if self._buy(d, pct, f"集中RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+                # ── 移动止盈 (方向C: --trail-pct) ──
+                pp = (price - avg) / avg if avg > 0 else 0
+                atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
 
-                    # 通道2: 趋势跟踪
-                    if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                        if self._buy(d, pct, f"集中趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+                if self.p.trail_mode == "fixed":
+                    # 可配置回撤止盈: trail_pct (默认0.07=7%)
+                    trail_pct = self.p.trail_pct
+                    trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
+                    trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
+                    if pp >= trail_activation and not ps["reached_8"]:
+                        ps["reached_8"] = True
+                    if pp >= trail_lockin and not ps["reached_15"]:
+                        ps["reached_15"] = True
+                        ps["trail"] = avg * 1.05
+                    if ps["reached_15"] and ps["peak_price"] > 0:
+                        ps["trail"] = ps["peak_price"] * (1 - trail_pct)
+                    trail_label = f"{trail_pct*100:.0f}%"
+                elif self.p.trail_mode == "e1":
+                    if atr_pct > 5:
+                        trail_mult = 0.90; trail_label = "10%"
+                    elif atr_pct >= 3:
+                        trail_mult = 0.93; trail_label = "7%"
+                    else:
+                        trail_mult = 0.95; trail_label = "5%"
+                    if pp >= 0.08 and not ps["reached_8"]:
+                        ps["reached_8"] = True
+                    if pp >= 0.15 and not ps["reached_15"]:
+                        ps["reached_15"] = True
+                        ps["trail"] = avg * 1.05
+                    if ps["reached_15"] and ps["peak_price"] > 0:
+                        ps["trail"] = ps["peak_price"] * trail_mult
+                else:  # e2
+                    if atr_pct > 5:
+                        trail_mult = 0.88; trail_label = "12%"
+                    elif atr_pct >= 3:
+                        trail_mult = 0.92; trail_label = "8%"
+                    else:
+                        trail_mult = 0.95; trail_label = "5%"
+                    if pp >= 0.08 and not ps["reached_8"]:
+                        ps["reached_8"] = True
+                    if pp >= 0.15 and not ps["reached_15"]:
+                        ps["reached_15"] = True
+                        ps["trail"] = avg * 1.05
+                    if ps["reached_15"] and ps["peak_price"] > 0:
+                        ps["trail"] = ps["peak_price"] * trail_mult
 
-                    # 通道3: 突破入场
-                    if not entered and h10 is not None and price > h10 and ms == "金叉":
-                        if self._buy(d, pct, f"集中突破入场{pct*100:.0f}% 10日高={h10:.3f}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+                if ps["trail"] > 0 and price <= ps["trail"]:
+                    self._close(d, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
 
-                    # 通道4: 分批建仓
-                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
-                        if self._buy(d, pct, f"集中分批建仓{pct*100:.0f}% MACD{ms}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+            # ── 重平衡日: 基于排名换仓 (方向A: --rebalance / 方向E: --confirm-days) ──
+            if is_rebalance_day:
+                for d in self.datas:
+                    name = d._name
+                    ps = self.ps[name]
+                    price = d.close[0]
+
+                    if d.volume[0] < 0:
+                        continue
+                    if name in self._order_pending:
+                        continue
+
+                    has_pos = self._has_position(d)
+                    shares = self._get_shares(d)
+                    avg = self._get_avg_cost(d)
+
+                    rsi_val = self.rsi[name].rsi[0]
+                    ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                    ma5_v = self.ma5[name][0]
+                    ma10_v = self.ma10[name][0]
+                    ma20_v = self.ma20[name][0]
+                    atr_val = self.atr[name].atr[0]
+
+                    if has_pos:
+                        # 跌出effective_top_drop则清仓
+                        if name not in effective_top_drop:
+                            self._close(d, f"集中持仓清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
+                            self._full_liquidate_state(ps, date_str)
+                            continue
+                    else:
+                        # 只对effective_top ETF允许建仓
+                        if name not in effective_top:
+                            continue
+                        if ps["build_phase"] > 0:
+                            continue
+                        if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
+                            continue
+
+                        # MA60趋势过滤
+                        if self.p.ma60_filter:
+                            ma60_v = self.ma60[name][0]
+                            if ma60_v and price < ma60_v:
+                                continue
+
+                        atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+                        if not atr_ok:
+                            continue
+
+                        # 多头排列
+                        if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                            continue
+
+                        # 10日新高
+                        h10 = None
+                        if len(d.close) >= 11:
+                            h10 = max(d.close.get(size=10, ago=1))
+
+                        # 动态仓位
+                        if self.p.dynamic_pct:
+                            mom_score = momentum_scores.get(name, 0)
+                            if mom_score > 15:
+                                pct = self.p.init_pct * 1.2
+                            elif mom_score >= 8:
+                                pct = self.p.init_pct
+                            else:
+                                pct = self.p.init_pct * 0.6
+                        else:
+                            pct = self.p.init_pct
+
+                        entered = False
+
+                        # 通道1: RSI抄底
+                        if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
+                            if self._buy(d, pct, f"集中RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+
+                        # 通道2: 趋势跟踪
+                        if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
+                            if self._buy(d, pct, f"集中趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+
+                        # 通道3: 突破入场
+                        if not entered and h10 is not None and price > h10 and ms == "金叉":
+                            if self._buy(d, pct, f"集中突破入场{pct*100:.0f}% 10日高={h10:.3f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+
+                        # 通道4: 分批建仓
+                        if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                            if self._buy(d, pct, f"集中分批建仓{pct*100:.0f}% MACD{ms}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
 
             # 更新empty_days
             for name, ps in self.ps.items():
@@ -963,14 +1060,12 @@ class ETFStrategy(bt.Strategy):
             self.daily_values.append((date_str, total, self.broker.getcash()))
             return  # 轮动模式不执行其他逻辑
 
-        # 每日计数器重置: 新交易日重置趋势止盈和破MA5卖活动仓的当日计数
-        if date_str != self._last_date:
-            self._last_date = date_str
-            for ps in self.ps.values():
-                ps["trend_sell_today"] = 0
-                ps["ma5_sell_today"] = 0
-                # B3: 跨天重置网格触发档位
-                ps["last_grid_trigger"] = None
+        # 每日计数器重置: 趋势止盈和破MA5卖活动仓的当日计数
+        for ps in self.ps.values():
+            ps["trend_sell_today"] = 0
+            ps["ma5_sell_today"] = 0
+            # B3: 跨天重置网格触发档位
+            ps["last_grid_trigger"] = None
 
         for ps in self.ps.values():
             ps["bought_today"] = False
@@ -1485,6 +1580,11 @@ def main():
     lookback = 20         # 动量回看期(日)
     ma60_filter = False   # MA60趋势过滤
     dynamic_pct = False   # 动态仓位
+    rebalance = 5         # 重平衡周期(天)
+    stop_loss = 0.08      # 固定止损比例
+    trail_pct = 0.12      # 移动止盈回撤比例(fixed模式)
+    sector_diversify = False  # 板块分散
+    confirm_days = 0      # 换仓延迟确认天数
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -1508,6 +1608,16 @@ def main():
             ma60_filter = True
         elif arg == "--dynamic-pct":
             dynamic_pct = True
+        elif arg.startswith("--rebalance="):
+            rebalance = int(arg.split("=", 1)[1])
+        elif arg.startswith("--stop-loss="):
+            stop_loss = float(arg.split("=", 1)[1])
+        elif arg.startswith("--trail-pct="):
+            trail_pct = float(arg.split("=", 1)[1])
+        elif arg == "--sector-diversify":
+            sector_diversify = True
+        elif arg.startswith("--confirm-days="):
+            confirm_days = int(arg.split("=", 1)[1])
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
@@ -1619,7 +1729,12 @@ def main():
                         top_n=top_n,
                         lookback=lookback,
                         ma60_filter=ma60_filter,
-                        dynamic_pct=dynamic_pct)
+                        dynamic_pct=dynamic_pct,
+                        rebalance=rebalance,
+                        stop_loss=stop_loss,
+                        trail_pct=trail_pct,
+                        sector_diversify=sector_diversify,
+                        confirm_days=confirm_days)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
