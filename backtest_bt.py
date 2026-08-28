@@ -265,7 +265,7 @@ class ETFStrategy(bt.Strategy):
         ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
         ("trail_mode", "fixed"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
         ("init_pct", 0.50),  # 建仓比例: 0.30(30%) | 0.50(50%)
-        ("top_n", 2),  # 集中持仓TOP N只ETF
+        ("top_n", 3),  # 集中持仓TOP N只ETF
         ("lookback", 20),  # 动量回看期(日)
         ("ma60_filter", False),  # MA60趋势过滤: 价格>MA60才持有
         ("dynamic_pct", False),  # 动态仓位: 动量越强仓位越大
@@ -1481,7 +1481,7 @@ def main():
     momentum_mode = "c2"  # simple | c2
     trail_mode = "fixed"  # fixed | e1 | e2
     init_pct = 0.50       # 0.30 | 0.50
-    top_n = 2             # 集中持仓TOP N只ETF
+    top_n = 3             # 集中持仓TOP N只ETF
     lookback = 20         # 动量回看期(日)
     ma60_filter = False   # MA60趋势过滤
     dynamic_pct = False   # 动态仓位
