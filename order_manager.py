@@ -24,12 +24,26 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from decision_engine import OrderIntent
 
 
 # ═══════════════════════════════════════════════════════
 # 数据类
 # ═══════════════════════════════════════════════════════
+
+@dataclass
+class OrderIntent:
+    """交易意图 — 决策引擎输出的交易意图（原decision_engine模块，已内联）"""
+    code: str                     # ETF代码
+    name: str = ""                # ETF名称
+    trade_type: str = "main"      # main / t0
+    direction: str = "买入"       # 买入 / 卖出
+    shares: int = 0
+    price: float = 0.0
+    pair_price: float = 0.0       # 做T配对价
+    reason: str = ""
+    source: str = "strategy"
+    confidence: float = 1.0
+
 
 @dataclass
 class Order:

@@ -17,7 +17,7 @@
       "below_ma20_date": "2026-08-25",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 52.01,
+      "prev_rsi": 50.5,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -25,7 +25,7 @@
       "daily_trade_log": {
         "2026-08-28": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 1
         }
       },
       "trend_profit_trigger_date": "2026-08-24",
@@ -92,8 +92,8 @@
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 58.42,
+      "ma5_touch_count": 2,
+      "prev_rsi": 57.92,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [
         "2026-08-12",
@@ -134,7 +134,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 44.18,
+      "prev_rsi": 44.55,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-08-13",
@@ -193,7 +193,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 53.39,
+      "prev_rsi": 52.33,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [
         "2026-08-19"
@@ -233,7 +233,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 52.23,
+      "prev_rsi": 50.19,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [
         "2026-08-19"
@@ -273,7 +273,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 65.22,
+      "prev_rsi": 64.76,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -281,7 +281,7 @@
       "daily_trade_log": {
         "2026-08-28": {
           "buy_count": 0,
-          "t0_count": 1,
+          "t0_count": 2,
           "trend_profit_count": 0,
           "ma5_sell_count": 0
         }
@@ -321,7 +321,7 @@
       "daily_trade_log": {
         "2026-08-28": {
           "buy_count": 0,
-          "t0_count": 1,
+          "t0_count": 2,
           "trend_profit_count": 0,
           "ma5_sell_count": 0
         }
@@ -422,5 +422,5 @@
     "cash": 64624.14,
     "market_value": 163811.2
   },
-  "last_updated": "2026-08-28 10:00"
+  "last_updated": "2026-08-28 10:15"
 }
