@@ -263,8 +263,8 @@ class ETFStrategy(bt.Strategy):
         ("concentrated_pyramid_mode", False),  # 集中TOP2+50%建仓+趋势加码
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
         ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
-        ("trail_mode", "e2"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
-        ("init_pct", 0.30),  # 建仓比例: 0.30(30%) | 0.50(50%)
+        ("trail_mode", "fixed"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
+        ("init_pct", 0.50),  # 建仓比例: 0.30(30%) | 0.50(50%)
     )
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -1435,8 +1435,8 @@ def main():
 
     # 集中持仓策略参数
     momentum_mode = "c2"  # simple | c2
-    trail_mode = "e2"     # fixed | e1 | e2
-    init_pct = 0.30       # 0.30 | 0.50
+    trail_mode = "fixed"  # fixed | e1 | e2
+    init_pct = 0.50       # 0.30 | 0.50
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
