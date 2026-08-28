@@ -262,6 +262,9 @@ class ETFStrategy(bt.Strategy):
         ("concentrated_mode", False),  # 集中持仓: 只持有TOP2最强ETF
         ("concentrated_pyramid_mode", False),  # 集中TOP2+50%建仓+趋势加码
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
+        ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
+        ("trail_mode", "e2"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
+        ("init_pct", 0.30),  # 建仓比例: 0.30(30%) | 0.50(50%)
     )
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -657,22 +660,26 @@ class ETFStrategy(bt.Strategy):
 
         # ═══ 集中持仓模式 ═══
         if self.p.concentrated_mode:
-            # C2: 多因子动量评分
-            # score = 20日涨幅×0.4 + MA20斜率(20日)×0.4 + ATR归一化(ATR/price)×0.2
+            # 动量评分: 根据 momentum_mode 参数选择
+            # simple: 20日涨幅
+            # c2: 20日涨幅×0.4 + MA20斜率×0.4 + ATR归一化×0.2
             momentum_scores = {}
             for d in self.datas:
                 name = d._name
                 if d.volume[0] < 0:
                     momentum_scores[name] = -999
                 elif len(d.close) >= 21:
-                    ret20 = (d.close[0] - d.close[-20]) / d.close[-20] * 100
-                    ma20_now = self.ma20[name][0]
-                    ma20_20ago = self.ma20[name][-20] if len(self.ma20[name]) >= 21 else ma20_now
-                    ma20_slope = (ma20_now - ma20_20ago) / ma20_20ago * 100 if ma20_20ago and ma20_20ago > 0 else 0
-                    atr_val = self.atr[name].atr[0]
-                    price = d.close[0]
-                    atr_norm = (atr_val / price * 100) if atr_val and price > 0 else 0
-                    momentum_scores[name] = ret20 * 0.4 + ma20_slope * 0.4 + atr_norm * 0.2
+                    if self.p.momentum_mode == "simple":
+                        momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                    else:  # c2 (default)
+                        ret20 = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                        ma20_now = self.ma20[name][0]
+                        ma20_20ago = self.ma20[name][-20] if len(self.ma20[name]) >= 21 else ma20_now
+                        ma20_slope = (ma20_now - ma20_20ago) / ma20_20ago * 100 if ma20_20ago and ma20_20ago > 0 else 0
+                        atr_val = self.atr[name].atr[0]
+                        price = d.close[0]
+                        atr_norm = (atr_val / price * 100) if atr_val and price > 0 else 0
+                        momentum_scores[name] = ret20 * 0.4 + ma20_slope * 0.4 + atr_norm * 0.2
                 else:
                     momentum_scores[name] = -999
             ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
@@ -736,28 +743,54 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
                         continue
 
-                    # E2: 自适应移动止盈 (ATR动态阈值)
+                    # 移动止盈: 根据 trail_mode 参数选择
+                    # fixed: 固定7%回撤止盈
+                    # e1: ATR>5%→10%, 3-5%→7%, <3%→5%
+                    # e2: ATR>5%→12%, 3-5%→8%, <3%→5%
                     pp = (price - avg) / avg if avg > 0 else 0
-                    # 计算ATR百分比
                     atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
-                    # 根据ATR确定止盈回撤阈值
-                    if atr_pct > 5:
-                        trail_mult = 0.88  # 高波动: 12%回撤止盈
-                        trail_label = "12%"
-                    elif atr_pct >= 3:
-                        trail_mult = 0.92  # 中等波动: 8%回撤止盈
-                        trail_label = "8%"
-                    else:
-                        trail_mult = 0.95  # 低波动: 5%回撤止盈
-                        trail_label = "5%"
 
-                    if pp >= 0.08 and not ps["reached_8"]:
-                        ps["reached_8"] = True
-                    if pp >= 0.15 and not ps["reached_15"]:
-                        ps["reached_15"] = True
-                        ps["trail"] = avg * 1.05
-                    if ps["reached_15"] and ps["peak_price"] > 0:
-                        ps["trail"] = ps["peak_price"] * trail_mult
+                    if self.p.trail_mode == "fixed":
+                        # 固定7%移动止盈
+                        if pp >= 0.08 and not ps["reached_8"]:
+                            ps["reached_8"] = True
+                        if pp >= 0.15 and not ps["reached_15"]:
+                            ps["reached_15"] = True
+                            ps["trail"] = avg * 1.05
+                        if ps["reached_15"] and ps["peak_price"] > 0:
+                            ps["trail"] = ps["peak_price"] * 0.93
+                        trail_label = "7%"
+                    elif self.p.trail_mode == "e1":
+                        # E1: ATR自适应 (ATR>5%→10%, 3-5%→7%, <3%→5%)
+                        if atr_pct > 5:
+                            trail_mult = 0.90; trail_label = "10%"
+                        elif atr_pct >= 3:
+                            trail_mult = 0.93; trail_label = "7%"
+                        else:
+                            trail_mult = 0.95; trail_label = "5%"
+                        if pp >= 0.08 and not ps["reached_8"]:
+                            ps["reached_8"] = True
+                        if pp >= 0.15 and not ps["reached_15"]:
+                            ps["reached_15"] = True
+                            ps["trail"] = avg * 1.05
+                        if ps["reached_15"] and ps["peak_price"] > 0:
+                            ps["trail"] = ps["peak_price"] * trail_mult
+                    else:  # e2 (default)
+                        # E2: ATR自适应 (ATR>5%→12%, 3-5%→8%, <3%→5%)
+                        if atr_pct > 5:
+                            trail_mult = 0.88; trail_label = "12%"
+                        elif atr_pct >= 3:
+                            trail_mult = 0.92; trail_label = "8%"
+                        else:
+                            trail_mult = 0.95; trail_label = "5%"
+                        if pp >= 0.08 and not ps["reached_8"]:
+                            ps["reached_8"] = True
+                        if pp >= 0.15 and not ps["reached_15"]:
+                            ps["reached_15"] = True
+                            ps["trail"] = avg * 1.05
+                        if ps["reached_15"] and ps["peak_price"] > 0:
+                            ps["trail"] = ps["peak_price"] * trail_mult
+
                     if ps["trail"] > 0 and price <= ps["trail"]:
                         self._close(d, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}")
                         self._full_liquidate_state(ps, date_str)
@@ -788,25 +821,25 @@ class ETFStrategy(bt.Strategy):
 
                     # 通道1: RSI抄底
                     if not entered and rsi_val is not None and rsi_val <= 55 and ms == "金叉":
-                        if self._buy(d, 0.30, f"集中RSI抄底30% RSI={rsi_val:.1f}"):
+                        if self._buy(d, self.p.init_pct, f"集中RSI抄底{self.p.init_pct*100:.0f}% RSI={rsi_val:.1f}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
                     # 通道2: 趋势跟踪
                     if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                        if self._buy(d, 0.30, f"集中趋势跟踪30% 空仓{ps['empty_days']}d"):
+                        if self._buy(d, self.p.init_pct, f"集中趋势跟踪{self.p.init_pct*100:.0f}% 空仓{ps['empty_days']}d"):
                             self._init_on_entry(ps, price)
                             entered = True
 
                     # 通道3: 突破入场
                     if not entered and h10 is not None and price > h10 and ms == "金叉":
-                        if self._buy(d, 0.30, f"集中突破入场30% 10日高={h10:.3f}"):
+                        if self._buy(d, self.p.init_pct, f"集中突破入场{self.p.init_pct*100:.0f}% 10日高={h10:.3f}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
                     # 通道4: 分批建仓
                     if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
-                        if self._buy(d, 0.30, f"集中分批建仓30% MACD{ms}"):
+                        if self._buy(d, self.p.init_pct, f"集中分批建仓{self.p.init_pct*100:.0f}% MACD{ms}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
@@ -1400,6 +1433,11 @@ def main():
     run_concentrated_pyramid = "--concentrated-pyramid" in sys.argv  # 集中TOP2+50%建仓+趋势加码
     run_pyramid = "--pyramid" in sys.argv  # 趋势加码模式
 
+    # 集中持仓策略参数
+    momentum_mode = "c2"  # simple | c2
+    trail_mode = "e2"     # fixed | e1 | e2
+    init_pct = 0.30       # 0.30 | 0.50
+
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
     custom_end = None
@@ -1408,6 +1446,12 @@ def main():
             custom_start = arg.split("=", 1)[1]
         elif arg.startswith("--end="):
             custom_end = arg.split("=", 1)[1]
+        elif arg.startswith("--momentum="):
+            momentum_mode = arg.split("=", 1)[1]
+        elif arg.startswith("--trail="):
+            trail_mode = arg.split("=", 1)[1]
+        elif arg.startswith("--init-pct="):
+            init_pct = float(arg.split("=", 1)[1])
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
@@ -1442,10 +1486,18 @@ def main():
     for code, cfg in active_codes.items():
         try:
             df = fetch_daily(code, cfg["sid"], data_start=data_start, data_end=data_end)
+            if df is None or len(df) == 0:
+                print(f"  ⚠ {code} {cfg['name']:10s}  无数据, 跳过")
+                continue
             dataframes[code] = df
             print(f"  ✓ {code} {cfg['name']:10s}  {len(df):3d} 条K线 (前复权)")
         except Exception as e:
             print(f"  ✗ {code} {cfg['name']:10s}  拉取失败: {e}"); sys.exit(1)
+
+    # 移除未成功加载的ETF from active_codes
+    for code in list(active_codes.keys()):
+        if code not in dataframes:
+            del active_codes[code]
 
     start = pd.Timestamp(trade_start); end = pd.Timestamp(trade_end)
     # 切片并移除回测区间内无数据的ETF
@@ -1504,7 +1556,10 @@ def main():
                         rotation_mode=run_rotation,
                         concentrated_mode=run_concentrated,
                         concentrated_pyramid_mode=run_concentrated_pyramid,
-                        pyramid_mode=run_pyramid)
+                        pyramid_mode=run_pyramid,
+                        momentum_mode=momentum_mode,
+                        trail_mode=trail_mode,
+                        init_pct=init_pct)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
@@ -1523,6 +1578,8 @@ def main():
     print(f"\n▸ 回测区间: {trade_start} → {trade_end}")
     print(f"▸ 引擎: backtrader v{bt.__version__}")
     print(f"▸ 共享资金池: ¥{TOTAL_FUND:,}")
+    if run_concentrated:
+        print(f"▸ 策略参数: momentum={momentum_mode} trail={trail_mode} init_pct={init_pct}")
     if run_000725:
         print(f"▸ 单标的模式: 000725 京东方A")
 
