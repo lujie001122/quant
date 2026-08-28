@@ -657,14 +657,22 @@ class ETFStrategy(bt.Strategy):
 
         # ═══ 集中持仓模式 ═══
         if self.p.concentrated_mode:
-            # 计算20日动量排名
+            # C2: 多因子动量评分
+            # score = 20日涨幅×0.4 + MA20斜率(20日)×0.4 + ATR归一化(ATR/price)×0.2
             momentum_scores = {}
             for d in self.datas:
                 name = d._name
                 if d.volume[0] < 0:
                     momentum_scores[name] = -999
                 elif len(d.close) >= 21:
-                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                    ret20 = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                    ma20_now = self.ma20[name][0]
+                    ma20_20ago = self.ma20[name][-20] if len(self.ma20[name]) >= 21 else ma20_now
+                    ma20_slope = (ma20_now - ma20_20ago) / ma20_20ago * 100 if ma20_20ago and ma20_20ago > 0 else 0
+                    atr_val = self.atr[name].atr[0]
+                    price = d.close[0]
+                    atr_norm = (atr_val / price * 100) if atr_val and price > 0 else 0
+                    momentum_scores[name] = ret20 * 0.4 + ma20_slope * 0.4 + atr_norm * 0.2
                 else:
                     momentum_scores[name] = -999
             ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
@@ -728,18 +736,30 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
                         continue
 
-                    # 移动止盈
+                    # E2: 自适应移动止盈 (ATR动态阈值)
                     pp = (price - avg) / avg if avg > 0 else 0
+                    # 计算ATR百分比
+                    atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
+                    # 根据ATR确定止盈回撤阈值
+                    if atr_pct > 5:
+                        trail_mult = 0.88  # 高波动: 12%回撤止盈
+                        trail_label = "12%"
+                    elif atr_pct >= 3:
+                        trail_mult = 0.92  # 中等波动: 8%回撤止盈
+                        trail_label = "8%"
+                    else:
+                        trail_mult = 0.95  # 低波动: 5%回撤止盈
+                        trail_label = "5%"
+
                     if pp >= 0.08 and not ps["reached_8"]:
                         ps["reached_8"] = True
                     if pp >= 0.15 and not ps["reached_15"]:
                         ps["reached_15"] = True
                         ps["trail"] = avg * 1.05
                     if ps["reached_15"] and ps["peak_price"] > 0:
-                        ps["trail"] = ps["peak_price"] * 0.93
+                        ps["trail"] = ps["peak_price"] * trail_mult
                     if ps["trail"] > 0 and price <= ps["trail"]:
-                        label = "移动止盈8%" if not ps["reached_15"] else "移动止盈15%"
-                        self._close(d, f"{label} trail={ps['trail']:.3f}")
+                        self._close(d, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
                 else:
