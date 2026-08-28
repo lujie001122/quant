@@ -1071,6 +1071,12 @@ class ETFStrategy(bt.Strategy):
         for ps in self.ps.values():
             ps["bought_today"] = False
 
+        # 更新empty_days（移到入口逻辑前，确保实际等待threshold天而非threshold+1天）
+        for name, ps in self.ps.items():
+            if not any(self._has_position(d) for d in self.datas if d._name == name):
+                if ps["build_phase"] == 0:
+                    ps["empty_days"] += 1
+
         for d in self.datas:
             name = d._name
             ps = self.ps[name]
@@ -1333,12 +1339,6 @@ class ETFStrategy(bt.Strategy):
                                 if self._buy(d, 0.30, f"金字塔加仓2 浮盈{float_profit*100:.1f}%"):
                                     ps["pyramid_count"] = 2
                                     ps["bought_today"] = True
-
-            # 更新empty_days（移到入口逻辑前，确保实际等待threshold天而非threshold+1天）
-            for name, ps in self.ps.items():
-                if not any(self._has_position(d) for d in self.datas if d._name == name):
-                    if ps["build_phase"] == 0:
-                        ps["empty_days"] += 1
 
             # ═══ ENTRY LOGIC ═══
             # ATR>50%跳过(除权日, 与实盘一致)
