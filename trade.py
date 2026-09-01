@@ -481,7 +481,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
 
     # 7. 做T：挂配对反方向单 → 复用 e 实例
     if is_t0 and pair_price is not None:
-        time.sleep(2)  # 两次调用之间间隔
+        time.sleep(5)  # 等待主单成交再挂配对单
         p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
         print(f"   ✅ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → 已提交EvolvingSim，认为成交成功")
 
