@@ -1,8 +1,5 @@
 active_ratio: 0.7
 atr_high_threshold: 0.05
-concentrated_mode: true
-concentrated_top_n: 3
-trail_pct: 0.12
 backtest:
   fee: 5
   periods:
@@ -27,8 +24,10 @@ backtest:
   risk_free_rate: 0.02
   slippage_pct: 0.001
   trade_end: '2026-07-27'
-  trade_start: '2021-08-01'
+  trade_start: '2024-07-27'
 broker_type: sim
+concentrated_mode: true
+concentrated_top_n: 3
 cooldown_days: 2
 dead_ratio: 0.3
 defense_code: '159611'
@@ -36,7 +35,7 @@ entry:
   add_count_limit: 5
   confirm_entry_ratio: 1.0
   dip_pct: -0.03
-  position_cap: 0.50
+  position_cap: 0.5
   rsi_min: 40
   rsi_minimal: 30
   test_cap_rsi: 35
@@ -112,6 +111,7 @@ t0:
   rsi_extreme_sell: 75
   rsi_sell_min: 50
 total_fund: 220000
+trail_pct: 0.12
 trend:
   empty_days_threshold: 5
   ma20_slope_period: 5
