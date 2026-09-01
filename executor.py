@@ -683,27 +683,8 @@ class SignalExecutor:
         print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
         print("=" * 60)
 
-        # ═══ 全撤 ═══
-        print("[EXECUTE] 全撤所有未成交委托...")
-        try:
-            revoke_proc = self._subprocess.run(
-                [sys.executable or "python3", trade_script, "revoke_all"],
-                capture_output=True, text=True, timeout=30, cwd=script_dir
-            )
-            if revoke_proc.returncode != 0:
-                print(f"  ⚠️ revoke_all 返回码非零({revoke_proc.returncode})，继续执行...")
-                if revoke_proc.stdout:
-                    print(f"  {revoke_proc.stdout.strip()}")
-                if revoke_proc.stderr:
-                    print(f"  [stderr] {revoke_proc.stderr.strip()}")
-            else:
-                if revoke_proc.stdout:
-                    for line in revoke_proc.stdout.strip().split("\n"):
-                        print(f"  {line}")
-        except self._subprocess.TimeoutExpired:
-            print(f"  ⚠️ revoke_all 超时，继续执行...")
-        except Exception as e:
-            print(f"  ⚠️ revoke_all 异常: {e}，继续执行...")
+        # ═══ 全撤（已注销）═══
+        # [EXECUTE] 撤单操作已注销，不撤单直接执行新信号
 
         # ═══ 撤单后重新收集 filled_codes ═══
         pending_map, filled_codes = self._check_pending_orders(mode, sync_entrust=False)

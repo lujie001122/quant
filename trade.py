@@ -371,11 +371,9 @@ def _revoke_all(e=None, orders=None):
 
 
 def revoke_all():
-    """公开接口：全撤所有买卖委托。"""
-    result = _revoke_all()
-    # 清理 intent 文件（撤单后无需保留意图）
-    _cleanup_intent_trade()
-    return result
+    """公开接口：全撤所有买卖委托（已注销）。"""
+    print("revoke_all 已注销，不执行撤单操作")
+    return False
 
 
 def _cleanup_intent_trade():
