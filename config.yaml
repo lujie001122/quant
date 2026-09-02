@@ -77,7 +77,7 @@ market_data:
   vol_ratio_5min_period: 20
   vol_ratio_period: 20
 max_daily_buys: 1
-max_daily_t0: 2
+max_daily_t0: 3
 max_per_etf: 220000
 order:
   max_retries: 3

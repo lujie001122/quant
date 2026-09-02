@@ -22,7 +22,7 @@ def _load_config():
         'grid_buy_levels': 5,
         'grid_sell_levels': 3,
         'max_daily_buys': 1,
-        'max_daily_t0': 2,
+        'max_daily_t0': 3,
         'defense_code': '159611',
         'cooldown_days': 2,
         'inverted_weights': [0.20, 0.25, 0.30, 0.35, 0.40],
