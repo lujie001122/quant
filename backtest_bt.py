@@ -744,6 +744,8 @@ class ETFStrategy(bt.Strategy):
                             continue
                         if ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
                             continue
+                        rsi_val = self.rsi[name].rsi[0]
+                        ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
                         ma5_v = self.ma5[name][0]
                         ma10_v = self.ma10[name][0]
                         ma20_v = self.ma20[name][0]
@@ -754,9 +756,30 @@ class ETFStrategy(bt.Strategy):
                         # 多头排列
                         if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
                             continue
-                        # 轮动模式: TOP3直接建仓，跳过4通道过滤
-                        if self._buy(d, self.p.init_pct, f"每周轮动直接建仓{self.p.init_pct*100:.0f}%"):
-                            self._init_on_entry(ps, price)
+                        entered = False
+                        # 通道1: RSI抄底
+                        if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
+                            if self._buy(d, self.p.init_pct, f"每周轮动RSI抄底{self.p.init_pct*100:.0f}% RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道2: 趋势跟踪
+                        if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩小"):
+                            if self._buy(d, self.p.init_pct, f"每周轮动趋势跟踪{self.p.init_pct*100:.0f}% 空仓{ps['empty_days']}d"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道3: 突破入场
+                        h10 = None
+                        if len(d.close) >= 11:
+                            h10 = max(d.close.get(size=10, ago=1))
+                        if not entered and h10 is not None and price > h10 and ms == "金叉":
+                            if self._buy(d, self.p.init_pct, f"每周轮动突破入场{self.p.init_pct*100:.0f}% 10日高={h10:.3f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道4: 分批建仓
+                        if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                            if self._buy(d, self.p.init_pct, f"每周轮动分批建仓{self.p.init_pct*100:.0f}% MACD{ms}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
 
             # ── 每日风控: 止损/止盈 (不受轮动日限制) ──
             for d in self.datas:
