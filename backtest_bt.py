@@ -101,6 +101,9 @@ _DEFAULT_CODES = {
 
 from state_center import get_code_map, get_etfs_config
 
+# 每周轮动: 引入候选池
+from rotation import ETF_CANDIDATES
+
 CODES = get_code_map()
 
 # ═══════════════════════════════════════════════
@@ -261,6 +264,7 @@ class ETFStrategy(bt.Strategy):
         ("fund_per_etf", 44000),  # 每只ETF资金基数，默认44000（与实盘一致）
         ("rotation_mode", False),  # 全仓轮动: 每周一满仓动量第1名
         ("concentrated_mode", False),  # 集中持仓: 只持有TOP N最强ETF
+        ("weekly_rotation_mode", False),  # 每周轮动: 每5日从候选池重算TOP3动量排名
         ("concentrated_pyramid_mode", False),  # 集中TOP N+50%建仓+趋势加码
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
         ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
@@ -344,6 +348,10 @@ class ETFStrategy(bt.Strategy):
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
         self._rotation_entry_price = 0.0  # 轮动入场价(止损用)
+
+        # 每周轮动状态
+        self._weekly_top3 = set()  # 当前TOP3 ETF代码
+        self._weekly_rotation_day = 0  # 轮动日计数器
 
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
@@ -679,6 +687,163 @@ class ETFStrategy(bt.Strategy):
                         if self._buy(d, 0.50, f"集中金字塔分批建仓50% MACD{ms}"):
                             self._init_on_entry(ps, price)
                             entered = True
+
+            # 更新prev_macd_status
+            for name, ps in self.ps.items():
+                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                ps["prev_macd_status"] = ms
+
+            # 记录每日净值
+            total = self.broker.getvalue()
+            self.daily_values.append((date_str, total, self.broker.getcash()))
+            return
+
+        # ═══ 每周轮动模式 (配合 --concentrated --weekly-rotation) ═══
+        if self.p.weekly_rotation_mode:
+            self._weekly_rotation_day += 1
+            is_rotation_day = (self._weekly_rotation_day % 5 == 1)
+
+            # ── 动量评分: 4周(20日)涨幅，与rotation.py calc_momentum_4w一致 ──
+            momentum_scores = {}
+            for d in self.datas:
+                name = d._name
+                if d.volume[0] < 0:
+                    momentum_scores[name] = -999
+                elif len(d.close) >= 21:
+                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                else:
+                    momentum_scores[name] = -999
+            ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+            top_n = self.p.top_n
+            top_set = set(name for name, _ in ranked[:top_n] if momentum_scores.get(name, -999) > -999)
+
+            # 轮动日更新TOP3
+            if is_rotation_day:
+                old_top3 = self._weekly_top3.copy()
+                self._weekly_top3 = top_set
+                # 退出: 持仓中不在新TOP3的标的
+                for d in self.datas:
+                    name = d._name
+                    ps = self.ps[name]
+                    if self._has_position(d) and name not in top_set:
+                        self._close(d, f"每周轮动退出: 跌出TOP{top_n} 排名{momentum_scores.get(name, -999):.1f}%")
+                        self._full_liquidate_state(ps, date_str)
+                # 进入: 新TOP3中尚未持仓的标的
+                for d in self.datas:
+                    name = d._name
+                    ps = self.ps[name]
+                    price = d.close[0]
+                    if d.volume[0] < 0:
+                        continue
+                    if name in self._order_pending:
+                        continue
+                    if name in top_set and not self._has_position(d):
+                        if ps["build_phase"] > 0:
+                            continue
+                        if ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
+                            continue
+                        rsi_val = self.rsi[name].rsi[0]
+                        ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                        ma5_v = self.ma5[name][0]
+                        ma10_v = self.ma10[name][0]
+                        ma20_v = self.ma20[name][0]
+                        atr_val = self.atr[name].atr[0]
+                        atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+                        if not atr_ok:
+                            continue
+                        # 多头排列
+                        if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                            continue
+                        entered = False
+                        # 通道1: RSI抄底
+                        if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
+                            if self._buy(d, self.p.init_pct, f"每周轮动RSI抄底{self.p.init_pct*100:.0f}% RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道2: 趋势跟踪
+                        if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩小"):
+                            if self._buy(d, self.p.init_pct, f"每周轮动趋势跟踪{self.p.init_pct*100:.0f}% 空仓{ps['empty_days']}d"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道3: 突破入场
+                        h10 = None
+                        if len(d.close) >= 11:
+                            h10 = max(d.close.get(size=10, ago=1))
+                        if not entered and h10 is not None and price > h10 and ms == "金叉":
+                            if self._buy(d, self.p.init_pct, f"每周轮动突破入场{self.p.init_pct*100:.0f}% 10日高={h10:.3f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道4: 分批建仓
+                        if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                            if self._buy(d, self.p.init_pct, f"每周轮动分批建仓{self.p.init_pct*100:.0f}% MACD{ms}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+
+            # ── 每日风控: 止损/止盈 (不受轮动日限制) ──
+            for d in self.datas:
+                name = d._name
+                ps = self.ps[name]
+                price = d.close[0]
+                if d.volume[0] < 0:
+                    continue
+                if name in self._order_pending:
+                    continue
+                if not self._has_position(d):
+                    # 更新empty_days
+                    if ps["build_phase"] == 0:
+                        ps["empty_days"] += 1
+                    continue
+                has_pos = self._has_position(d)
+                shares = self._get_shares(d)
+                avg = self._get_avg_cost(d)
+
+                if price > ps["peak_price"]:
+                    ps["peak_price"] = price
+
+                # 固定止损
+                entry_cost = ps.get("entry_avg_cost", 0) or avg
+                if entry_cost > 0 and price <= entry_cost * (1 - self.p.stop_loss):
+                    self._close(d, f"每周轮动固定止损{self.p.stop_loss*100:.0f}% entry={entry_cost:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
+
+                # 均价分级止损
+                if entry_cost > 0:
+                    pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                    if pos_ratio > 0.80:
+                        stop_pct = 0.15
+                    elif pos_ratio >= 0.50:
+                        stop_pct = 0.20
+                    else:
+                        stop_pct = 0.25
+                    if price <= entry_cost * (1 - stop_pct):
+                        self._close(d, f"每周轮动均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                # 硬止损25%
+                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                    self._close(d, f"每周轮动硬止损25% peak={ps['peak_price']:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
+
+                # 移动止盈
+                atr_val = self.atr[name].atr[0]
+                pp = (price - avg) / avg if avg > 0 else 0
+                trail_pct = self.p.trail_pct
+                trail_activation = trail_pct + 0.01
+                trail_lockin = trail_pct + 0.08
+                if pp >= trail_activation and not ps["reached_activation"]:
+                    ps["reached_activation"] = True
+                if pp >= trail_lockin and not ps["reached_lockin"]:
+                    ps["reached_lockin"] = True
+                    ps["trail"] = avg * 1.05
+                if ps["reached_lockin"] and ps["peak_price"] > 0:
+                    ps["trail"] = ps["peak_price"] * (1 - trail_pct)
+                if ps["trail"] > 0 and price <= ps["trail"]:
+                    self._close(d, f"每周轮动移动止盈{trail_pct*100:.0f}% trail={ps['trail']:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
 
             # 更新prev_macd_status
             for name, ps in self.ps.items():
@@ -1587,6 +1752,7 @@ def main():
     run_515880 = "--515880" in sys.argv
     run_rotation = "--rotation" in sys.argv  # 全仓轮动模式
     run_concentrated = "--concentrated" in sys.argv  # 集中持仓模式
+    run_weekly_rotation = "--weekly-rotation" in sys.argv  # 每周轮动: 从候选池重算TOP3动量
     run_concentrated_pyramid = "--concentrated-pyramid" in sys.argv  # 集中TOP N+50%建仓+趋势加码
     run_pyramid = "--pyramid" in sys.argv  # 趋势加码模式
 
@@ -1667,6 +1833,15 @@ def main():
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = TRADE_START, TRADE_END
 
+    # 每周轮动模式: 将候选池(rotation.py ETF_CANDIDATES)中的ETF也加入数据加载范围
+    if run_weekly_rotation:
+        candidate_added = 0
+        for code, cfg in ETF_CANDIDATES.items():
+            if code not in active_codes:
+                active_codes[code] = {"name": cfg["name"], "sid": cfg["sid"]}
+                candidate_added += 1
+        print(f"▸ 每周轮动: 候选池新增 {candidate_added} 只ETF (共{len(active_codes)}只)")
+
     print("▸ 拉取历史K线 (腾讯前复权 API)...")
     # 计算K线拉取起始日: trade_start 往前推 120 个交易日（预热期）
     data_start = (pd.Timestamp(trade_start) - pd.offsets.BDay(120)).strftime("%Y%m%d")
@@ -1730,9 +1905,14 @@ def main():
 
     # 计算每只ETF的资金基数（与实盘一致：total_fund / ETF数量）
     # 集中持仓模式: 每只ETF = TOTAL_FUND / top_n
-    if run_concentrated or run_concentrated_pyramid:
+    if run_concentrated or run_concentrated_pyramid or run_weekly_rotation:
         FUND_PER_ETF = TOTAL_FUND // top_n
-        mode_label = "集中金字塔" if run_concentrated_pyramid else "集中持仓"
+        if run_weekly_rotation:
+            mode_label = "每周轮动"
+        elif run_concentrated_pyramid:
+            mode_label = "集中金字塔"
+        else:
+            mode_label = "集中持仓"
         print(f"▸ {mode_label}模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {top_n})")
     else:
         FUND_PER_ETF = TOTAL_FUND // len(active_codes)
@@ -1745,6 +1925,7 @@ def main():
     cerebro.addstrategy(ETFStrategy, fund_per_etf=FUND_PER_ETF,
                         rotation_mode=run_rotation,
                         concentrated_mode=run_concentrated,
+                        weekly_rotation_mode=run_weekly_rotation,
                         concentrated_pyramid_mode=run_concentrated_pyramid,
                         pyramid_mode=run_pyramid,
                         momentum_mode=momentum_mode,
