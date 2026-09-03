@@ -404,87 +404,67 @@ def _is_continuous_auction():
 # ─── 统一买卖做T入口 ───────────────────────────────────────────────────
 
 def _unified_trade(action, code, shares, price, pair_price=None):
-    """统一买卖做T流程：
-    1. 校验100倍数
-    2. 一个实例 e：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
-    3. 写 intent 文件（防重复）
-    4. buy/sell（复用 e 实例）→ 调用后直接认为成交成功，不检查返回值
-    5. EvolvingSim 返回 None → AppleScript debug → "Begin failed" 则杀同花顺重启
-    6. 做T：挂配对反方向单（复用 e 实例）→ 同样直接认为成功
-    7. _write_order 写入订单（默认成功，不检查 ok/contract）
-    """
-    # 1. 校验100倍数，不足5000自动修正
+    """统一买卖做T流程。"""
     shares = _validate_shares(shares)
-
     is_t0 = action in ('t0_buy', 't0_sell')
+    amount = shares * price
 
-    # 2. 一个实例：_sync_entrust + _revoke_all + buy/sell + pair 全程复用
+    # ETF名称
+    name = CODE_MAP.get(code, {}).get('name', code) if isinstance(CODE_MAP.get(code, None), dict) else code
+    if not name or name == code:
+        try:
+            with open(PF_PATH) as f:
+                pf = json.load(f)
+            name = pf.get('positions', {}).get(code, {}).get('name', code)
+        except Exception:
+            pass
+
     e = EvolvingSim()
     orders = _load_today_orders()
     _sync_entrust_to_orders(e=e, orders=orders)
-    # 3. 写 intent 文件（下单前，防跨 cron 重复）
     _write_intent(code, action, shares, price)
 
-    # 4. 做T：检查连续竞价
     if is_t0 and not _is_continuous_auction():
-        print(f"❌ 非连续竞价时段(9:30-11:30,13:00-15:00)，不执行挂单")
+        print(f"❌ 非连续竞价时段，不执行挂单")
         _write_intent_for_failed(code, action, shares, price, reason='非连续竞价时段')
         return False
 
-    # 确定 EvolvingSim 方法名和配对方向
     if action in ('buy', 't0_buy'):
-        method = 'buy'
-        pair_method = 'sell'
-        pair_action = 't0_sell'
+        method, pair_method, pair_action = 'buy', 'sell', 't0_sell'
     else:
-        method = 'sell'
-        pair_method = 'buy'
-        pair_action = 't0_buy'
+        method, pair_method, pair_action = 'sell', 'buy', 't0_buy'
 
-    # 5. 下单主单 → 复用 e 实例
-    if is_t0:
-        print(f"🔁 做T {action} {code} {shares}股@{price} | 配对挂单@{pair_price}")
-    else:
-        print(f"📊 {action} {code} {shares}股@{price}")
-
-    time.sleep(2)  # 撤单和下单之间间隔
+    # 下单
+    time.sleep(2)
     result = _call_evolving(method, code, shares, price, e=e)
 
-    # 下单后直接认为成交成功，不检查返回值
-    print(f"✅ {method} {code} {shares}股@{price} → 已提交EvolvingSim，认为成交成功")
+    if is_t0:
+        spread = (pair_price - price) / price * 100 if action == 't0_buy' else (price - pair_price) / price * 100
+        print(f"🔁 做T{'买入' if 'buy' in action else '卖出'} {name}({code}) {shares:,}股 @{price} → 挂{'卖' if 'buy' in action else '买'}@{pair_price}  价差{spread:+.1f}%  金额¥{amount:,.0f}")
+    elif action == 'buy':
+        print(f"📊 买入 {name}({code}) {shares:,}股 @{price}  金额¥{amount:,.0f}")
+    else:
+        print(f"📊 卖出 {name}({code}) {shares:,}股 @{price}  金额¥{amount:,.0f}")
 
-    # 如果 EvolvingSim 返回 None（进程卡死），用 AppleScript debug 检查
     if result is None:
         try:
             from evolving import ascmds
             raw = os.popen(ascmds.asissuingEntrustSim + ' ' + method + ' stock ' + code + ' ' + str(price) + ' ' + str(shares)).read().strip()
-            print(f"  [DEBUG] EvolvingSim返回None，AppleScript返回: {raw}")
-            # 检查是否包含 "Begin failed" → 同花顺进程卡死，杀进程重启
-            if raw and ('Begin failed' in raw):
-                print(f"  🔄 检测到 'Begin failed'，杀同花顺进程并重启...")
+            if raw and 'Begin failed' in raw:
+                print(f"  🔄 Begin failed，重启同花顺...")
                 os.system("pkill -9 -x 同花顺")
                 time.sleep(3)
                 os.system("open -a /Applications/同花顺.app")
                 time.sleep(5)
-                print(f"  ✅ 同花顺已重启，继续执行")
-            elif raw and 'failed' in raw.lower():
-                print(f"  ⚠️ 检测到 'failed'（非Begin failed），仍按成功处理，不杀进程")
-            else:
-                print(f"  ⚠️ EvolvingSim返回None但AppleScript未检测到异常，仍按成功处理")
-        except Exception as ex:
-            print(f"  ⚠️ AppleScript debug 异常: {ex}，仍按成功处理")
+        except Exception:
+            pass
 
-    # 6. _write_order 写入订单（默认成功，不检查ok/contract）
     _write_order(code, action, shares, price, 'pending', 'pending')
 
-    # 7. 做T：挂配对反方向单 → 复用 e 实例
     if is_t0 and pair_price is not None:
-        time.sleep(5)  # 等待主单成交再挂配对单
-        p_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
-        print(f"   ✅ 配对{pair_method}挂单 {code} {shares}股@{pair_price} → 已提交EvolvingSim，认为成交成功")
-
+        time.sleep(5)
+        _call_evolving(pair_method, code, shares, pair_price, e=e)
         _write_order(code, pair_action, shares, pair_price, 'pending', 'pending')
-        print(f"✅ 做T {action} {code} {shares}股@{price} | 配对{pair_method}挂单 {shares}股@{pair_price}")
 
     return True
 
