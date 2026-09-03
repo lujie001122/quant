@@ -281,6 +281,7 @@ class ETFStrategy(bt.Strategy):
         ("confirm_days", 0),  # 换仓延迟确认天数: 连续N天在/不在TOP N才换仓
         ("trend_entry", False),  # 趋势建仓通道: TOP3+多头排列+空仓时直接50%建仓
         ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
+        ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
     )
 
     # 板块分类: 用于板块分散
@@ -701,7 +702,7 @@ class ETFStrategy(bt.Strategy):
         # ═══ 每周轮动模式 (配合 --concentrated --weekly-rotation) ═══
         if self.p.weekly_rotation_mode:
             self._weekly_rotation_day += 1
-            is_rotation_day = (self._weekly_rotation_day % 5 == 1)
+            is_rotation_day = (self._weekly_rotation_day % self.p.rotation_interval == 1)
 
             # ── 动量评分: 4周(20日)涨幅，与rotation.py calc_momentum_4w一致 ──
             momentum_scores = {}
@@ -721,12 +722,13 @@ class ETFStrategy(bt.Strategy):
             if is_rotation_day:
                 old_top3 = self._weekly_top3.copy()
                 self._weekly_top3 = top_set
-                # 退出: 持仓中不在新TOP3的标的
+                # 退出: 只移出活跃池，持仓中的标的保留（走原有止损/止盈逻辑）
+                # 只有已空仓的旧标的才真正退出
                 for d in self.datas:
                     name = d._name
                     ps = self.ps[name]
-                    if self._has_position(d) and name not in top_set:
-                        self._close(d, f"每周轮动退出: 跌出TOP{top_n} 排名{momentum_scores.get(name, -999):.1f}%")
+                    if name not in top_set and not self._has_position(d):
+                        # 已空仓+跌出TOP3 → 完全退出，重置状态
                         self._full_liquidate_state(ps, date_str)
                 # 进入: 新TOP3中尚未持仓的标的
                 for d in self.datas:
@@ -1771,6 +1773,7 @@ def main():
     confirm_days = 0      # 换仓延迟确认天数
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
+    rotation_interval = 5  # 每周轮动间隔(天)
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -1808,6 +1811,8 @@ def main():
             trend_entry = True
         elif arg.startswith("--rsi-entry-max="):
             rsi_entry_max = float(arg.split("=", 1)[1])
+        elif arg.startswith("--rotation-interval="):
+            rotation_interval = int(arg.split("=", 1)[1])
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
@@ -1941,7 +1946,8 @@ def main():
                         sector_diversify=sector_diversify,
                         confirm_days=confirm_days,
                         trend_entry=trend_entry,
-                        rsi_entry_max=rsi_entry_max)
+                        rsi_entry_max=rsi_entry_max,
+                        rotation_interval=rotation_interval)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
