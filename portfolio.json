@@ -17,14 +17,14 @@
       "below_ma20_date": "2026-08-25",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 41.83,
+      "prev_rsi": 40.39,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 1,
+        "2026-09-04": {
+          "buy_count": 0,
           "t0_count": 3,
           "trend_profit_count": 0,
           "ma5_sell_count": 0
@@ -46,28 +46,26 @@
       "stop_level": 2,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 0.5720000000000001,
+      "trailing_stop_price": 0.57816,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-18",
-      "peak_price": 0.65,
+      "peak_price": 0.657,
       "breakeven_activated": false,
       "below_ma20_count": 2,
       "below_ma20_date": "2026-09-02",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 45.65,
+      "prev_rsi": 45.79,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 0,
-          "t0_count": 3,
-          "trend_profit_count": 2,
-          "ma5_sell_count": 0
+        "2026-09-04": {
+          "buy_count": 1,
+          "t0_count": 2
         }
       },
       "trend_profit_trigger_date": "2026-09-03",
@@ -86,18 +84,18 @@
       "stop_level": 0,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.46696,
+      "trailing_stop_price": 1.47576,
       "cooldown_until": "2026-08-14",
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": "2026-08-12",
-      "peak_price": 1.667,
+      "peak_price": 1.677,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 55.42,
+      "prev_rsi": 56.77,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [
         "2026-08-12",
@@ -106,11 +104,11 @@
       "empty_days": 0,
       "empty_days_date": "2026-08-27",
       "daily_trade_log": {
-        "2026-09-03": {
+        "2026-09-04": {
           "buy_count": 0,
           "t0_count": 3,
-          "trend_profit_count": 1,
-          "ma5_sell_count": 2
+          "trend_profit_count": 0,
+          "ma5_sell_count": 0
         }
       },
       "trend_profit_trigger_date": "2026-09-03",
@@ -123,170 +121,31 @@
       "entry_avg_cost": 1.655,
       "base_price": 1.654
     },
-    "159611": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": "2026-08-15",
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": "2026-08-13",
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 49.6,
-      "prev_macd_status": "红柱放大",
-      "liquidate_dates": [
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13",
-        "2026-08-13"
-      ],
-      "empty_days": 18,
-      "empty_days_date": "2026-09-03",
-      "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      },
-      "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
-      "confirm_batch_count": 0,
-      "confirm_batch_date": null,
-      "shares": 0,
-      "avg_cost": 0,
-      "current_price": 1.063,
-      "entry_avg_cost": 0,
-      "base_price": null
-    },
-    "515050": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": "2026-08-21",
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": "2026-08-19",
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 45.38,
-      "prev_macd_status": "红柱缩短",
-      "liquidate_dates": [
-        "2026-08-19"
-      ],
-      "empty_days": 6,
-      "empty_days_date": "2026-09-03",
-      "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      },
-      "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
-      "confirm_batch_count": 0,
-      "confirm_batch_date": null,
-      "shares": 0,
-      "avg_cost": 0.0,
-      "current_price": 1.101,
-      "entry_avg_cost": 0.0,
-      "base_price": null
-    },
-    "588170": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": "2026-08-21",
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": "2026-08-18",
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": 42.4,
-      "prev_macd_status": "绿柱放大",
-      "liquidate_dates": [
-        "2026-08-19"
-      ],
-      "empty_days": 13,
-      "empty_days_date": "2026-09-03",
-      "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      },
-      "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
-      "confirm_batch_count": 0,
-      "confirm_batch_date": null,
-      "shares": 0,
-      "avg_cost": 0,
-      "current_price": 1.104,
-      "entry_avg_cost": 0,
-      "base_price": null
-    },
     "513780": {
       "build_phase": 1,
       "build_first_price": 1.723,
       "stop_level": 0,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.51184,
+      "trailing_stop_price": 1.5136,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": null,
-      "peak_price": 1.718,
+      "peak_price": 1.72,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 59.07,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 57.9,
+      "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": "2026-08-25",
       "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 1,
+        "2026-09-04": {
+          "buy_count": 0,
           "t0_count": 3
         }
       },
@@ -306,28 +165,26 @@
       "stop_level": 1,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.694,
+      "trailing_stop_price": 1.70016,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_reset_date": null,
-      "peak_price": 1.925,
+      "peak_price": 1.932,
       "breakeven_activated": false,
       "below_ma20_count": 2,
       "below_ma20_date": "2026-09-03",
       "add_count": 1,
       "ma5_touch_count": 0,
-      "prev_rsi": 50.77,
+      "prev_rsi": 49.74,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": "2026-08-25",
       "daily_trade_log": {
-        "2026-09-03": {
+        "2026-09-04": {
           "buy_count": 0,
-          "t0_count": 3,
-          "trend_profit_count": 0,
-          "ma5_sell_count": 2
+          "t0_count": 3
         }
       },
       "trend_profit_trigger_date": "2026-08-31",
@@ -339,44 +196,6 @@
       "current_price": 1.886,
       "entry_avg_cost": 1.963,
       "base_price": 1.942
-    },
-    "515220": {
-      "build_phase": 2,
-      "build_first_price": 1.313,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": null,
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 1.313,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 2,
-      "ma5_touch_count": 2,
-      "prev_rsi": 55.04,
-      "prev_macd_status": "死叉",
-      "liquidate_dates": [],
-      "empty_days": 0,
-      "empty_days_date": "2026-08-28",
-      "daily_trade_log": {
-        "2026-09-03": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      },
-      "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
-      "confirm_batch_count": 2,
-      "confirm_batch_date": "2026-09-02",
-      "shares": 0,
-      "avg_cost": 0.0,
-      "current_price": 0.0,
-      "entry_avg_cost": 1.313,
-      "base_price": 0.0
     },
     "159985": {
       "build_phase": 2,
@@ -395,13 +214,13 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 72.6,
+      "prev_rsi": 73.73,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-03": {
+        "2026-09-04": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -415,6 +234,44 @@
       "current_price": 0.0,
       "entry_avg_cost": 2.306,
       "base_price": 0.0
+    },
+    "159981": {
+      "build_phase": 1,
+      "build_first_price": 1.691,
+      "stop_level": 0,
+      "reached_8pct": false,
+      "reached_15pct": false,
+      "trailing_stop_price": 0.0,
+      "cooldown_until": null,
+      "grid_frozen": false,
+      "last_grid_trigger": null,
+      "last_reset_date": null,
+      "peak_price": 0.0,
+      "breakeven_activated": false,
+      "below_ma20_count": 0,
+      "below_ma20_date": null,
+      "add_count": 0,
+      "ma5_touch_count": 2,
+      "prev_rsi": 67.21,
+      "prev_macd_status": "红柱缩短",
+      "liquidate_dates": [],
+      "empty_days": 0,
+      "empty_days_date": null,
+      "daily_trade_log": {
+        "2026-09-04": {
+          "buy_count": 1,
+          "t0_count": 0
+        }
+      },
+      "trend_profit_trigger_date": null,
+      "ma5_sell_trigger_date": null,
+      "confirm_batch_count": 0,
+      "confirm_batch_date": null,
+      "shares": 0,
+      "avg_cost": 0.0,
+      "current_price": 0.0,
+      "entry_avg_cost": 1.691,
+      "base_price": 1.691
     }
   },
   "positions": {
@@ -474,5 +331,5 @@
     "cash": 6427.08,
     "market_value": 213617.2
   },
-  "last_updated": "2026-09-03 17:00"
+  "last_updated": "2026-09-04 11:12"
 }

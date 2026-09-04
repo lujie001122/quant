@@ -192,7 +192,7 @@ class MoneyManager:
 
     @staticmethod
     def calc_t0_pair_price(current_price, shares, is_buy_t0):
-        """计算做T配对挂单价（固定+230元总价差）
+        """计算做T配对挂单价（固定+150元总价差）
 
         参数:
           current_price: 当前价
@@ -202,21 +202,21 @@ class MoneyManager:
           float: 配对挂单价, 或 0.0 表示无效
 
         公式:
-          - 买入信号（做T买入后高位卖出）: pair_price = (shares*price + 230) / shares
-          - 卖出信号（做T卖出后低位接回）: pair_price = (shares*price - 230) / shares
-          确保配对交易总价差为230元。
+          - 买入信号（做T买入后高位卖出）: pair_price = (shares*price + 150) / shares
+          - 卖出信号（做T卖出后低位接回）: pair_price = (shares*price - 150) / shares
+          确保配对交易总价差为150元。
         """
         if shares <= 0 or current_price <= 0:
             return 0.0
         if is_buy_t0:
             # 做T买入：先买后卖，配对的卖出价需高于买入价
-            return round(current_price + 230.0 / shares, 3)
+            return round(current_price + 150.0 / shares, 3)
         else:
             # 做T卖出：先卖后买，配对的买入价需低于卖出价
-            return round(current_price - 230.0 / shares, 3)
+            return round(current_price - 150.0 / shares, 3)
 
     @staticmethod
-    def is_t0_pair_viable(current_price, pair_price, shares, min_spread=200):
+    def is_t0_pair_viable(current_price, pair_price, shares, min_spread=150):
         """检查做T配对挂单是否有经济意义 (价差*量>200元)"""
         spread = abs(pair_price - current_price) * shares
         return spread > min_spread, round(spread, 2)

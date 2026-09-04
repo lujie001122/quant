@@ -109,10 +109,10 @@ class T0Strategy(BaseStrategy):
                 t0_pair = None
                 if atr_5m and price > 0:
                     pair_shares = max(int(pos.shares * 0.30 / 100) * 100, 5000)
-                    pair_price = calc_t0_pair_price(price, pair_shares, True)  # 固定+230价差
+                    pair_price = calc_t0_pair_price(price, pair_shares, True)  # 固定+150价差
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(pair_price - price) * pair_shares
-                        if spread > 200:
+                        if spread > 150:
                             t0_pair = {
                                 "trade_type": "t0_pair",
                                 "action": "卖出(配对挂单)",
@@ -120,7 +120,7 @@ class T0Strategy(BaseStrategy):
                                 "pair_price": pair_price,
                                 "shares": pair_shares,
                                 "spread": round(spread, 2),
-                                "reason": f"做T买入后高位卖出: 固定价差=230元, 挂单价={pair_price:.3f}",
+                                "reason": f"做T买入后高位卖出: 固定价差=150元, 挂单价={pair_price:.3f}",
                             }
                 return ("买入", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 
@@ -132,10 +132,10 @@ class T0Strategy(BaseStrategy):
                 t0_pair = None
                 if atr_5m and price > 0:
                     pair_shares = max(int(pos.shares * 0.30 / 100) * 100, 5000)
-                    pair_price = calc_t0_pair_price(price, pair_shares, False)  # 固定+230价差
+                    pair_price = calc_t0_pair_price(price, pair_shares, False)  # 固定+150价差
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(price - pair_price) * pair_shares
-                        if spread > 200:
+                        if spread > 150:
                             t0_pair = {
                                 "trade_type": "t0_pair",
                                 "action": "买入(配对挂单)",
@@ -143,7 +143,7 @@ class T0Strategy(BaseStrategy):
                                 "pair_price": pair_price,
                                 "shares": pair_shares,
                                 "spread": round(spread, 2),
-                                "reason": f"做T卖出后低位接回: 固定价差=230元, 挂单价={pair_price:.3f}",
+                                "reason": f"做T卖出后低位接回: 固定价差=150元, 挂单价={pair_price:.3f}",
                             }
                 return ("卖出", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 

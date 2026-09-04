@@ -769,7 +769,7 @@ class SignalExecutor:
                 pair_price = t0_pair.get("pair_price", 0)  # B5: 直接使用t0_pair中的固定价差
 
                 if pair_shares >= 100:
-                    print(f"[EXECUTE] {code} 做T配对价: 固定价差=230元, 当前价={price:.3f}, 股数={pair_shares}, 配对价={pair_price:.3f}")
+                    print(f"[EXECUTE] {code} 做T配对价: 固定价差=150元, 当前价={price:.3f}, 股数={pair_shares}, 配对价={pair_price:.3f}")
                 shares = pair_shares
 
                 if pair_shares < 100:

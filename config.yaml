@@ -23,8 +23,8 @@ backtest:
     - '2026-07-27'
   risk_free_rate: 0.02
   slippage_pct: 0.001
-  trade_end: '2026-07-27'
-  trade_start: '2024-07-27'
+  trade_end: '2026-06-30'
+  trade_start: '2024-07-01'
 broker_type: sim
 concentrated_mode: true
 concentrated_top_n: 3
@@ -103,7 +103,7 @@ stop_loss:
 t0:
   ma20_slope_buy_cap: -0.005
   ma20_slope_sell_cap: 0.003
-  min_spread: 200
+  min_spread: 150
   pair_atr_multiplier: 1.1
   pair_ratio: 0.3
   rsi_buy_max: 50
