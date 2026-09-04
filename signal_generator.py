@@ -342,7 +342,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     position_ratio = "减30%总仓"
                     reason = sig_name
                     trade_type = "reduce"
-                    pos.reduce_shares(pct=30, price=price)
+                    # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
                     break
                 elif sig_type == "trend_profit_sell":
                     action = "卖出"
@@ -350,14 +350,14 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     reason = sig_name
                     trade_type = "sell"
                     # P1-6: 只减活动仓（当前dead_shares=0，活动仓=总仓，语义等价）
-                    pos.reduce_shares(pct=10, price=price)
+                    # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
                     break
                 elif sig_type == "sell_active_5pct":
                     action = "卖出"
                     position_ratio = "5%(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
-                    pos.reduce_shares(pct=5, price=price)
+                    # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
                     break
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）

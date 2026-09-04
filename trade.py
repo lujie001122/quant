@@ -34,7 +34,7 @@ from evolving.evolving import EvolvingSim
 # note: tracker.py 的导入保留向后兼容，实际已通过 state_center 统一
 from state_center import get_code_map
 
-CODE_MAP = {code: info["sid"] for code, info in get_code_map().items()}
+CODE_MAP = get_code_map()  # {code: {"name": str, "sid": str}}
 
 
 # ─── EvolvingSim 调用 ──────────────────────────────────────────────────
@@ -410,7 +410,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     amount = shares * price
 
     # ETF名称
-    name = CODE_MAP.get(code, {}).get('name', code) if isinstance(CODE_MAP.get(code, None), dict) else code
+    name = CODE_MAP.get(code, {}).get('name', code)
     if not name or name == code:
         try:
             with open(PF_PATH) as f:
