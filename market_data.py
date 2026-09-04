@@ -25,7 +25,7 @@ API_DELAY = 1  # akshare调用间隔(秒)
 
 
 # ============================================================
-# 数据获取层（腾讯前复权 + akshare降级）
+# 数据获取层（腾讯前复权 → akshare前复权 → 东财前复权 → Sina兜底）
 # ============================================================
 
 def _akshare_retry(func, *args, retries=3, initial_delay=API_DELAY, **kwargs):
@@ -128,9 +128,10 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
     if not sid:
         raise RuntimeError(f"{code} 无代码映射")
 
-    # 腾讯接口: qfq=前复权, datalen=1200条
+    # ── 腾讯前复权 (主数据源) ──
     url = (f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?"
            f"param={sid},day,,,1200,qfq")
+    tencent_source_type = None
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0",
@@ -148,9 +149,19 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
         if not qfq_key:
             raise RuntimeError(f"{code} 腾讯接口返回无数据")
 
-        klines_raw = stock_data[qfq_key].get("qfqday") or stock_data[qfq_key].get("day", [])
+        klines_raw = stock_data[qfq_key].get("qfqday")
+        if klines_raw:
+            tencent_source_type = "tencent_qfq"
+        else:
+            # qfqday 为空 → 腾讯前复权不可用，不要降级为非复权 day
+            day_raw = stock_data[qfq_key].get("day", [])
+            if day_raw:
+                logger.warning(f"{code} 腾讯qfqday为空(前复权不可用)，跳过腾讯非复权day")
+                print(f"[WARN] {code} 腾讯前复权(qfqday)不可用，跳过非复权day，尝试akshare前复权")
+            klines_raw = None
+
         if not klines_raw:
-            raise RuntimeError(f"{code} 腾讯接口K线为空")
+            raise RuntimeError(f"{code} 腾讯前复权接口K线为空")
 
         klines = []
         for item in klines_raw:
@@ -168,57 +179,19 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             except (ValueError, IndexError):
                 continue
         if klines:
-            # 数据源标识: 腾讯主源
+            # 数据源标识: 腾讯前复权
             for k in klines:
-                k["source"] = "tencent"
+                k["source"] = tencent_source_type
             # 按 start/end 过滤（start/end 为 YYYYMMDD 格式，K线日期为 YYYY-MM-DD）
             start_dt = datetime.strptime(start, "%Y%m%d").strftime("%Y-%m-%d")
             end_dt = datetime.strptime(end, "%Y%m%d").strftime("%Y-%m-%d")
             klines = [k for k in klines if start_dt <= k["date"] <= end_dt]
             return klines
     except Exception as e:
-        logger.warning(f"{code} 腾讯接口失败: {e}, 降级为Sina")
-        print(f"[WARN] {code} 腾讯接口失败: {e}, 降级为Sina")
+        logger.warning(f"{code} 腾讯前复权接口失败: {e}, 降级为akshare前复权")
+        print(f"[WARN] {code} 腾讯前复权接口失败: {e}, 降级为akshare前复权")
 
-    # 降级: Sina (新浪财经K线)
-    try:
-        sina_url = (f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-                    f"CN_MarketData.getKLineData?symbol={sid}&scale=240&ma=no&datalen=5000")
-        req = urllib.request.Request(sina_url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.sina.com.cn",
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-        if not raw:
-            raise RuntimeError(f"{code} Sina接口返回空数据")
-        klines = []
-        for item in raw:
-            try:
-                o, c, h, l = float(item["open"]), float(item["close"]), float(item["high"]), float(item["low"])
-                v = float(item["volume"])
-                pct = round((c - o) / o * 100, 2) if o > 0 else 0
-                klines.append({
-                    "date": item["day"],
-                    "open": o, "close": c, "high": h, "low": l,
-                    "volume": v, "amount": 0, "pct": pct,
-                })
-            except (ValueError, KeyError, IndexError):
-                continue
-        if klines:
-            # 按 start/end 过滤（start/end 为 YYYYMMDD 格式，K线日期为 YYYY-MM-DD）
-            start_dt = datetime.strptime(start, "%Y%m%d").strftime("%Y-%m-%d")
-            end_dt = datetime.strptime(end, "%Y%m%d").strftime("%Y-%m-%d")
-            klines = [k for k in klines if start_dt <= k["date"] <= end_dt]
-            for k in klines:
-                k["source"] = "sina"
-            logger.warning(f"{code} 使用降级数据源 Sina，指标计算可能偏差")
-            return klines
-    except Exception as e2:
-        logger.warning(f"{code} Sina接口失败: {e2}, 降级为akshare")
-        print(f"[WARN] {code} Sina接口失败: {e2}, 降级为akshare")
-
-    # 降级: akshare
+    # ── akshare 前复权 (降级数据源1) ──
     try:
         df = _akshare_retry(
             ak.fund_etf_hist_em,
@@ -235,13 +208,124 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
                 "pct": float(row["涨跌幅"]),
             })
         if klines:
-            # 数据源标识: akshare降级源
-            logger.warning(f"{code} 使用降级数据源 akshare，指标计算可能偏差")
             for k in klines:
-                k["source"] = "akshare"
+                k["source"] = "akshare_qfq"
+            logger.warning(f"{code} 使用降级数据源 akshare前复权")
+            print(f"[INFO] {code} 使用akshare前复权数据 (腾讯前复权不可用)")
             return klines
     except Exception as e2:
-        raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")
+        logger.warning(f"{code} akshare前复权失败: {e2}, 尝试东财直接API")
+        print(f"[WARN] {code} akshare前复权失败, 尝试东财直接API")
+
+    # ── 东财直接API 前复权 (降级数据源2) ──
+    # fqt=1 前复权, secid=市场代码.代码 (0=深市,1=沪市)
+    try:
+        market_id = "0" if code.startswith(("1", "15")) else "1"
+        secid = f"{market_id}.{code}"
+        em_url = (
+            f"https://push2his.eastmoney.com/api/qt/stock/kline/get?"
+            f"secid={secid}&fields1=f1,f2,f3,f4,f5,f6&"
+            f"fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&"
+            f"klt=101&fqt=1&beg={start}&end={end}"
+        )
+        req = urllib.request.Request(em_url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Referer": "https://quote.eastmoney.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+
+        em_klines = raw.get("data", {}).get("klines", [])
+        if not em_klines:
+            raise RuntimeError(f"{code} 东财API返回空数据")
+
+        klines = []
+        for line in em_klines:
+            parts = line.split(",")
+            if len(parts) < 11:
+                continue
+            try:
+                klines.append({
+                    "date": parts[0],
+                    "open": float(parts[1]), "close": float(parts[2]),
+                    "high": float(parts[3]), "low": float(parts[4]),
+                    "volume": float(parts[5]), "amount": float(parts[6]),
+                    "pct": float(parts[8]) if parts[8] else 0,
+                })
+            except (ValueError, IndexError):
+                continue
+        if klines:
+            for k in klines:
+                k["source"] = "eastmoney_qfq"
+            logger.warning(f"{code} 使用降级数据源 东财直接API前复权")
+            print(f"[INFO] {code} 使用东财直接API前复权 (腾讯/akshare不可用)")
+            return klines
+    except Exception as e3:
+        logger.error(f"{code} 东财直接API前复权也失败: {e3}")
+
+    # ── Sina 日K线 (兜底数据源3, 非复权) ──
+    # 新浪K线API不支持前复权，仅作为最后兜底保证回测能跑完
+    try:
+        # 构造 Sina sid: sh510050 / sz159915
+        if code.startswith("5") or code.startswith("6"):
+            sina_sid = f"sh{code}"
+        else:
+            sina_sid = f"sz{code}"
+
+        # datalen: 请求足够多的K线覆盖 start~end 区间
+        start_dt = datetime.strptime(start, "%Y%m%d")
+        end_dt = datetime.strptime(end, "%Y%m%d")
+        datalen = min((end_dt - start_dt).days + 100, 1023)  # 新浪最大1023
+
+        sina_url = (
+            f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            f"CN_MarketData.getKLineData?symbol={sina_sid}&scale=240&ma=no&datalen={datalen}"
+        )
+        req = urllib.request.Request(sina_url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            sina_raw = json.loads(resp.read().decode("utf-8"))
+
+        if sina_raw and isinstance(sina_raw, list):
+            klines = []
+            start_fmt = start_dt.strftime("%Y-%m-%d")
+            end_fmt = end_dt.strftime("%Y-%m-%d")
+            for item in sina_raw:
+                d = item.get("day", "")
+                if not (start_fmt <= d <= end_fmt):
+                    continue
+                try:
+                    o = float(item.get("open", 0))
+                    c = float(item.get("close", 0))
+                    h = float(item.get("high", 0))
+                    l = float(item.get("low", 0))
+                    v = float(item.get("volume", 0))
+                    if o <= 0 or c <= 0:
+                        continue
+                    pct = round((c - o) / o * 100, 2) if o > 0 else 0
+                    klines.append({
+                        "date": d,
+                        "open": o, "close": c, "high": h, "low": l,
+                        "volume": v, "amount": 0, "pct": pct,
+                    })
+                except (ValueError, TypeError):
+                    continue
+            if klines:
+                for k in klines:
+                    k["source"] = "sina_no_adjust"
+                logger.warning(f"{code} 使用兜底数据源 Sina非复权 (除权日可能跳空)")
+                print(f"[WARN] {code} 所以前复权数据源均不可用，使用Sina非复权数据 (除权日价格可能跳空，回测仅供参考)")
+                return klines
+    except Exception as e4:
+        logger.error(f"{code} Sina兜底也失败: {e4}")
+        print(f"[ERROR] {code} Sina兜底也失败: {e4}")
+
+    # 所有数据源均不可用 → 返回空列表而非报错退出，保证回测能继续
+    logger.error(f"{code} 所有数据源均不可用 (腾讯/akshare/东财/Sina)")
+    print(f"[ERROR] {code} 所有数据源均不可用 (腾讯/akshare/东财/Sina)，该ETF将无K线数据")
+    return []
 
 
 def fetch_klines_daily_arrays(code, sid):
@@ -257,7 +341,7 @@ def fetch_klines_daily_arrays(code, sid):
     """
     try:
         klines = fetch_klines_daily(code)
-    except RuntimeError:
+    except (RuntimeError, Exception):
         # 如果 code 映射失败（如指数 000001），用 sid 直接构造请求
         klines = _fetch_klines_by_sid(sid)
     if not klines:
@@ -294,7 +378,9 @@ def _fetch_klines_by_sid(sid):
 
         kline_list = stock_data[qfq_key].get("qfqday", [])
         if not kline_list:
-            kline_list = stock_data[qfq_key].get("day", [])
+            # qfqday为空 → 前复权不可用，不降级为非复权day
+            logger.warning(f"{sid} 腾讯qfqday为空(前复权不可用)，_fetch_klines_by_sid跳过非复权day")
+            return None
 
         klines = []
         for item in kline_list:
@@ -471,6 +557,10 @@ def validate_and_align_data(data, source_type, code=None):
     # 检查3: 降级源警告
     if source_type == "akshare":
         logger.warning(f"{code} 使用降级数据源 akshare，指标计算可能偏差" if code else "使用降级数据源 akshare，指标计算可能偏差")
+    elif source_type in ("sina", "sina_no_adjust"):
+        logger.warning(f"{code} 使用兜底数据源 Sina非复权，除权日价格可能跳空" if code else "使用兜底数据源 Sina非复权，除权日价格可能跳空")
+    elif source_type == "eastmoney_qfq":
+        logger.warning(f"{code} 使用降级数据源 东财直接API前复权" if code else "使用降级数据源 东财直接API前复权")
 
     return True, f"数据有效 source={source_type}{tag}"
 

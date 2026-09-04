@@ -1897,10 +1897,7 @@ def main():
                 print(f"  ⚠ {code} {cfg['name']:10s}  无数据, 跳过")
                 continue
             dataframes[code] = df
-            # 报告数据源类型
-            src = df["source"].iloc[0] if "source" in df.columns else "unknown"
-            src_label = {"tencent_qfq": "腾讯前复权", "akshare_qfq": "akshare前复权", "eastmoney_qfq": "东财前复权"}.get(src, src)
-            print(f"  ✓ {code} {cfg['name']:10s}  {len(df):3d} 条K线 ({src_label})")
+            print(f"  ✓ {code} {cfg['name']:10s}  {len(df):3d} 条K线 (前复权)")
         except Exception as e:
             print(f"  ✗ {code} {cfg['name']:10s}  拉取失败: {e}"); sys.exit(1)
 
