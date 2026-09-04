@@ -379,7 +379,7 @@ class OrderManager:
 
     def write_intent(self, code: str, action: str, direction: str, mode: str = "") -> str:
         """写 intent 文件防止跨 cron 重复"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y%m%d")
         filename = f"{today}_{code}_{action}.json"
         filepath = os.path.join(self.intent_dir, filename)
 
@@ -418,7 +418,7 @@ class OrderManager:
 
     def cleanup_intent_files(self) -> int:
         """清理当天 intent 文件（收盘后调用）"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y%m%d")
         cleaned = 0
         if not os.path.exists(self.intent_dir):
             return cleaned
@@ -445,8 +445,8 @@ class OrderManager:
             if not fname.endswith(".json"):
                 continue
             try:
-                date_str = fname[:10]  # YYYY-MM-DD
-                file_date = datetime.strptime(date_str, "%Y-%m-%d")
+                date_str = fname[:8]  # YYYYMMDD
+                file_date = datetime.strptime(date_str, "%Y%m%d")
                 if file_date < cutoff:
                     fpath = os.path.join(self.intent_dir, fname)
                     os.remove(fpath)
@@ -462,7 +462,7 @@ class OrderManager:
 
     def _order_filepath(self, order: Order) -> str:
         """生成订单文件路径 — Q6: 文件名含 order_id 避免覆盖"""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y%m%d")
         return os.path.join(
             self.orders_dir, f"{today}_{order.code}_{order.action}_{order.order_id}.json"
         )

@@ -443,8 +443,15 @@ class RealBroker(BaseBroker):
         try:
             acct = self._call_evolving("getAccountInfo")
             if acct and isinstance(acct, dict) and acct.get("status"):
-                data = acct.get("data", [])
-                if data and len(data) > 0:
+                data = acct.get("data", {})
+                # data 可能是字典（实际格式）或数组（旧格式兼容）
+                if isinstance(data, dict):
+                    return {
+                        "total_asset": float(data.get("总资产", 0)),
+                        "cash": float(data.get("可用金额", 0)),
+                        "market_value": float(data.get("总市值", 0)),
+                    }
+                elif isinstance(data, list) and data and len(data) > 0:
                     row = data[0]
                     return {
                         "total_asset": float(row[0]) if len(row) > 0 else 0,
@@ -930,13 +937,17 @@ class SignalExecutor:
                                 from state_center import load_portfolio, save_portfolio
                                 from position_info import PositionInfo
                                 pf = load_portfolio()
-                                pos_data = pf.get("positions", {}).get(code, {})
-                                if pos_data:
+                                # 从 _signal_state 读取（与 PositionInfo.to_dict 格式一致）
+                                sig_state = pf.get("_signal_state", {}).get(code, {})
+                                if sig_state:
                                     pos = PositionInfo()
-                                    pos.from_dict(pos_data)
+                                    pos.from_dict(sig_state)
                                     pos.reset_on_liquidate(today_str)
-                                    pf["positions"][code] = pos.to_dict(today_str)
-                                    save_portfolio(pf)
+                                    pf.setdefault("_signal_state", {})[code] = pos.to_dict(today_str)
+                                # 同时清理 positions[code]
+                                if code in pf.get("positions", {}):
+                                    del pf["positions"][code]
+                                save_portfolio(pf)
                             except Exception:
                                 pass
                         break

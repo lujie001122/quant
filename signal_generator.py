@@ -474,9 +474,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # 兜底：如果 t0_signal 有有效信号，仅当 trade_type 未设置时覆盖为 t0
         # 止损/止盈/减仓/卖出/T0已设置信号（liquidate/reduce/sell/t0）优先级更高，T0 不覆盖
+        # 注意：只有 t0_signal 确实是可执行的做T信号时才覆盖，排除"不执行"、"已用尽"、"但无底仓"等否定信号
         if t0_signal and t0_signal not in ("无", "无(非交易时段)", "无(集合竞价时段)"):
-            if "买入" in t0_signal or "卖出" in t0_signal:
-                if trade_type is None:
+            if ("买入" in t0_signal or "卖出" in t0_signal):
+                # 排除不可执行的做T信号
+                t0_not_executable = any(kw in t0_signal for kw in ("不执行", "已用尽", "但无底仓", "价低于成本"))
+                if trade_type is None and not t0_not_executable:
                     trade_type = "t0"
                     if "买入" in t0_signal:
                         action = "买入"
@@ -610,12 +613,15 @@ def execute_signals(result, mode=None):
 
 def main():
     # 解析 --execute 参数
-    execute_mode = None
+    execute_mode = None  # None 表示未指定 --execute，不执行
+    execute_flag = False  # 标记是否出现了 --execute 参数
     for arg in sys.argv:
         if arg == "--execute":
-            execute_mode = None  # 全部
+            execute_flag = True
+            execute_mode = None  # 全部（None 在此上下文表示全部模式）
             break
         if arg.startswith("--execute="):
+            execute_flag = True
             val = arg.split("=", 1)[1].strip().lower()
             if val in ("buy_sell", "t0"):
                 execute_mode = val
@@ -631,7 +637,7 @@ def main():
             sys.stdout.reconfigure(encoding="utf-8")
         print(json_str)
 
-        if execute_mode is not None:  # --execute 或 --execute=xxx
+        if execute_flag:  # 只要在命令行出现了 --execute，就执行信号
             execute_signals(result, mode=execute_mode)
 
         return result
