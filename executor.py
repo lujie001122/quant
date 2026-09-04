@@ -192,14 +192,17 @@ class SimBroker(BaseBroker):
     def _update_position(self, code: str, delta_shares: int, price: float):
         """更新模拟持仓"""
         if code not in self._positions:
-            self._positions[code] = {"shares": 0, "avg_cost": 0.0, "total_cost": 0.0}
+            self._positions[code] = {"shares": 0, "avg_cost": 0.0, "total_cost": 0.0, "current_price": 0.0}
 
         pos = self._positions[code]
         old_shares = pos["shares"]
         new_shares = old_shares + delta_shares
 
+        # B6: 始终更新当前价
+        pos["current_price"] = price
+
         if new_shares <= 0:
-            self._positions[code] = {"shares": 0, "avg_cost": 0.0, "total_cost": 0.0}
+            self._positions[code] = {"shares": 0, "avg_cost": 0.0, "total_cost": 0.0, "current_price": 0.0}
         elif delta_shares > 0:
             # 买入：更新均价
             new_total_cost = pos["total_cost"] + delta_shares * price
@@ -231,7 +234,7 @@ class SimBroker(BaseBroker):
     def get_account(self) -> Dict:
         """获取账户信息"""
         mv = sum(
-            p["shares"] * p["avg_cost"]
+            p["shares"] * p.get("current_price", p["avg_cost"])
             for p in self._positions.values()
         )
         return {
@@ -676,7 +679,7 @@ class SignalExecutor:
                 continue
             # 模式过滤
             if mode == "buy_sell":
-                if trade_type not in BUY_SELL_TYPES and trade_type not in T0_TYPES:
+                if trade_type in T0_TYPES:
                     continue
             elif mode == "t0":
                 if trade_type not in T0_TYPES:
@@ -804,7 +807,7 @@ class SignalExecutor:
                     print(f"[EXECUTE] ⚠️ {code} 做T但无持仓({current_shares}股)，跳过")
                     fail_count += 1
                     continue
-                ratio = 0.30
+                ratio = 0.20
                 shares = int(current_shares * ratio / 100) * 100
                 if shares < 100:
                     shares = 100
@@ -930,6 +933,18 @@ class SignalExecutor:
 
                         # ═══ 同时写 intent 记录 ═══
                         self._write_intent_for_sg(code, sig_mode, sig_direction)
+
+                        # ═══ B4: 每笔成交后更新持仓状态(防超额卖出) ═══
+                        if trade_type in ("sell", "reduce", "t0"):
+                            try:
+                                from state_center import load_portfolio, save_portfolio
+                                pf = load_portfolio()
+                                pos_data = pf.get("positions", {}).get(code, {})
+                                if pos_data and after_shares >= 0:
+                                    pf["positions"][code]["shares"] = after_shares
+                                    save_portfolio(pf)
+                            except Exception:
+                                pass
 
                         # ═══ O4: 清仓成交确认后重置持仓状态 ═══
                         if trade_type == "liquidate":

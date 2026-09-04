@@ -117,7 +117,7 @@ def _compute_trailing_stop(avg_cost, peak_price, reached_8pct, reached_15pct):
             return avg_cost * 1.05
     else:
         if reached_15pct and peak_price > 0:
-            return peak_price * 0.93
+            return peak_price * (1 - trail_pct)
         if reached_8pct:
             return avg_cost * 1.05
     return 0.0

@@ -825,11 +825,18 @@ def detect_error_type(stdout, stderr, returncode, exit_reason=None):
 
 def parse_position_ratio(ratio_str):
     """从 position_ratio 字符串中提取比例(0-1浮点数)
-    例: "30%(RSI抄底)" → 0.30, "5%(活动仓)" → 0.05, "15%(补仓)" → 0.15
+    例: "30%(RSI抄底)" → 0.30, "5%(活动仓)" → 0.05, "15%(补仓)→ 0.15
+        "减30%总仓" → 0.30, "100%" → 1.0
     """
     if not ratio_str:
         return 0.0
     try:
+        import re
+        # 提取%号前的数字（支持中文前缀如"减30%总仓"）
+        match = re.search(r'(\d+(?:\.\d+)?)\s*%', ratio_str)
+        if match:
+            return float(match.group(1)) / 100.0
+        # 兜底：尝试原始逻辑
         pct_str = ratio_str.split("%")[0]
         return float(pct_str) / 100.0
     except (ValueError, IndexError):
