@@ -354,6 +354,11 @@ class ETFStrategy(bt.Strategy):
         self._weekly_top3 = set()  # 当前TOP3 ETF代码
         self._weekly_rotation_day = 0  # 轮动日计数器
 
+        # 集中金字塔模式: 缓存排名(按rebalance周期刷新)
+        self._pyramid_ranked = []  # 缓存的动量排名
+        self._pyramid_top_set = set()  # 缓存的TOP N集合
+        self._pyramid_top_drop = set()  # 缓存的TOP N*2集合
+
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
         self.win_amount = 0.0; self.loss_amount = 0.0
@@ -518,21 +523,26 @@ class ETFStrategy(bt.Strategy):
 
         # ═══ 集中TOP N+50%建仓+趋势加码模式 ═══
         if self.p.concentrated_pyramid_mode:
-            # 计算lookback日动量排名
-            lb = self.p.lookback
-            momentum_scores = {}
-            for d in self.datas:
-                name = d._name
-                if d.volume[0] < 0:
-                    momentum_scores[name] = -999
-                elif len(d.close) >= lb + 1:
-                    momentum_scores[name] = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
-                else:
-                    momentum_scores[name] = -999
-            ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+            # 计算lookback日动量排名 (按rebalance周期刷新)
+            is_rebalance_day = (self._day_count % self.p.rebalance == 1) or not self._pyramid_ranked
+            if is_rebalance_day:
+                lb = self.p.lookback
+                momentum_scores = {}
+                for d in self.datas:
+                    name = d._name
+                    if d.volume[0] < 0:
+                        momentum_scores[name] = -999
+                    elif len(d.close) >= lb + 1:
+                        momentum_scores[name] = (d.close[0] - d.close[-lb]) / d.close[-lb] * 100
+                    else:
+                        momentum_scores[name] = -999
+                self._pyramid_ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
+            ranked = self._pyramid_ranked
             top_n = self.p.top_n
             top_set = set(name for name, _ in ranked[:top_n])
             top_drop = set(name for name, _ in ranked[:top_n * 2])
+            self._pyramid_top_set = top_set
+            self._pyramid_top_drop = top_drop
 
             # 每日重置
             for ps in self.ps.values():
@@ -572,6 +582,14 @@ class ETFStrategy(bt.Strategy):
                         self._close(d, f"集中金字塔清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
                         self._full_liquidate_state(ps, date_str)
                         continue
+
+                    # MA60趋势过滤: 价格<MA60则清仓
+                    if self.p.ma60_filter:
+                        ma60_v = self.ma60[name][0]
+                        if ma60_v and price < ma60_v:
+                            self._close(d, f"集中金字塔MA60过滤清仓 price={price:.3f}<MA60={ma60_v:.3f}")
+                            self._full_liquidate_state(ps, date_str)
+                            continue
 
                     if price > ps["peak_price"]:
                         ps["peak_price"] = price
@@ -655,15 +673,31 @@ class ETFStrategy(bt.Strategy):
                         continue
 
                     # 多头排列
-                    if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
-                        continue
+                    is_bullish = (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v)
 
                     # 10日新高
                     h10 = None
                     if len(d.close) >= 11:
                         h10 = max(d.close.get(size=10, ago=1))
 
+                    # 近期高点(20日)用于回调入场计算
+                    recent_high = None
+                    if len(d.close) >= 21:
+                        recent_high = max(d.close.get(size=20, ago=1))
+
                     entered = False
+
+                    # 通道0: 强势回调入场 → 50%建仓 (价格从近期高点回调5-10%但仍在MA20上方+RSI>40)
+                    if not entered and recent_high is not None and recent_high > 0:
+                        pullback = (recent_high - price) / recent_high
+                        if 0.05 <= pullback <= 0.10 and ma20_v and price > ma20_v and rsi_val is not None and rsi_val > 40:
+                            if self._buy(d, 0.50, f"集中金字塔强势回调50% 回调{pullback*100:.1f}% RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+
+                    # 非回调通道需要多头排列
+                    if not entered and not is_bullish:
+                        continue
 
                     # 通道1: RSI抄底 → 50%建仓
                     if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
@@ -1482,10 +1516,13 @@ class ETFStrategy(bt.Strategy):
                                     ps["grid_frozen"] = True
                             # B3: 不立即重置，跨天重置
 
-                    # 网格卖出 (趋势止盈触发当天不触发网格卖出)
+                    # 网格卖出 (趋势止盈触发当天不触发网格卖出; 多头排列时跳过网格卖出)
                     if grid_signal != "无" and "卖出" in grid_signal and name not in self._order_pending:
                         # 趋势止盈互斥: 当天趋势止盈已触发则跳过网格卖出
                         if ps["trend_sell_today"] > 0:
+                            continue
+                        # 多头排列(MA5>MA10>MA20)时跳过网格卖出 — 趋势中不减仓
+                        if ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v:
                             continue
                         grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
                         if ps["last_grid_trigger"] != grid_key:
