@@ -492,6 +492,7 @@ class ETFStrategy(bt.Strategy):
         ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
         ps["entry_avg_cost"] = 0.0
+        ps["dip_second_entry"] = False
         ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
         ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
         ps["grid_entry_avg"] = 0.0
@@ -722,6 +723,8 @@ class ETFStrategy(bt.Strategy):
                             entry_label = "回调第二" if is_dip_second_candidate else "强势回调"
                             if self._buy(d, entry_pct, f"集中金字塔{entry_label}{entry_pct*100:.0f}% 回调{pullback*100:.1f}% RSI={rsi_val:.1f}"):
                                 self._init_on_entry(ps, price)
+                                if is_dip_second_candidate:
+                                    ps["dip_second_entry"] = True
                                 entered = True
 
                     # dip_second: 第2名ETF只允许回调通道, 不走其他通道
