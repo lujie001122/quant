@@ -275,46 +275,6 @@
     }
   },
   "positions": {
-    "159516": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": "2026-09-06",
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": null,
-      "prev_macd_status": null,
-      "liquidate_dates": [
-        "2026-09-04"
-      ],
-      "empty_days": 0,
-      "empty_days_date": null,
-      "daily_trade_log": {
-        "2026-09-04": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      },
-      "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
-      "confirm_batch_count": 0,
-      "confirm_batch_date": null,
-      "shares": 0,
-      "avg_cost": 0,
-      "current_price": 0.671,
-      "entry_avg_cost": 0,
-      "base_price": null
-    },
     "515880": {
       "name": "通信ETF",
       "shares": 66500,
@@ -361,5 +321,5 @@
     "cash": 16479.02,
     "market_value": 97108.2
   },
-  "last_updated": "2026-09-04 17:00"
+  "last_updated": "2026-09-05 20:17"
 }
