@@ -87,16 +87,12 @@ CONFIRM_ENTRY_RATIO = CONF['entry']['confirm_entry_ratio']  # 确认加仓比例
 RISK_FREE_RATE = CONF['backtest']['risk_free_rate']
 
 # 默认ETF配置(回退用, etf_pool.json不存在时使用)
+# 方案γ: 移除拖后腿ETF(159532中证2000亏损, 512400有色低利润, 159985豆粕微利)
 _DEFAULT_CODES = {
     "159516": {"name": "半导体设备ETF", "sid": "sz159516"},
     "515880": {"name": "通信ETF", "sid": "sh515880"},
-    "588170": {"name": "科创半导体ETF", "sid": "sh588170"},
-    "159532": {"name": "中证2000ETF", "sid": "sz159532"},
-    "515050": {"name": "中证全指ETF", "sid": "sh515050"},
-    "159611": {"name": "电力ETF", "sid": "sz159611"},
+    "159981": {"name": "能源化工ETF", "sid": "sz159981"},
     "513780": {"name": "港股创新药ETF", "sid": "sh513780"},
-    "512400": {"name": "有色金属ETF", "sid": "sh512400"},
-    "515220": {"name": "煤炭ETF", "sid": "sh515220"},
 }
 
 from state_center import get_code_map, get_etfs_config
@@ -641,24 +637,40 @@ class ETFStrategy(bt.Strategy):
                     if entry_cost > 0 and price > entry_cost:
                         float_profit = (price - entry_cost) / entry_cost
                         current_value = shares * price
-                        max_value = TOTAL_FUND * 0.50  # 单只ETF仓位上限50%
+                        max_value = self.p.fund_per_etf * 1.20  # 单只ETF最大仓位=fund_per_etf*120%(允许50%建仓+35%加仓1+35%加仓2)
 
                         if ps["pyramid_count"] == 0 and float_profit > 0.05:
-                            # 加仓金额 = 首次建仓金额 × 0.5
-                            # 首次建仓金额 = fund_per_etf * 0.50, 所以加仓 pct = 0.25
-                            add_pct = 0.25
+                            # 金字塔加仓: 增量买入 add_pct × fund_per_etf 的金额
+                            add_pct = 0.35
                             add_value = self.p.fund_per_etf * add_pct
                             if current_value + add_value <= max_value:
-                                if self._buy(d, add_pct, f"集中金字塔加仓1 浮盈{float_profit*100:.1f}%"):
-                                    ps["pyramid_count"] = 1
-                                    ps["bought_today"] = True
+                                # 直接计算增量股数
+                                price = d.close[0]
+                                add_shares = int(add_value / price / 100) * 100
+                                if add_shares >= 100:
+                                    cost = add_shares * price * (1 + SLIPPAGE_PCT) + FEE
+                                    if cost > self.broker.getcash():
+                                        add_shares = int(self.broker.getcash() / price / 100) * 100
+                                    if add_shares >= 100:
+                                        self._order_pending[name] = self.buy(data=d, size=add_shares)
+                                        ps["_last_entry_reason"] = f"集中金字塔加仓1 浮盈{float_profit*100:.1f}%"
+                                        ps["pyramid_count"] = 1
+                                        ps["bought_today"] = True
                         elif ps["pyramid_count"] == 1 and float_profit > 0.10:
-                            add_pct = 0.25
+                            add_pct = 0.35
                             add_value = self.p.fund_per_etf * add_pct
                             if current_value + add_value <= max_value:
-                                if self._buy(d, add_pct, f"集中金字塔加仓2 浮盈{float_profit*100:.1f}%"):
-                                    ps["pyramid_count"] = 2
-                                    ps["bought_today"] = True
+                                price = d.close[0]
+                                add_shares = int(add_value / price / 100) * 100
+                                if add_shares >= 100:
+                                    cost = add_shares * price * (1 + SLIPPAGE_PCT) + FEE
+                                    if cost > self.broker.getcash():
+                                        add_shares = int(self.broker.getcash() / price / 100) * 100
+                                    if add_shares >= 100:
+                                        self._order_pending[name] = self.buy(data=d, size=add_shares)
+                                        ps["_last_entry_reason"] = f"集中金字塔加仓2 浮盈{float_profit*100:.1f}%"
+                                        ps["pyramid_count"] = 2
+                                        ps["bought_today"] = True
                 else:
                     # 只对TOP N ETF允许建仓
                     if name not in top_set:
