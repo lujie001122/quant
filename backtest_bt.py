@@ -278,6 +278,7 @@ class ETFStrategy(bt.Strategy):
         ("trend_entry", False),  # 趋势建仓通道: TOP3+多头排列+空仓时直接50%建仓
         ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
         ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
+        ("dip_second", False),  # 回调第二标的: top_n=1时,对第2名ETF开放回调入场30%仓位
     )
 
     # 板块分类: 用于板块分散
@@ -574,7 +575,9 @@ class ETFStrategy(bt.Strategy):
 
                 if has_pos:
                     # 跌出TOP_N*2则清仓
-                    if name not in top_drop:
+                    # dip_second持仓例外: 不会被跌出TOP2清仓(有自己的止损止盈逻辑)
+                    is_dip_second_pos = ps.get("dip_second_entry", False)
+                    if name not in top_drop and not is_dip_second_pos:
                         self._close(d, f"集中金字塔清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
                         self._full_liquidate_state(ps, date_str)
                         continue
@@ -673,7 +676,18 @@ class ETFStrategy(bt.Strategy):
                                         ps["bought_today"] = True
                 else:
                     # 只对TOP N ETF允许建仓
-                    if name not in top_set:
+                    # dip_second模式: 第2名ETF可回调入场30%
+                    is_dip_second_candidate = False
+                    if self.p.dip_second and name not in top_set and len(ranked) > 1:
+                        second_code = ranked[1][0] if ranked[1][0] not in top_set else (ranked[0][0] if ranked[0][0] in top_set else None)
+                        # 第2名 = ranked中不在top_set的第一个
+                        for rc, rs in ranked:
+                            if rc not in top_set:
+                                second_code = rc
+                                break
+                        is_dip_second_candidate = (name == second_code)
+
+                    if name not in top_set and not is_dip_second_candidate:
                         continue
                     if ps["build_phase"] > 0:
                         continue
@@ -700,12 +714,19 @@ class ETFStrategy(bt.Strategy):
                     entered = False
 
                     # 通道0: 强势回调入场 → 50%建仓 (价格从近期高点回调5-10%但仍在MA20上方+RSI>40)
+                    # dip_second模式: 第2名ETF回调入场30%
                     if not entered and recent_high is not None and recent_high > 0:
                         pullback = (recent_high - price) / recent_high
                         if 0.05 <= pullback <= 0.10 and ma20_v and price > ma20_v and rsi_val is not None and rsi_val > 40:
-                            if self._buy(d, 0.50, f"集中金字塔强势回调50% 回调{pullback*100:.1f}% RSI={rsi_val:.1f}"):
+                            entry_pct = 0.30 if is_dip_second_candidate else 0.50
+                            entry_label = "回调第二" if is_dip_second_candidate else "强势回调"
+                            if self._buy(d, entry_pct, f"集中金字塔{entry_label}{entry_pct*100:.0f}% 回调{pullback*100:.1f}% RSI={rsi_val:.1f}"):
                                 self._init_on_entry(ps, price)
                                 entered = True
+
+                    # dip_second: 第2名ETF只允许回调通道, 不走其他通道
+                    if is_dip_second_candidate and not entered:
+                        continue
 
                     # 非回调通道需要多头排列
                     if not entered and not is_bullish:
@@ -1823,6 +1844,7 @@ def main():
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
     rotation_interval = 5  # 每周轮动间隔(天)
+    dip_second = False     # 回调第二标的
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -1862,6 +1884,14 @@ def main():
             rsi_entry_max = float(arg.split("=", 1)[1])
         elif arg.startswith("--rotation-interval="):
             rotation_interval = int(arg.split("=", 1)[1])
+        elif arg == "--dip-second":
+            dip_second = True
+
+    # --exclude=code1,code2 排除ETF
+    exclude_codes = []
+    for arg in sys.argv:
+        if arg.startswith("--exclude="):
+            exclude_codes = [c.strip() for c in arg.split("=", 1)[1].split(",")]
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
@@ -1886,6 +1916,14 @@ def main():
     else:
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = TRADE_START, TRADE_END
+
+    # --exclude 排除ETF
+    if exclude_codes:
+        for code in exclude_codes:
+            if code in active_codes:
+                name = active_codes[code].get("name", code)
+                del active_codes[code]
+                print(f"▸ 排除ETF: {code} {name}")
 
     # 每周轮动模式: 将候选池(rotation.py ETF_CANDIDATES)中的ETF也加入数据加载范围
     if run_weekly_rotation:
@@ -1999,7 +2037,8 @@ def main():
                         confirm_days=confirm_days,
                         trend_entry=trend_entry,
                         rsi_entry_max=rsi_entry_max,
-                        rotation_interval=rotation_interval)
+                        rotation_interval=rotation_interval,
+                        dip_second=dip_second)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
