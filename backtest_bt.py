@@ -269,7 +269,7 @@ class ETFStrategy(bt.Strategy):
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
         ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
         ("trail_mode", "fixed"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
-        ("init_pct", 0.50),  # 建仓比例: 0.30(30%) | 0.50(50%)
+        ("init_pct", 0.30),  # 建仓比例: 0.30(30%) | 0.50(50%)
         ("top_n", 3),  # 集中持仓TOP N只ETF
         ("lookback", 20),  # 动量回看期(日)
         ("ma60_filter", False),  # MA60趋势过滤: 价格>MA60才持有
@@ -704,14 +704,20 @@ class ETFStrategy(bt.Strategy):
             self._weekly_rotation_day += 1
             is_rotation_day = (self._weekly_rotation_day % self.p.rotation_interval == 1)
 
-            # ── 动量评分: 4周(20日)涨幅，与rotation.py calc_momentum_4w一致 ──
+            # ── 动量评分: 多因子加权 (4w×0.4 + 8w×0.3 + RSI×0.15 + MACD×0.15) ──
+            MACD_SCORE = {"金叉": 2, "红柱放大": 1, "震荡": 0, "红柱缩短": 0, "绿柱缩短": -1, "绿柱放大": -1, "死叉": -2}
             momentum_scores = {}
             for d in self.datas:
                 name = d._name
                 if d.volume[0] < 0:
                     momentum_scores[name] = -999
-                elif len(d.close) >= 21:
-                    momentum_scores[name] = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                elif len(d.close) >= 41:
+                    ret_4w = (d.close[0] - d.close[-20]) / d.close[-20] * 100
+                    ret_8w = (d.close[0] - d.close[-40]) / d.close[-40] * 100
+                    rsi_val_m = self.rsi[name].rsi[0]
+                    rsi_score = (rsi_val_m - 50) / 10 if rsi_val_m is not None else 0
+                    ms_score = MACD_SCORE.get(MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡"), 0)
+                    momentum_scores[name] = ret_4w * 0.4 + ret_8w * 0.3 + rsi_score * 0.15 + ms_score * 0.15
                 else:
                     momentum_scores[name] = -999
             ranked = sorted(momentum_scores.items(), key=lambda x: x[1], reverse=True)
@@ -780,6 +786,16 @@ class ETFStrategy(bt.Strategy):
                             if self._buy(d, self.p.init_pct, f"每周轮动分批建仓{self.p.init_pct*100:.0f}% MACD{ms}"):
                                 self._init_on_entry(ps, price)
                                 entered = True
+                        # 通道5: Test抄底 (RSI<35+绿柱缩短+站MA5+前一天绿柱缩短)
+                        if not entered and rsi_val is not None and rsi_val < 35 and ms == "绿柱缩短" and price > ma5_v and ps["prev_macd_status"] == "绿柱缩短":
+                            if self._buy(d, self.p.init_pct, f"每周轮动Test抄底{self.p.init_pct*100:.0f}% RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
+                        # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>35+站MA5+站MA20)
+                        if not entered and ms in ("绿柱缩短", "震荡") and rsi_val is not None and rsi_val > 35 and price > ma5_v and ma20_v and price > ma20_v:
+                            if self._buy(d, self.p.init_pct, f"每周轮动试探建仓{self.p.init_pct*100:.0f}% MACD{ms} RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
 
             # ── 每日风控: 止损/止盈 (不受轮动日限制) ──
             for d in self.datas:
@@ -846,6 +862,97 @@ class ETFStrategy(bt.Strategy):
                     self._close(d, f"每周轮动移动止盈{trail_pct*100:.0f}% trail={ps['trail']:.3f}")
                     self._full_liquidate_state(ps, date_str)
                     continue
+                # 硬止盈60%: base_price*1.60
+                hard_tp = 1 + CONF['profit_take']['hard_take_profit']
+                if ps["base"] > 0 and price >= ps["base"] * hard_tp:
+                    self._close(d, f"每周轮动硬止盈{CONF['profit_take']['hard_take_profit']*100:.0f}% base={ps['base']:.3f}")
+                    self._full_liquidate_state(ps, date_str)
+                    continue
+
+                # 分级止损: 连续2天破MA20→减30%, DIF<0→再减30%, MACD恶化→清仓
+                ma20_v_stop = self.ma20[name][0]
+                if ma20_v_stop and price < ma20_v_stop:
+                    if ps["below_ma20_date"] != date_str:
+                        ps["below_ma20"] += 1
+                        ps["below_ma20_date"] = date_str
+                else:
+                    ps["below_ma20"] = 0
+                    ps["below_ma20_date"] = ""
+
+                if ps["below_ma20"] >= 2 and ps["stop_level"] == 0:
+                    if self._sell(d, 30, f"每周轮动止损1-30% MA20连续{ps['below_ma20']}日"):
+                        ps["stop_level"] = 1
+                        ps["peak_price"] = price
+
+                if name in self._order_pending:
+                    continue
+
+                dif_val_stop = self.macd[name].dif[0]
+                ms_stop = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                if ps["stop_level"] == 1 and dif_val_stop is not None and dif_val_stop < 0:
+                    if self._sell(d, 30, "每周轮动止损2-30% DIF<0"):
+                        ps["stop_level"] = 2
+                        ps["peak_price"] = price
+
+                if name in self._order_pending:
+                    continue
+
+                if ps["stop_level"] == 2 and ms_stop in ("死叉", "绿柱放大"):
+                    below_ma20_3days = ps["below_ma20"] >= 3
+                    rsi_val_stop = self.rsi[name].rsi[0]
+                    rsi_low = rsi_val_stop is not None and rsi_val_stop < 35
+                    if below_ma20_3days or rsi_low:
+                        self._close(d, f"每周轮动止损3清仓 MACD{ms_stop}")
+                        self._full_liquidate_state(ps, date_str)
+                        continue
+
+                # 分级止损恢复
+                if ps["stop_level"] > 0 and ma20_v_stop and price > ma20_v_stop and dif_val_stop is not None and dif_val_stop > 0 and ms_stop in ("红柱放大", "红柱缩短"):
+                    ps["stop_level"] = 0
+                    ps["below_ma20"] = 0
+                    ps["below_ma20_date"] = ""
+                if ps["stop_level"] == 2 and ms_stop not in ("死叉", "绿柱放大") and ma20_v_stop and price > ma20_v_stop and dif_val_stop is not None and dif_val_stop > 0:
+                    ps["stop_level"] = 0
+                    ps["below_ma20"] = 0
+                    ps["below_ma20_date"] = ""
+
+                # 趋势止盈: MACD红柱缩短+破MA5+破MA10 → 卖10%活动仓
+                ma5_v_stop = self.ma5[name][0]
+                ma10_v_stop = self.ma10[name][0]
+                trend_cooling = ps["trend_sell_cooling_until"] and date_str <= ps["trend_sell_cooling_until"]
+                if (not trend_cooling and name not in self._order_pending and ms_stop == "红柱缩短"
+                        and price < ma5_v_stop and ma10_v_stop and price < ma10_v_stop
+                        and ps["trend_sell_today"] < TREND_PROFIT_MAX_DAILY):
+                    active_shares = int(shares * ACTIVE_RATIO)
+                    sell_shares = int(active_shares * 0.10 / 100) * 100
+                    if sell_shares >= 100:
+                        if self._sell(d, 10, "每周轮动趋势止盈 红柱缩短+破MA5"):
+                            ps["trend_sell_today"] += 1
+                            if ps["trend_sell_today"] >= TREND_PROFIT_MAX_DAILY:
+                                try:
+                                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                                    ps["trend_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
+                                except:
+                                    ps["trend_sell_cooling_until"] = ""
+
+                # 破MA5卖活动仓5%: RSI>50时
+                rsi_val_stop = self.rsi[name].rsi[0]
+                ma5_cooling = ps["ma5_sell_cooling_until"] and date_str <= ps["ma5_sell_cooling_until"]
+                if (not ma5_cooling and name not in self._order_pending and price < ma5_v_stop
+                        and rsi_val_stop is not None and rsi_val_stop > 50
+                        and ps["ma5_sell_today"] < TREND_PROFIT_MAX_DAILY):
+                    active_shares = int(shares * ACTIVE_RATIO)
+                    sell_shares = int(active_shares * 0.05 / 100) * 100
+                    if sell_shares >= 100:
+                        if self._sell(d, 5, f"每周轮动破MA5卖活动仓5% RSI={rsi_val_stop:.1f}"):
+                            ps["ma5_sell_today"] += 1
+                            if ps["ma5_sell_today"] >= TREND_PROFIT_MAX_DAILY:
+                                try:
+                                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                                    ps["ma5_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
+                                except:
+                                    ps["ma5_sell_cooling_until"] = ""
+
 
             # 更新prev_macd_status
             for name, ps in self.ps.items():
@@ -1761,7 +1868,7 @@ def main():
     # 集中持仓策略参数
     momentum_mode = "c2"  # simple | c2
     trail_mode = "fixed"  # fixed | e1 | e2
-    init_pct = 0.50       # 0.30 | 0.50
+    init_pct = 0.30       # 0.30 | 0.50
     top_n = 3             # 集中持仓TOP N只ETF
     lookback = 20         # 动量回看期(日)
     ma60_filter = False   # MA60趋势过滤
@@ -1908,20 +2015,19 @@ def main():
 
     cerebro = bt.Cerebro()
 
-    # 计算每只ETF的资金基数（与实盘一致：total_fund / ETF数量）
-    # 集中持仓模式: 每只ETF = TOTAL_FUND / top_n
+    # 计算每只ETF的资金基数（与实盘一致：从ETFS配置读取）
+    _etfs_cfg = get_etfs_config()
+    FUND_PER_ETF = list(_etfs_cfg.values())[0]["fund"] if _etfs_cfg else 44000
     if run_concentrated or run_concentrated_pyramid or run_weekly_rotation:
-        FUND_PER_ETF = TOTAL_FUND // top_n
         if run_weekly_rotation:
             mode_label = "每周轮动"
         elif run_concentrated_pyramid:
             mode_label = "集中金字塔"
         else:
             mode_label = "集中持仓"
-        print(f"▸ {mode_label}模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {top_n})")
+        print(f"▸ {mode_label}模式: 每只ETF资金基数 ¥{FUND_PER_ETF:,} (从ETFS配置读取)")
     else:
-        FUND_PER_ETF = TOTAL_FUND // len(active_codes)
-        print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (total_fund={TOTAL_FUND:,} / {len(active_codes)}只)")
+        print(f"▸ 每只ETF资金基数: ¥{FUND_PER_ETF:,} (从ETFS配置读取)")
 
     for code, df in dataframes.items():
         data = bt.feeds.PandasData(dataname=df, name=code)
