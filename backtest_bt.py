@@ -626,8 +626,16 @@ class ETFStrategy(bt.Strategy):
 
                     # 移动止盈（从config读取trail_pct）
                     trail_pct_val = self.p.trail_pct
-                    trail_activation = trail_pct_val + 0.01
-                    trail_lockin = trail_pct_val + 0.08
+                    # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%
+                    if self.p.trail_mode == "e1":
+                        trail_activation = 0.08
+                        trail_lockin = 0.15
+                    elif self.p.trail_mode == "e2":
+                        trail_activation = 0.10
+                        trail_lockin = 0.18
+                    else:
+                        trail_activation = trail_pct_val + 0.01
+                        trail_lockin = trail_pct_val + 0.08
                     pp = (price - avg) / avg if avg > 0 else 0
                     if pp >= trail_activation and not ps["reached_activation"]:
                         ps["reached_activation"] = True
@@ -872,44 +880,23 @@ class ETFStrategy(bt.Strategy):
                 if price > ps["peak_price"]:
                     ps["peak_price"] = price
 
-                # ── 均价分级止损 (使用 self.p.stop_loss) ──
-                entry_cost = ps.get("entry_avg_cost", 0) or avg
-                if entry_cost > 0:
-                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
-                    if pos_ratio > 0.80:
-                        stop_pct = self.p.stop_loss * 1.5  # 大仓位止损更紧
-                    elif pos_ratio >= 0.50:
-                        stop_pct = self.p.stop_loss * 2.0
-                    else:
-                        stop_pct = self.p.stop_loss * 2.5
-                    # 浮盈止损上移
-                    float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
-                    if float_profit_pct > 0.10:
-                        adjusted_stop = entry_cost * 1.05
-                    elif float_profit_pct > 0.05:
-                        adjusted_stop = entry_cost
-                    else:
-                        adjusted_stop = entry_cost * (1 - stop_pct)
-                    if price <= adjusted_stop:
-                        if float_profit_pct > 0.05:
-                            self._close(d, f"每周轮动浮盈止损上移 浮盈{float_profit_pct*100:.1f}% entry={entry_cost:.3f} stop={adjusted_stop:.3f}")
-                        else:
-                            self._close(d, f"每周轮动均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
-                        self._full_liquidate_state(ps, date_str)
-                        continue
-
-                # 硬止损25%
-                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
-                    self._close(d, f"每周轮动硬止损25% peak={ps['peak_price']:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
+                # P2修复: 均价止损+硬止损25%已移除, 统一由risk_manager.check_stop_loss处理
+                # (原L883-913的均价分级止损+硬止损25%与risk_manager重复)
 
                 # ── 移动止盈 (支持 fixed/e1/e2 模式, 与集中模式一致) ──
                 pp = (price - avg) / avg if avg > 0 else 0
                 atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
                 trail_pct = self.p.trail_pct
-                trail_activation = trail_pct + 0.01
-                trail_lockin = trail_pct + 0.08
+                # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%, fixed保持原逻辑
+                if self.p.trail_mode == "e1":
+                    trail_activation = 0.08
+                    trail_lockin = 0.15
+                elif self.p.trail_mode == "e2":
+                    trail_activation = 0.10
+                    trail_lockin = 0.18
+                else:
+                    trail_activation = trail_pct + 0.01
+                    trail_lockin = trail_pct + 0.08
 
                 if self.p.trail_mode == "fixed":
                     if pp >= trail_activation and not ps["reached_activation"]:
@@ -1076,11 +1063,12 @@ class ETFStrategy(bt.Strategy):
 
                     entered = False
 
-                    # 方案A: 趋势建仓通道 (--trend-entry)
+                    # 方案A: 趋势建仓通道 (--trend-entry)  P1修复: 加RSI<65过滤防追高
                     if not entered and self.p.trend_entry:
-                        if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+                        if rsi_val is not None and rsi_val < 65:
+                            if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
 
                     # 通道1: RSI抄底
                     if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
@@ -1288,44 +1276,23 @@ class ETFStrategy(bt.Strategy):
                 if price > ps["peak_price"]:
                     ps["peak_price"] = price
 
-                # 均价分级止损 + 浮盈止损上移（与risk_manager.py一致）
-                entry_cost = ps.get("entry_avg_cost", 0) or avg
-                if entry_cost > 0:
-                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
-                    if pos_ratio > 0.80:
-                        stop_pct = 0.15
-                    elif pos_ratio >= 0.50:
-                        stop_pct = 0.20
-                    else:
-                        stop_pct = 0.25
-                    # 浮盈止损上移 — 浮盈>5%止损线上移到保本, 浮盈>10%上移到+5%
-                    float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
-                    if float_profit_pct > 0.10:
-                        adjusted_stop = entry_cost * 1.05
-                    elif float_profit_pct > 0.05:
-                        adjusted_stop = entry_cost
-                    else:
-                        adjusted_stop = entry_cost * (1 - stop_pct)
-                    if price <= adjusted_stop:
-                        if float_profit_pct > 0.05:
-                            self._close(d, f"集中持仓浮盈止损上移 浮盈{float_profit_pct*100:.1f}% entry={entry_cost:.3f} stop={adjusted_stop:.3f}")
-                        else:
-                            self._close(d, f"集中持仓均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
-                        self._full_liquidate_state(ps, date_str)
-                        continue
-
-                # 硬止损25%
-                if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
-                    self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
+                # P2修复: 均价止损+硬止损25%已移除, 统一由risk_manager.check_stop_loss处理
+                # (原均价分级止损+浮盈止损上移+硬止损25%与risk_manager重复)
 
                 # ── 移动止盈 (方向C: --trail-pct) ──
                 pp = (price - avg) / avg if avg > 0 else 0
                 atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
                 trail_pct = self.p.trail_pct
-                trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
-                trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
+                # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%, fixed保持原逻辑
+                if self.p.trail_mode == "e1":
+                    trail_activation = 0.08
+                    trail_lockin = 0.15
+                elif self.p.trail_mode == "e2":
+                    trail_activation = 0.10
+                    trail_lockin = 0.18
+                else:
+                    trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
+                    trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
 
                 if self.p.trail_mode == "fixed":
                     # 可配置回撤止盈: trail_pct (默认0.12=12%)
@@ -1445,12 +1412,13 @@ class ETFStrategy(bt.Strategy):
 
                         entered = False
 
-                        # 方案A: 趋势建仓通道 (--trend-entry)
-                        # TOP3 C2动量 + 多头排列 + 空仓 → 直接50%建仓，不看RSI/MACD
+                        # 方案A: 趋势建仓通道 (--trend-entry)  P1修复: 加RSI<65过滤防追高
+                        # TOP3 C2动量 + 多头排列 + 空仓 + RSI<65 → 直接50%建仓
                         if not entered and self.p.trend_entry:
-                            if self._buy(d, 0.50, f"集中趋势建仓50% MA多头排列"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                            if rsi_val is not None and rsi_val < 65:
+                                if self._buy(d, 0.50, f"集中趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
+                                    self._init_on_entry(ps, price)
+                                    entered = True
 
                         # 通道1: RSI抄底
                         if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
@@ -1620,8 +1588,16 @@ class ETFStrategy(bt.Strategy):
 
                 # 更新移动止盈线 (backtrader用avg而非entry_cost计算盈利比例)
                 trail_pct_val = self.p.trail_pct
-                trail_activation = trail_pct_val + 0.01
-                trail_lockin = trail_pct_val + 0.08
+                # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%
+                if self.p.trail_mode == "e1":
+                    trail_activation = 0.08
+                    trail_lockin = 0.15
+                elif self.p.trail_mode == "e2":
+                    trail_activation = 0.10
+                    trail_lockin = 0.18
+                else:
+                    trail_activation = trail_pct_val + 0.01
+                    trail_lockin = trail_pct_val + 0.08
                 pp = (price - avg) / avg if avg > 0 else 0
                 if pp >= trail_activation - 0.0001 and not ps["reached_activation"]:
                     ps["reached_activation"] = True
