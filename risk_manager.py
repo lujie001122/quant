@@ -148,6 +148,7 @@ class RiskManager:
             return stop_actions
 
         # ── 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% ──
+        # ── 浮盈止损上移: 浮盈>5%→保本线, >10%→成本+5% ──
         if pos.entry_cost > 0:
             pos_ratio = pos.shares * price / TOTAL_FUND if price > 0 else 0
             if pos_ratio > 0.80:
@@ -156,8 +157,19 @@ class RiskManager:
                 stop_pct = 0.20
             else:
                 stop_pct = 0.25
-            if price <= pos.entry_cost * (1 - stop_pct):
-                stop_actions.append((f"均价止损{stop_pct*100:.0f}%(仓位{pos_ratio*100:.0f}%,avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
+            # 浮盈止损上移
+            float_profit_pct = (price - pos.entry_cost) / pos.entry_cost if pos.entry_cost > 0 else 0
+            if float_profit_pct > 0.10:
+                adjusted_stop = pos.entry_cost * 1.05  # 浮盈>10%, 止损线=成本+5%
+            elif float_profit_pct > 0.05:
+                adjusted_stop = pos.entry_cost  # 浮盈>5%, 止损线=保本
+            else:
+                adjusted_stop = pos.entry_cost * (1 - stop_pct)
+            if price <= adjusted_stop:
+                if float_profit_pct > 0.05:
+                    stop_actions.append((f"浮盈止损上移 浮盈{float_profit_pct*100:.1f}%(entry={pos.entry_cost:.3f}→stop={adjusted_stop:.3f})", "breakeven_stop"))
+                else:
+                    stop_actions.append((f"均价止损{stop_pct*100:.0f}%(仓位{pos_ratio*100:.0f}%,avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
 
         # ── 硬止盈60%: base_price*1.60(极限方案C) ──
         if pos.base_price and price >= pos.base_price * 1.60:

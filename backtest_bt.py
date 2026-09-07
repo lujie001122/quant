@@ -296,10 +296,17 @@ class ETFStrategy(bt.Strategy):
         "159516": "半导体", "159532": "宽基",
         "515880": "通信",
         "159611": "电力",
-        "515050": "宽基", "588170": "宽基",
+        "515050": "宽基", "588170": "半导体",
         "513780": "医药",
         "512400": "有色",
         "515220": "煤炭",
+        # 每周轮动候选池板块
+        "159995": "半导体", "588000": "宽基", "159819": "科技",
+        "159770": "科技", "510300": "宽基", "512660": "军工",
+        "515790": "新能源", "512880": "金融", "512800": "金融",
+        "518880": "黄金", "159928": "消费", "513130": "港股科技",
+        "513300": "海外", "159985": "商品", "159949": "宽基",
+        "512890": "红利", "159981": "能源",
     }
 
     # 指标预热所需的最小K线数: MACD(26+9=35) + AO(34) → 35
@@ -352,6 +359,7 @@ class ETFStrategy(bt.Strategy):
                 "grid_entry_avg": 0.0,  # 网格买入均价(独立止损用)
                 "grid_entry_shares": 0,  # 网格买入总股数(加权平均用)
                 "base_spacing": _base_spacing,  # ETF基础网格间距
+                "market_reduced": False,  # 大盘自适应减仓标记
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -503,6 +511,7 @@ class ETFStrategy(bt.Strategy):
         ps["grid_entry_shares"] = 0
         ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
         ps["pyramid_count"] = 0  # 重置金字塔加仓次数
+        ps["market_reduced"] = False  # 重置大盘自适应减仓标记
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -693,7 +702,7 @@ class ETFStrategy(bt.Strategy):
                         continue
 
                     # 多头排列
-                    if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                    if not (ma5_v and ma20_v and ma5_v > ma20_v):
                         continue
 
                     # 10日新高
@@ -806,7 +815,7 @@ class ETFStrategy(bt.Strategy):
                         # ATR>50%跳过(除权日)
                         if atr_pct > 0.50:
                             continue
-                        # 防御盾过滤
+                        # 防御盾过滤（只拦同板块，非全市场暂停）
                         defense_weak = False
                         if DEFENSE_CODE:
                             for dd in self.datas:
@@ -818,8 +827,15 @@ class ETFStrategy(bt.Strategy):
                                     }}
                                     realtime_d = {DEFENSE_CODE: {"price": dd.close[0]}}
                                     defense_weak = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
+                                    if defense_weak:
+                                        defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
+                                        name_sector = self.SECTOR_MAP.get(name, "")
+                                        if defense_sector and name_sector == defense_sector:
+                                            defense_weak = True  # 同板块，跳过建仓
+                                        else:
+                                            defense_weak = False  # 不同板块，允许建仓
                                     break
-                        if defense_weak and name != DEFENSE_CODE:
+                        if defense_weak:
                             continue
                         # ── 调用实盘策略模块 evaluate_entry ──
                         pos, t = self._build_pos_and_tech(d, name, date_str)
@@ -872,8 +888,51 @@ class ETFStrategy(bt.Strategy):
                 if liquidated:
                     continue
 
+            # ── 大盘自适应仓位: 指数<MA20减半仓, 指数>MA20满仓 ──
+            # 使用沪深300ETF(510300)作为大盘指标
+            market_index_code = "510300"
+            market_below_ma20 = False
+            if market_index_code in self.ps:
+                for dd in self.datas:
+                    if dd._name == market_index_code:
+                        if dd.volume[0] > 0 and len(dd.close) > 0:
+                            idx_price = dd.close[0]
+                            idx_ma20 = self.ma20[market_index_code][0] if market_index_code in self.ma20 else 0
+                            if idx_ma20 > 0 and idx_price < idx_ma20:
+                                market_below_ma20 = True
+                        break
 
-            # 更新prev_macd_status
+            if market_below_ma20:
+                for d in self.datas:
+                    name = d._name
+                    ps = self.ps[name]
+                    price = d.close[0]
+                    if d.volume[0] < 0:
+                        continue
+                    if name in self._order_pending:
+                        continue
+                    if not self._has_position(d):
+                        continue
+                    # 如果尚未减仓(标记)，卖出50%仓位
+                    if not ps.get("market_reduced", False):
+                        shares = self._get_shares(d)
+                        if shares >= 200:
+                            if self._sell(d, 50, f"大盘自适应减仓50% 指数<MA20"):
+                                ps["market_reduced"] = True
+            else:
+                # 指数>MA20, 恢复满仓: 对已减仓标的加仓回满仓
+                for d in self.datas:
+                    name = d._name
+                    ps = self.ps[name]
+                    price = d.close[0]
+                    if d.volume[0] < 0:
+                        continue
+                    if name in self._order_pending:
+                        continue
+                    if ps.get("market_reduced", False) and self._has_position(d):
+                        # 已减仓且指数恢复, 加仓回50%(原来减半后剩50%, 需补回)
+                        if self._buy(d, self.p.init_pct * 0.5, f"大盘自适应加仓 指数>MA20"):
+                            ps["market_reduced"] = False
             for name, ps in self.ps.items():
                 ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
                 ps["prev_macd_status"] = ms
@@ -1145,7 +1204,7 @@ class ETFStrategy(bt.Strategy):
                             continue
 
                         # 多头排列
-                        if not (ma5_v and ma10_v and ma20_v and ma5_v > ma10_v > ma20_v):
+                        if not (ma5_v and ma20_v and ma5_v > ma20_v):
                             continue
 
                         # 10日新高
@@ -1458,7 +1517,7 @@ class ETFStrategy(bt.Strategy):
             # ATR>50%跳过(除权日, 与实盘一致)
             atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
 
-            # 防御盾过滤: 统一调用 check_defense (O3: 替代内联逻辑)
+            # 防御盾过滤: 只拦同板块，非全市场暂停
             defense_weak = False
             if DEFENSE_CODE:
                 for dd in self.datas:
@@ -1471,9 +1530,16 @@ class ETFStrategy(bt.Strategy):
                         }}
                         realtime_d = {DEFENSE_CODE: {"price": dd_price}}
                         defense_weak = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
+                        if defense_weak:
+                            defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
+                            name_sector = self.SECTOR_MAP.get(name, "")
+                            if defense_sector and name_sector == defense_sector:
+                                defense_weak = True  # 同板块，跳过建仓
+                            else:
+                                defense_weak = False  # 不同板块，允许建仓
                         break
-            if defense_weak and name != DEFENSE_CODE:
-                continue  # 防御标的弱势，全市场暂停建仓（防御标自身除外）
+            if defense_weak:
+                continue  # 防御标的弱势且同板块，暂停建仓
 
             if not has_pos and ps["build_phase"] == 0 and not ps["bought_today"] and not ps["stop_cooldown"] and not self._is_in_cooldown(ps, date_str) and atr_ok:
                 # ── 调用实盘策略模块 evaluate_entry ──

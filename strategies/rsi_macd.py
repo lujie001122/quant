@@ -207,13 +207,13 @@ class RSIMACDStrategy(BaseStrategy):
 
         rsi_ok = t["rsi"] is not None and t["rsi"] > 40
         rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
-        # 多头排列: MA5>MA10>MA20 才允许建仓
-        bullish_align = t["ma5"] and t.get("ma10") and t["ma20"] and t["ma5"] > t["ma10"] > t["ma20"]
+        # 多头排列: MA5>MA20 才允许建仓（放宽：不再要求MA10）
+        bullish_align = t["ma5"] and t["ma20"] and t["ma5"] > t["ma20"]
 
         if pos.build_phase == 0:
             # 所有建仓通道要求多头排列
             if not bullish_align:
-                return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA10={t.get('ma10',0):.3f},MA20={t['ma20']:.3f}),暂停建仓")
+                return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA20={t['ma20']:.3f}),暂停建仓")
             # 通道1: RSI抄底 (MACD金叉+RSI≤55) → 30%(极限方案C: 去掉MA20过滤)
             if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= 55) and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
