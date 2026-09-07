@@ -579,7 +579,7 @@ class ETFStrategy(bt.Strategy):
                     # 均价止损: 用锁定建仓均价
                     entry_cost = ps.get("entry_avg_cost", 0) or avg
                     if entry_cost > 0:
-                        pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                        pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
                         if pos_ratio > 0.80:
                             stop_pct = 0.15
                         elif pos_ratio >= 0.50:
@@ -746,7 +746,7 @@ class ETFStrategy(bt.Strategy):
                     ret_4w = (d.close[0] - d.close[-20]) / d.close[-20] * 100
                     ret_8w = (d.close[0] - d.close[-40]) / d.close[-40] * 100
                     rsi_val_m = self.rsi[name].rsi[0]
-                    rsi_score = (rsi_val_m - 50) / 10 if rsi_val_m is not None else 0
+                    rsi_score = (rsi_val_m - 50) if rsi_val_m is not None else 0
                     ms_score = MACD_SCORE.get(MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡"), 0)
                     momentum_scores[name] = ret_4w * 0.4 + ret_8w * 0.3 + rsi_score * 0.15 + ms_score * 0.15
                 else:
@@ -849,24 +849,29 @@ class ETFStrategy(bt.Strategy):
                 if price > ps["peak_price"]:
                     ps["peak_price"] = price
 
-                # 固定止损
+                # 均价分级止损 + 浮盈止损上移（与risk_manager.py一致）
                 entry_cost = ps.get("entry_avg_cost", 0) or avg
-                if entry_cost > 0 and price <= entry_cost * (1 - self.p.stop_loss):
-                    self._close(d, f"每周轮动固定止损{self.p.stop_loss*100:.0f}% entry={entry_cost:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 均价分级止损
                 if entry_cost > 0:
-                    pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
                     if pos_ratio > 0.80:
                         stop_pct = 0.15
                     elif pos_ratio >= 0.50:
                         stop_pct = 0.20
                     else:
                         stop_pct = 0.25
-                    if price <= entry_cost * (1 - stop_pct):
-                        self._close(d, f"每周轮动均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                    # 浮盈止损上移 — 浮盈>5%止损线上移到保本, 浮盈>10%上移到+5%
+                    float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
+                    if float_profit_pct > 0.10:
+                        adjusted_stop = entry_cost * 1.05  # 浮盈>10%, 止损线=成本+5%
+                    elif float_profit_pct > 0.05:
+                        adjusted_stop = entry_cost  # 浮盈>5%, 止损线=保本
+                    else:
+                        adjusted_stop = entry_cost * (1 - stop_pct)
+                    if price <= adjusted_stop:
+                        if float_profit_pct > 0.05:
+                            self._close(d, f"每周轮动浮盈止损上移 浮盈{float_profit_pct*100:.1f}% entry={entry_cost:.3f} stop={adjusted_stop:.3f}")
+                        else:
+                            self._close(d, f"每周轮动均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
 
@@ -1122,24 +1127,29 @@ class ETFStrategy(bt.Strategy):
                 if price > ps["peak_price"]:
                     ps["peak_price"] = price
 
-                # ── 可配置固定止损 (方向B: --stop-loss) ──
+                # 均价分级止损 + 浮盈止损上移（与risk_manager.py一致）
                 entry_cost = ps.get("entry_avg_cost", 0) or avg
-                if entry_cost > 0 and price <= entry_cost * (1 - self.p.stop_loss):
-                    self._close(d, f"固定止损{self.p.stop_loss*100:.0f}% entry={entry_cost:.3f}")
-                    self._full_liquidate_state(ps, date_str)
-                    continue
-
-                # 均价分级止损 (保留原有逻辑，作为二级防护)
                 if entry_cost > 0:
-                    pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
                     if pos_ratio > 0.80:
                         stop_pct = 0.15
                     elif pos_ratio >= 0.50:
                         stop_pct = 0.20
                     else:
                         stop_pct = 0.25
-                    if price <= entry_cost * (1 - stop_pct):
-                        self._close(d, f"集中持仓均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                    # 浮盈止损上移 — 浮盈>5%止损线上移到保本, 浮盈>10%上移到+5%
+                    float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
+                    if float_profit_pct > 0.10:
+                        adjusted_stop = entry_cost * 1.05
+                    elif float_profit_pct > 0.05:
+                        adjusted_stop = entry_cost
+                    else:
+                        adjusted_stop = entry_cost * (1 - stop_pct)
+                    if price <= adjusted_stop:
+                        if float_profit_pct > 0.05:
+                            self._close(d, f"集中持仓浮盈止损上移 浮盈{float_profit_pct*100:.1f}% entry={entry_cost:.3f} stop={adjusted_stop:.3f}")
+                        else:
+                            self._close(d, f"集中持仓均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
 
@@ -1450,7 +1460,7 @@ class ETFStrategy(bt.Strategy):
                 # 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% — B1: 用锁定建仓均价而非动态均价
                 entry_cost = ps.get("entry_avg_cost", 0) or avg
                 if entry_cost > 0:
-                    pos_ratio = shares * price / self.p.fund_per_etf if price > 0 else 0
+                    pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
                     if pos_ratio > 0.80:
                         stop_pct = 0.15
                     elif pos_ratio >= 0.50:
