@@ -2285,6 +2285,9 @@ def main():
             if code not in active_codes:
                 active_codes[code] = {"name": cfg["name"], "sid": cfg["sid"]}
                 candidate_added += 1
+        # 510300 沪深300ETF 作为大盘自适应仓位指标，不参与候选池
+        if "510300" not in active_codes:
+            active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
         print(f"▸ 每周轮动: 候选池新增 {candidate_added} 只ETF (共{len(active_codes)}只)")
 
     print("▸ 拉取历史K线 (腾讯前复权 API)...")
