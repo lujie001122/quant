@@ -1,0 +1,249 @@
+[
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.1,
+      "lookback": 10,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "fixed",
+      "stop_loss": 0.08
+    },
+    "annual": null,
+    "max_dd": 58.53,
+    "sharpe": -1.91,
+    "calmar": -0.57,
+    "win_rate": 29.8,
+    "trades": 131,
+    "pf": 0.6
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.5,
+      "trail_pct": 0.07,
+      "lookback": 15,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "e1",
+      "stop_loss": 0.08
+    },
+    "annual": null,
+    "max_dd": 50.8,
+    "sharpe": -2.27,
+    "calmar": -0.55,
+    "win_rate": 25.9,
+    "trades": 116,
+    "pf": 0.64
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.12,
+      "lookback": 20,
+      "top_n": 2,
+      "momentum": "c2",
+      "trail": "fixed",
+      "stop_loss": 0.05
+    },
+    "annual": 12.31,
+    "max_dd": 10.15,
+    "sharpe": 0.89,
+    "calmar": 1.21,
+    "win_rate": 47.9,
+    "trades": 48,
+    "pf": 1.75
+  },
+  {
+    "params": {
+      "rotation_interval": 10,
+      "init_pct": 0.5,
+      "trail_pct": 0.1,
+      "lookback": 10,
+      "top_n": 5,
+      "momentum": "c2",
+      "trail": "e1",
+      "stop_loss": 0.08
+    },
+    "annual": null,
+    "max_dd": 46.0,
+    "sharpe": -1.61,
+    "calmar": -0.51,
+    "win_rate": 22.6,
+    "trades": 115,
+    "pf": 0.81
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.15,
+      "lookback": 15,
+      "top_n": 2,
+      "momentum": "c2",
+      "trail": "e2",
+      "stop_loss": 0.05
+    },
+    "annual": null,
+    "max_dd": 49.37,
+    "sharpe": -1.94,
+    "calmar": -0.54,
+    "win_rate": 27.4,
+    "trades": 84,
+    "pf": 0.6
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.5,
+      "trail_pct": 0.1,
+      "lookback": 20,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "fixed",
+      "stop_loss": 0.05
+    },
+    "annual": 8.94,
+    "max_dd": 10.99,
+    "sharpe": 0.54,
+    "calmar": 0.81,
+    "win_rate": 49.3,
+    "trades": 71,
+    "pf": 1.31
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.07,
+      "lookback": 10,
+      "top_n": 5,
+      "momentum": "simple",
+      "trail": "e1",
+      "stop_loss": 0.08
+    },
+    "annual": 26.32,
+    "max_dd": 16.01,
+    "sharpe": 1.24,
+    "calmar": 1.64,
+    "win_rate": 46.2,
+    "trades": 160,
+    "pf": 1.96
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.1,
+      "lookback": 15,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "e2",
+      "stop_loss": 0.08
+    },
+    "annual": null,
+    "max_dd": 54.92,
+    "sharpe": -2.3,
+    "calmar": -0.56,
+    "win_rate": 25.2,
+    "trades": 115,
+    "pf": 0.67
+  },
+  {
+    "params": {
+      "rotation_interval": 10,
+      "init_pct": 0.8,
+      "trail_pct": 0.07,
+      "lookback": 10,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "e1",
+      "stop_loss": 0.05
+    },
+    "annual": null,
+    "max_dd": 44.31,
+    "sharpe": -1.54,
+    "calmar": -0.52,
+    "win_rate": 32.6,
+    "trades": 92,
+    "pf": 0.51
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.12,
+      "lookback": 15,
+      "top_n": 5,
+      "momentum": "c2",
+      "trail": "fixed",
+      "stop_loss": 0.12
+    },
+    "annual": null,
+    "max_dd": 65.07,
+    "sharpe": -2.25,
+    "calmar": -0.6,
+    "win_rate": 23.8,
+    "trades": 143,
+    "pf": 0.67
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.1,
+      "lookback": 10,
+      "top_n": 2,
+      "momentum": "c2",
+      "trail": "e1",
+      "stop_loss": 0.05
+    },
+    "annual": null,
+    "max_dd": 58.23,
+    "sharpe": -2.21,
+    "calmar": -0.57,
+    "win_rate": 25.5,
+    "trades": 106,
+    "pf": 0.54
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.8,
+      "trail_pct": 0.15,
+      "lookback": 10,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "e2",
+      "stop_loss": 0.05
+    },
+    "annual": null,
+    "max_dd": 58.6,
+    "sharpe": -1.91,
+    "calmar": -0.57,
+    "win_rate": 29.8,
+    "trades": 131,
+    "pf": 0.6
+  },
+  {
+    "params": {
+      "rotation_interval": 5,
+      "init_pct": 0.5,
+      "trail_pct": 0.1,
+      "lookback": 15,
+      "top_n": 3,
+      "momentum": "c2",
+      "trail": "fixed",
+      "stop_loss": 0.08
+    },
+    "annual": null,
+    "max_dd": 50.8,
+    "sharpe": -2.27,
+    "calmar": -0.55,
+    "win_rate": 25.9,
+    "trades": 116,
+    "pf": 0.64
+  }
+]
