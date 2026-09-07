@@ -586,19 +586,8 @@ class ETFStrategy(bt.Strategy):
                             stop_pct = 0.20
                         else:
                             stop_pct = 0.25
-                        # P1-1: 浮盈止损上移 — 浮盈>5%止损线上移到保本, 浮盈>10%上移到+5%
-                        float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
-                        if float_profit_pct > 0.10:
-                            adjusted_stop = entry_cost * 1.05  # 浮盈>10%, 止损线=成本+5%
-                        elif float_profit_pct > 0.05:
-                            adjusted_stop = entry_cost  # 浮盈>5%, 止损线=保本
-                        else:
-                            adjusted_stop = entry_cost * (1 - stop_pct)
-                        if price <= adjusted_stop:
-                            if float_profit_pct > 0.05:
-                                self._close(d, f"集中金字塔浮盈止损上移 浮盈{float_profit_pct*100:.1f}% entry={entry_cost:.3f} stop={adjusted_stop:.3f}")
-                            else:
-                                self._close(d, f"集中金字塔均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
+                        if price <= entry_cost * (1 - stop_pct):
+                            self._close(d, f"集中金字塔均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
                             self._full_liquidate_state(ps, date_str)
                             continue
 
@@ -659,26 +648,6 @@ class ETFStrategy(bt.Strategy):
                     if ps["build_phase"] > 0:
                         continue
                     if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
-                        continue
-
-                    # P2-2: 防御盾独立判断 — 只屏蔽同板块，非全市场暂停
-                    defense_block = False
-                    if DEFENSE_CODE and name != DEFENSE_CODE:
-                        for dd in self.datas:
-                            if dd._name == DEFENSE_CODE:
-                                dd_price = dd.close[0]
-                                dd_ma20 = self.ma20[DEFENSE_CODE][0] if DEFENSE_CODE in self.ma20 else 0
-                                dd_dif = self.macd[DEFENSE_CODE].dif[0] if DEFENSE_CODE in self.macd else 0
-                                dd_status = MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡") if DEFENSE_CODE in self.macd else "震荡"
-                                defense_weak = (dd_ma20 and dd_price < dd_ma20 and dd_dif is not None and dd_dif < 0 and dd_status in ["死叉", "绿柱放大"])
-                                if defense_weak:
-                                    defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
-                                    name_sector = self.SECTOR_MAP.get(name, "")
-                                    if defense_sector and name_sector == defense_sector:
-                                        defense_block = True  # 同板块，跳过建仓
-                                    # 不同板块，允许建仓
-                                break
-                    if defense_block:
                         continue
 
                     atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
