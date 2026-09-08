@@ -837,6 +837,11 @@ class ETFStrategy(bt.Strategy):
         if self.p.weekly_rotation_mode:
             self._weekly_rotation_day += 1
             is_rotation_day = (self._weekly_rotation_day % self.p.rotation_interval == 1)
+            # DEBUG: count rotation days
+            if is_rotation_day:
+                if not hasattr(self, '_debug_rotation_count'):
+                    self._debug_rotation_count = 0
+                self._debug_rotation_count += 1
 
             # ── 动量评分 ──
             lb = self.p.lookback
@@ -1865,6 +1870,9 @@ class ETFStrategy(bt.Strategy):
         return False
 
     def stop(self):
+        # DEBUG: print rotation day count
+        if hasattr(self, '_debug_rotation_count'):
+            print(f"\n[DEBUG] rotation_interval={self.p.rotation_interval} total_days={self._weekly_rotation_day} rotation_days={self._debug_rotation_count}")
         print("\n" + "=" * 100)
         print("                    每笔交易明细")
         print("=" * 100)
