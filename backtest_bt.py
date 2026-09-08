@@ -943,171 +943,174 @@ class ETFStrategy(bt.Strategy):
                         if self._buy(d, add_pct, f"每周轮动趋势加仓{add_pct*100:.0f}% 浮盈{float_p*100:.1f}%"):
                             pass  # 加仓不需要重置状态
 
+                # ── 大盘回撤保护: 510300的20日高点回撤替代破MA20减仓 ──
+                # P2修复: 先检查大盘回撤，再决定是否建仓，避免先买后砍
+                # 使用沪深300ETF(510300)作为大盘指标
+                market_index_code = "510300"
+                market_drawdown_pct = 0.0  # 当前回撤百分比
+                market_idx_price = 0.0
+                market_idx_ma20 = 0.0
+                if market_index_code in self.ps:
+                    for dd in self.datas:
+                        if dd._name == market_index_code:
+                            if dd.volume[0] > 0 and len(dd.close) > 20:
+                                market_idx_price = dd.close[0]
+                                market_idx_ma20 = self.ma20[market_index_code][0] if market_index_code in self.ma20 else 0
+                                high_20 = max(dd.close[-i] for i in range(20))
+                                if high_20 > 0:
+                                    market_drawdown_pct = (high_20 - market_idx_price) / high_20 * 100
+                            break
+
+                # 确定当前回撤等级
+                # 等级: 0=无(回撤<5%), 1=>5%, 2=>8%, 3=>12%
+                # 渐进减仓: 从等级0到等级1减30%, 从1到2减20%(累计50%), 从2到3减20%(累计70%)
+                current_level = 0
+                if market_drawdown_pct >= 12:
+                    current_level = 3
+                elif market_drawdown_pct >= 8:
+                    current_level = 2
+                elif market_drawdown_pct >= 5:
+                    current_level = 1
+
+                # 恢复条件: 回撤<3% 或 价格收复MA20
+                market_recovered = (market_drawdown_pct < 3) or (market_idx_ma20 > 0 and market_idx_price > market_idx_ma20)
+
+                if current_level > 0:
+                    for d in self.datas:
+                        name = d._name
+                        ps = self.ps[name]
+                        if d.volume[0] < 0:
+                            continue
+                        if name in self._order_pending:
+                            continue
+                        if not self._has_position(d):
+                            continue
+                        # 防同日重复触发
+                        prev_level = ps.get("market_drawdown_level", 0)
+                        prev_date = ps.get("market_drawdown_date", "")
+                        if current_level <= prev_level:
+                            continue  # 等级未升级，跳过
+                        if prev_date == date_str and prev_level > 0:
+                            continue  # 同日已触发过，跳过
+
+                        # 计算本次需要额外减仓比例
+                        # 目标累计减仓: level1=30%, level2=50%, level3=70%
+                        target_reduction = {1: 30, 2: 50, 3: 70}[current_level]
+                        already_reduced = {0: 0, 1: 30, 2: 50, 3: 70}[prev_level]
+                        extra_reduction = target_reduction - already_reduced
+
+                        if extra_reduction > 0:
+                            shares = self._get_shares(d)
+                            if shares >= 200:
+                                if self._sell(d, extra_reduction, f"大盘回撤保护减仓{extra_reduction}% 回撤={market_drawdown_pct:.1f}%"):
+                                    ps["market_drawdown_level"] = current_level
+                                    ps["market_drawdown_date"] = date_str
+                                    ps["market_reduced"] = True
+                elif market_recovered:
+                    # 恢复满仓: 对已减仓标的加仓回满仓
+                    for d in self.datas:
+                        name = d._name
+                        ps = self.ps[name]
+                        if d.volume[0] < 0:
+                            continue
+                        if name in self._order_pending:
+                            continue
+                        if ps.get("market_drawdown_level", 0) > 0 and self._has_position(d):
+                            # 已减仓且回撤恢复, 加仓补回
+                            if self._buy(d, self.p.init_pct * 0.7, f"大盘回撤恢复加仓 回撤={market_drawdown_pct:.1f}%"):
+                                ps["market_drawdown_level"] = 0
+                                ps["market_drawdown_date"] = ""
+                                ps["market_reduced"] = False
+
                 # 进入: effective_top中尚未持仓的标的 — 参数化建仓通道 (与集中模式一致)
-                for d in self.datas:
-                    name = d._name
-                    ps = self.ps[name]
-                    price = d.close[0]
-                    if d.volume[0] < 0:
-                        continue
-                    if name in self._order_pending:
-                        continue
-                    if name not in effective_top:
-                        continue
-                    if self._has_position(d):
-                        continue
-                    if ps["build_phase"] > 0:
-                        continue
-                    if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
-                        continue
-
-                    # 换仓延迟确认
-                    if self.p.confirm_days > 0 and self._confirm_tracker.get(name, {}).get('in_top', 0) < self.p.confirm_days:
-                        continue
-
-                    # MA60趋势过滤
-                    if self.p.ma60_filter:
-                        ma60_v = self.ma60[name][0]
-                        if ma60_v and price < ma60_v:
+                # P2修复: 大盘回撤≥5%时跳过建仓，避免先买后砍
+                if current_level == 0:
+                    for d in self.datas:
+                        name = d._name
+                        ps = self.ps[name]
+                        price = d.close[0]
+                        if d.volume[0] < 0:
+                            continue
+                        if name in self._order_pending:
+                            continue
+                        if name not in effective_top:
+                            continue
+                        if self._has_position(d):
+                            continue
+                        if ps["build_phase"] > 0:
+                            continue
+                        if ps["bought_today"] or ps["stop_cooldown"] or self._is_in_cooldown(ps, date_str):
                             continue
 
-                    rsi_val = self.rsi[name].rsi[0]
-                    ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
-                    ma5_v = self.ma5[name][0]
-                    ma10_v = self.ma10[name][0]
-                    ma20_v = self.ma20[name][0]
-                    atr_val = self.atr[name].atr[0]
+                        # 换仓延迟确认
+                        if self.p.confirm_days > 0 and self._confirm_tracker.get(name, {}).get('in_top', 0) < self.p.confirm_days:
+                            continue
 
-                    atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
-                    if not atr_ok:
-                        continue
+                        # MA60趋势过滤
+                        if self.p.ma60_filter:
+                            ma60_v = self.ma60[name][0]
+                            if ma60_v and price < ma60_v:
+                                continue
 
-                    # 多头排列
-                    if not (ma5_v and ma20_v and ma5_v > ma20_v):
-                        continue
+                        rsi_val = self.rsi[name].rsi[0]
+                        ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
+                        ma5_v = self.ma5[name][0]
+                        ma10_v = self.ma10[name][0]
+                        ma20_v = self.ma20[name][0]
+                        atr_val = self.atr[name].atr[0]
 
-                    # 10日新高
-                    h10 = None
-                    if len(d.close) >= 11:
-                        h10 = max(d.close.get(size=10, ago=1))
+                        atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
+                        if not atr_ok:
+                            continue
 
-                    # 动态仓位
-                    if self.p.dynamic_pct:
-                        mom_score = momentum_scores.get(name, 0)
-                        if mom_score > 15:
-                            pct = self.p.init_pct * 1.2
-                        elif mom_score >= 8:
-                            pct = self.p.init_pct
+                        # 多头排列
+                        if not (ma5_v and ma20_v and ma5_v > ma20_v):
+                            continue
+
+                        # 10日新高
+                        h10 = None
+                        if len(d.close) >= 11:
+                            h10 = max(d.close.get(size=10, ago=1))
+
+                        # 动态仓位
+                        if self.p.dynamic_pct:
+                            mom_score = momentum_scores.get(name, 0)
+                            if mom_score > 15:
+                                pct = self.p.init_pct * 1.2
+                            elif mom_score >= 8:
+                                pct = self.p.init_pct
+                            else:
+                                pct = self.p.init_pct * 0.6
                         else:
-                            pct = self.p.init_pct * 0.6
-                    else:
-                        pct = self.p.init_pct
+                            pct = self.p.init_pct
 
-                    entered = False
+                        entered = False
 
-                    # 方案A: 趋势建仓通道 (--trend-entry)  P1修复: 加RSI<65过滤防追高
-                    if not entered and self.p.trend_entry:
-                        if rsi_val is not None and rsi_val < 65:
-                            if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
+                        # 方案A: 趋势建仓通道 (--trend-entry)  P1修复: 加RSI<65过滤防追高
+                        if not entered and self.p.trend_entry:
+                            if rsi_val is not None and rsi_val < 65:
+                                if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
+                                    self._init_on_entry(ps, price)
+                                    entered = True
+
+                        # 通道1: RSI抄底
+                        if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
+                            if self._buy(d, pct, f"每周轮动RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
                                 self._init_on_entry(ps, price)
                                 entered = True
 
-                    # 通道1: RSI抄底
-                    if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
-                        if self._buy(d, pct, f"每周轮动RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+                        # 通道2: 趋势跟踪
+                        if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
+                            if self._buy(d, pct, f"每周轮动趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
+                                self._init_on_entry(ps, price)
+                                entered = True
 
-                    # 通道2: 趋势跟踪
-                    if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                        if self._buy(d, pct, f"每周轮动趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
-                            self._init_on_entry(ps, price)
-                            entered = True
-
-                    # 通道3: 趋势入场(合并原突破入场+分批建仓)
-                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40:
-                        reason_extra = f" 10日高={h10:.3f}" if (h10 is not None and price > h10) else ""
-                        if self._buy(d, pct, f"每周轮动趋势入场{pct*100:.0f}% MACD{ms}{reason_extra}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
-
-            # ── 大盘回撤保护: 510300的20日高点回撤替代破MA20减仓 ──
-            # 使用沪深300ETF(510300)作为大盘指标
-            market_index_code = "510300"
-            market_drawdown_pct = 0.0  # 当前回撤百分比
-            market_idx_price = 0.0
-            market_idx_ma20 = 0.0
-            if market_index_code in self.ps:
-                for dd in self.datas:
-                    if dd._name == market_index_code:
-                        if dd.volume[0] > 0 and len(dd.close) > 20:
-                            market_idx_price = dd.close[0]
-                            market_idx_ma20 = self.ma20[market_index_code][0] if market_index_code in self.ma20 else 0
-                            high_20 = max(dd.close[-i] for i in range(20))
-                            if high_20 > 0:
-                                market_drawdown_pct = (high_20 - market_idx_price) / high_20 * 100
-                        break
-
-            # 确定当前回撤等级
-            # 等级: 0=无(回撤<5%), 1=>5%, 2=>8%, 3=>12%
-            # 渐进减仓: 从等级0到等级1减30%, 从1到2减20%(累计50%), 从2到3减20%(累计70%)
-            current_level = 0
-            if market_drawdown_pct >= 12:
-                current_level = 3
-            elif market_drawdown_pct >= 8:
-                current_level = 2
-            elif market_drawdown_pct >= 5:
-                current_level = 1
-
-            # 恢复条件: 回撤<3% 或 价格收复MA20
-            market_recovered = (market_drawdown_pct < 3) or (market_idx_ma20 > 0 and market_idx_price > market_idx_ma20)
-
-            if current_level > 0:
-                for d in self.datas:
-                    name = d._name
-                    ps = self.ps[name]
-                    if d.volume[0] < 0:
-                        continue
-                    if name in self._order_pending:
-                        continue
-                    if not self._has_position(d):
-                        continue
-                    # 防同日重复触发
-                    prev_level = ps.get("market_drawdown_level", 0)
-                    prev_date = ps.get("market_drawdown_date", "")
-                    if current_level <= prev_level:
-                        continue  # 等级未升级，跳过
-                    if prev_date == date_str and prev_level > 0:
-                        continue  # 同日已触发过，跳过
-
-                    # 计算本次需要额外减仓比例
-                    # 目标累计减仓: level1=30%, level2=50%, level3=70%
-                    target_reduction = {1: 30, 2: 50, 3: 70}[current_level]
-                    already_reduced = {0: 0, 1: 30, 2: 50, 3: 70}[prev_level]
-                    extra_reduction = target_reduction - already_reduced
-
-                    if extra_reduction > 0:
-                        shares = self._get_shares(d)
-                        if shares >= 200:
-                            if self._sell(d, extra_reduction, f"大盘回撤保护减仓{extra_reduction}% 回撤={market_drawdown_pct:.1f}%"):
-                                ps["market_drawdown_level"] = current_level
-                                ps["market_drawdown_date"] = date_str
-                                ps["market_reduced"] = True
-            elif market_recovered:
-                # 恢复满仓: 对已减仓标的加仓回满仓
-                for d in self.datas:
-                    name = d._name
-                    ps = self.ps[name]
-                    if d.volume[0] < 0:
-                        continue
-                    if name in self._order_pending:
-                        continue
-                    if ps.get("market_drawdown_level", 0) > 0 and self._has_position(d):
-                        # 已减仓且回撤恢复, 加仓补回
-                        if self._buy(d, self.p.init_pct * 0.7, f"大盘回撤恢复加仓 回撤={market_drawdown_pct:.1f}%"):
-                            ps["market_drawdown_level"] = 0
-                            ps["market_drawdown_date"] = ""
-                            ps["market_reduced"] = False
+                        # 通道3: 趋势入场(合并原突破入场+分批建仓)
+                        if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40:
+                            reason_extra = f" 10日高={h10:.3f}" if (h10 is not None and price > h10) else ""
+                            if self._buy(d, pct, f"每周轮动趋势入场{pct*100:.0f}% MACD{ms}{reason_extra}"):
+                                self._init_on_entry(ps, price)
+                                entered = True
 
             self._update_prev_macd()
             return
