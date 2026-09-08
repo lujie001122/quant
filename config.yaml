@@ -84,16 +84,18 @@ order:
   retry_interval: 5
   timeout_seconds: 300
 profit_take:
+  e1_activation: 0.05
+  e1_lockin: 0.12
+  e2_activation: 0.1
+  e2_lockin: 0.18
   hard_take_profit: 0.6
   sell_active_ratio: 0.05
   trailing_15pct: 0.08
   trailing_8pct: 0.1
   trend_profit_ratio: 0.1
-  # e1/e2 移动止盈激活/锁仓阈值（统一配置，消除3处重复）
-  e1_activation: 0.08
-  e1_lockin: 0.15
-  e2_activation: 0.10
-  e2_lockin: 0.18
+risk:
+  max_consecutive_loss_days: 3
+  min_daily_loss_pct: 0.01
 signal:
   before_11: '11:00'
   max_retries: 3
@@ -104,22 +106,19 @@ stop_loss:
   breakeven_margin: 0.02
   breakeven_trigger: 0.3
   daily_loss_limit_pct: 0.2
+  float_profit_stop1: 0.0
+  float_profit_stop2: 0.05
+  float_profit_trigger1: 0.05
+  float_profit_trigger2: 0.1
   hard_stop_pct: 0.25
-  # 均价止损分级（统一配置，消除risk_manager/backtest重复）
-  tier1_pct: 0.15    # 仓位>80% 止损15%
-  tier1_ratio: 0.80  # 仓位>80%
-  tier2_pct: 0.20    # 仓位50-80% 止损20%
-  tier2_ratio: 0.50  # 仓位>50%
-  tier3_pct: 0.25    # 仓位<50% 止损25%
-  # 浮盈止损上移（统一配置）
-  float_profit_trigger1: 0.05   # 浮盈>5% 止损线=保本
-  float_profit_trigger2: 0.10   # 浮盈>10% 止损线=成本+5%
-  float_profit_stop1: 0.00      # 保本
-  float_profit_stop2: 0.05      # 成本+5%
-  # 分级止损
-  ma20_break_days: 2     # 连续2天破MA20触发减仓
-  rsi_low_confirm: 35    # RSI<35确认趋势恶化
-  hard_take_profit_mult: 1.60  # base_price * 1.60 硬止盈
+  hard_take_profit_mult: 1.6
+  ma20_break_days: 2
+  rsi_low_confirm: 35
+  tier1_pct: 0.15
+  tier1_ratio: 0.8
+  tier2_pct: 0.2
+  tier2_ratio: 0.5
+  tier3_pct: 0.25
 t0:
   ma20_slope_buy_cap: -0.005
   ma20_slope_sell_cap: 0.003
@@ -130,18 +129,15 @@ t0:
   rsi_extreme_buy: 25
   rsi_extreme_sell: 75
   rsi_sell_min: 50
-  t0_buy_ratio: 0.30     # 做T买入比例
-  t0_sell_ratio: 0.10    # 做T卖出比例（对齐signal.t0_sell_half_ratio）
+  t0_buy_ratio: 0.3
+  t0_sell_ratio: 0.1
 total_fund: 220000
-trail_pct: 0.12
 trade:
-  min_shares: 5000       # 最小交易股数（实盘/回测统一）
+  min_shares: 5000
+trail_pct: 0.12
 trend:
   empty_days_threshold: 5
   ma20_slope_period: 5
 trend_profit:
   cooldown_days: 2
   max_daily: 2
-risk:
-  max_consecutive_loss_days: 3
-  min_daily_loss_pct: 0.01

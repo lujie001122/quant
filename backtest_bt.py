@@ -627,7 +627,7 @@ class ETFStrategy(bt.Strategy):
 
                     # 移动止盈（从config读取trail_pct）
                     trail_pct_val = self.p.trail_pct
-                    # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%
+                    # P0修复: e1模式激活线5%/锁仓线12%, e2模式10%/18%
                     if self.p.trail_mode == "e1":
                         trail_activation = CONF["profit_take"]["e1_activation"]
                         trail_lockin = CONF["profit_take"]["e1_lockin"]
@@ -888,7 +888,7 @@ class ETFStrategy(bt.Strategy):
                 pp = (price - avg) / avg if avg > 0 else 0
                 atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
                 trail_pct = self.p.trail_pct
-                # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%, fixed保持原逻辑
+                # P0修复: e1模式激活线5%/锁仓线12%, e2模式10%/18%, fixed保持原逻辑
                 if self.p.trail_mode == "e1":
                     trail_activation = CONF["profit_take"]["e1_activation"]
                     trail_lockin = CONF["profit_take"]["e1_lockin"]
@@ -1280,7 +1280,7 @@ class ETFStrategy(bt.Strategy):
                 pp = (price - avg) / avg if avg > 0 else 0
                 atr_pct = (atr_val / price * 100) if atr_val and price > 0 else 0
                 trail_pct = self.p.trail_pct
-                # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%, fixed保持原逻辑
+                # P0修复: e1模式激活线5%/锁仓线12%, e2模式10%/18%, fixed保持原逻辑
                 if self.p.trail_mode == "e1":
                     trail_activation = CONF["profit_take"]["e1_activation"]
                     trail_lockin = CONF["profit_take"]["e1_lockin"]
@@ -1585,7 +1585,7 @@ class ETFStrategy(bt.Strategy):
 
                 # 更新移动止盈线 (backtrader用avg而非entry_cost计算盈利比例)
                 trail_pct_val = self.p.trail_pct
-                # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%
+                # P0修复: e1模式激活线5%/锁仓线12%, e2模式10%/18%
                 if self.p.trail_mode == "e1":
                     trail_activation = CONF["profit_take"]["e1_activation"]
                     trail_lockin = CONF["profit_take"]["e1_lockin"]
