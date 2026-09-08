@@ -23,16 +23,7 @@
 # 从 position_info 导入统一常量
 from position_info import TOTAL_FUND, DEAD_RATIO, ACTIVE_RATIO, MAX_PER_ETF
 
-import os, yaml as _yaml
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
-try:
-    with open(_CONFIG_PATH) as _f:
-        _CONF = _yaml.safe_load(_f) or {}
-except Exception:
-    _CONF = {}
-
-
-MIN_SHARES = _CONF.get("trade", {}).get("min_shares", 5000)  # 从config读取，对齐实盘
+MIN_SHARES = 100  # 最小交易单位
 
 
 class MoneyManager:
@@ -58,7 +49,7 @@ class MoneyManager:
             return 0
         target_value = fund * ratio
         shares = int(target_value / price / round_lot) * round_lot
-        return max(shares, MIN_SHARES)
+        return max(shares, 5000)
 
     @staticmethod
     def calc_position_size_percent(pos, ratio, round_lot=100):
@@ -71,22 +62,20 @@ class MoneyManager:
         if not pos.has_position or pos.shares < round_lot:
             return 0
         shares = int(pos.shares * ratio / round_lot) * round_lot
-        return max(shares, MIN_SHARES)
+        return max(shares, 5000)
 
     @staticmethod
-    def calc_t0_shares(pos, ratio=None, round_lot=100):
-        """计算做T股数 (从config读取默认比例)
+    def calc_t0_shares(pos, ratio=0.30, round_lot=100):
+        """计算做T股数 (默认30%持仓)
 
         参数:
           pos: PositionInfo 实例
-          ratio: 做T比例 (默认从config t0.pair_ratio读取)
+          ratio: 做T比例 (默认0.30)
         """
         if not pos.has_position or pos.shares < round_lot:
             return 0
-        if ratio is None:
-            ratio = _CONF.get("t0", {}).get("pair_ratio", 0.30)
         shares = int(pos.shares * ratio / round_lot) * round_lot
-        return max(shares, MIN_SHARES)
+        return max(shares, 5000)
 
     @staticmethod
     def calc_position_ratio(pos, price, total_fund=None):
@@ -104,8 +93,8 @@ class MoneyManager:
     @staticmethod
     def get_initial_entry_ratio(pos):
         """获取首笔建仓比例 (根据通道)"""
-        # 6通道统一返回首笔建仓比例，build_phase逻辑由策略层处理
-        return _CONF.get("entry", {}).get("confirm_entry_ratio", 1.0) * 0.30
+        # 6通道统一返回30%，build_phase逻辑由策略层处理
+        return 0.30
 
     @staticmethod
     def get_build_ratio(pos):
@@ -163,7 +152,7 @@ class MoneyManager:
             return 0
         target_value = fund * grid_weight
         shares = int(target_value / price / round_lot) * round_lot
-        return max(shares, MIN_SHARES)  # 最小交易股数(对齐实盘)
+        return max(shares, 5000)  # Q3: 5000股下限
 
     # ══════════════════════════════════════════════
     # 4. 综合工具
@@ -221,16 +210,14 @@ class MoneyManager:
             return 0.0
         if is_buy_t0:
             # 做T买入：先买后卖，配对的卖出价需高于买入价
-            return round(current_price + _CONF.get("t0", {}).get("min_spread", 150) / shares, 3)
+            return round(current_price + 150.0 / shares, 3)
         else:
             # 做T卖出：先卖后买，配对的买入价需低于卖出价
-            return round(current_price - _CONF.get("t0", {}).get("min_spread", 150) / shares, 3)
+            return round(current_price - 150.0 / shares, 3)
 
     @staticmethod
-    def is_t0_pair_viable(current_price, pair_price, shares, min_spread=None):
+    def is_t0_pair_viable(current_price, pair_price, shares, min_spread=150):
         """检查做T配对挂单是否有经济意义 (价差*量>200元)"""
-        if min_spread is None:
-            min_spread = _CONF.get("t0", {}).get("min_spread", 150)
         spread = abs(pair_price - current_price) * shares
         return spread > min_spread, round(spread, 2)
 
@@ -247,7 +234,7 @@ def calc_position_size_percent(pos, ratio, round_lot=100):
     return MoneyManager.calc_position_size_percent(pos, ratio, round_lot)
 
 
-def calc_t0_shares(pos, ratio=None, round_lot=100):
+def calc_t0_shares(pos, ratio=0.30, round_lot=100):
     return MoneyManager.calc_t0_shares(pos, ratio, round_lot)
 
 

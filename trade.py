@@ -34,6 +34,15 @@ from evolving.evolving import EvolvingSim
 # note: tracker.py 的导入保留向后兼容，实际已通过 state_center 统一
 from state_center import get_code_map
 
+import yaml as _yaml
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
+try:
+    with open(_CONFIG_PATH) as _f:
+        _CONF = _yaml.safe_load(_f) or {}
+except Exception:
+    _CONF = {}
+
+
 CODE_MAP = get_code_map()  # {code: {"name": str, "sid": str}}
 
 
@@ -56,10 +65,11 @@ def _call_evolving(method_name, *args, e=None):
 # ─── 数量校验 ──────────────────────────────────────────────────────────
 
 def _validate_shares(shares):
-    """校验数量是 100 的整数倍，且不低于 5000 股。不足5000自动修正为5000。"""
-    if shares < 5000:
-        print(f"⚠️ 数量 {shares} 低于 5000 股下限，自动修正为 5000")
-        shares = 5000
+    """校验数量是 100 的整数倍，且不低于最小股数(从config读取)。不足自动修正。"""
+    _min_shares = _CONF.get("trade", {}).get("min_shares", 5000)
+    if shares < _min_shares:
+        print(f"⚠️ 数量 {shares} 低于 {_min_shares} 股下限，自动修正为 {_min_shares}")
+        shares = _min_shares
     if shares % 100 != 0:
         print(f"❌ 数量 {shares} 不是 100 的整数倍")
         sys.exit(1)

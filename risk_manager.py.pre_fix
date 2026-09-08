@@ -51,8 +51,8 @@ class RiskManager:
             state_center = StateCenter.get_instance()
         self._state = state_center
         self.MAX_DAILY_LOSS_PCT = _daily_loss  # O2: 从config.yaml读取
-        self.MAX_CONSECUTIVE_LOSS_DAYS = _cfg.get("risk", {}).get("max_consecutive_loss_days", 3)  # 从config读取
-        self.MIN_DAILY_LOSS_PCT = _cfg.get("risk", {}).get("min_daily_loss_pct", 0.01)  # 从config读取
+        self.MAX_CONSECUTIVE_LOSS_DAYS = 3  # 连续亏损3天熔断
+        self.MIN_DAILY_LOSS_PCT = 0.01  # 日亏损>1%才计入连续亏损
         self.daily_pnl = 0.0
         # 连续亏损追踪
         self.consecutive_loss_days = 0
@@ -151,18 +151,18 @@ class RiskManager:
         # ── 浮盈止损上移: 浮盈>5%→保本线, >10%→成本+5% ──
         if pos.entry_cost > 0:
             pos_ratio = pos.shares * price / TOTAL_FUND if price > 0 else 0
-            if pos_ratio > _cfg.get("stop_loss", {}).get("tier1_ratio", 0.80):
-                stop_pct = _cfg.get("stop_loss", {}).get("tier1_pct", 0.15)
-            elif pos_ratio >= _cfg.get("stop_loss", {}).get("tier2_ratio", 0.50):
-                stop_pct = _cfg.get("stop_loss", {}).get("tier2_pct", 0.20)
+            if pos_ratio > 0.80:
+                stop_pct = 0.15
+            elif pos_ratio >= 0.50:
+                stop_pct = 0.20
             else:
-                stop_pct = _cfg.get("stop_loss", {}).get("tier3_pct", 0.25)
+                stop_pct = 0.25
             # 浮盈止损上移
             float_profit_pct = (price - pos.entry_cost) / pos.entry_cost if pos.entry_cost > 0 else 0
-            if float_profit_pct > _cfg.get("stop_loss", {}).get("float_profit_trigger2", 0.10):
-                adjusted_stop = pos.entry_cost * (1 + _cfg.get("stop_loss", {}).get("float_profit_stop2", 0.05))  # 浮盈>10%, 止损线=成本+5%
-            elif float_profit_pct > _cfg.get("stop_loss", {}).get("float_profit_trigger1", 0.05):
-                adjusted_stop = pos.entry_cost * (1 + _cfg.get("stop_loss", {}).get("float_profit_stop1", 0.0))  # 浮盈>5%, 止损线=保本
+            if float_profit_pct > 0.10:
+                adjusted_stop = pos.entry_cost * 1.05  # 浮盈>10%, 止损线=成本+5%
+            elif float_profit_pct > 0.05:
+                adjusted_stop = pos.entry_cost  # 浮盈>5%, 止损线=保本
             else:
                 adjusted_stop = pos.entry_cost * (1 - stop_pct)
             if price <= adjusted_stop:
@@ -172,8 +172,8 @@ class RiskManager:
                     stop_actions.append((f"均价止损{stop_pct*100:.0f}%(仓位{pos_ratio*100:.0f}%,avg={pos.entry_cost:.3f}→现价{price:.3f})", "avg_stop_20pct"))
 
         # ── 硬止盈60%: base_price*1.60(极限方案C) ──
-        if pos.base_price and price >= pos.base_price * _cfg.get("stop_loss", {}).get("hard_take_profit_mult", 1.60):
-            stop_actions.append((f"硬止盈{(_cfg.get('stop_loss', {}).get('hard_take_profit_mult', 1.60)-1)*100:.0f}%(基准{pos.base_price:.3f}→现价{price:.3f})", "liquidate_60pct"))
+        if pos.base_price and price >= pos.base_price * 1.60:
+            stop_actions.append((f"硬止盈60%(基准{pos.base_price:.3f}→现价{price:.3f})", "liquidate_60pct"))
 
         # ── 移动止盈 ──
         if pos.trailing_stop_price > 0 and price <= pos.trailing_stop_price:
@@ -182,8 +182,8 @@ class RiskManager:
             stop_actions.append((f"{label}:触线{pos.trailing_stop_price:.3f}", "liquidate_trailing"))
 
         # ── 硬止损25%: 从价格峰值回撤25%清仓(极限方案C: 放宽) ──
-        if pos.peak_price > 0 and price < pos.peak_price * (1 - _cfg.get("stop_loss", {}).get("hard_stop_pct", 0.25)):
-            stop_actions.append((f"硬止损{_cfg.get('stop_loss', {}).get('hard_stop_pct', 0.25)*100:.0f}%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_25pct"))
+        if pos.peak_price > 0 and price < pos.peak_price * 0.75:
+            stop_actions.append((f"硬止损25%(峰值{pos.peak_price:.3f}→现价{price:.3f})", "hard_stop_25pct"))
 
         # Level 1a: 连续2天破MA20 → 减30%总仓
         if t["ma20"] and pos.stop_level == 0:
@@ -191,7 +191,7 @@ class RiskManager:
                 if pos.below_ma20_date != today_str:
                     pos.below_ma20_count += 1
                     pos.below_ma20_date = today_str
-                if pos.below_ma20_count >= _cfg.get("stop_loss", {}).get("ma20_break_days", 2):
+                if pos.below_ma20_count >= 2:
                     stop_actions.append(("分级止损1级:连续2天破MA20减30%", "reduce_30pct_all"))
                     pos.stop_level = 1
             else:
@@ -205,8 +205,8 @@ class RiskManager:
 
         # Level 1c: MACD死叉/绿柱放大 → 清仓（需额外确认: price<MA20持续3天 或 RSI<35）
         if pos.stop_level == 2 and t["macd_status"] in ["死叉", "绿柱放大"]:
-            below_ma20_3days = pos.below_ma20_count >= _cfg.get("stop_loss", {}).get("ma20_break_days", 2) + 1
-            rsi_low = t["rsi"] is not None and t["rsi"] < _cfg.get("stop_loss", {}).get("rsi_low_confirm", 35)
+            below_ma20_3days = pos.below_ma20_count >= 3
+            rsi_low = t["rsi"] is not None and t["rsi"] < 35
             if below_ma20_3days or rsi_low:
                 stop_actions.append(("分级止损3级:MACD趋势恶化清仓", "liquidate_trend"))
                 pos.stop_level = 3

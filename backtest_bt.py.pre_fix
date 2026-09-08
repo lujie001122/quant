@@ -268,7 +268,7 @@ class ETFStrategy(bt.Strategy):
     params = (
         ("max_per_etf", MAX_PER_ETF),
         ("cooldown_days", COOLDOWN_DAYS),
-        ("fund_per_etf", 0),  # 每只ETF资金基数，默认0（与实盘一致）
+        ("fund_per_etf", 44000),  # 每只ETF资金基数，默认44000（与实盘一致）
         ("rotation_mode", False),  # 全仓轮动: 每周一满仓动量第1名
         ("concentrated_mode", False),  # 集中持仓: 只持有TOP N最强ETF
         ("weekly_rotation_mode", False),  # 每周轮动: 每5日从候选池重算TOP3动量排名
@@ -282,7 +282,7 @@ class ETFStrategy(bt.Strategy):
         ("ma60_filter", False),  # MA60趋势过滤: 价格>MA60才持有
         ("dynamic_pct", False),  # 动态仓位: 动量越强仓位越大
         ("rebalance", 5),  # 重平衡周期(天): 每N天重排名换仓，默认5天
-        ("stop_loss", 0.25),  # 固定止损比例: 对齐config.yaml stop_loss.hard_stop_pct=0.25
+        ("stop_loss", 0.08),  # 固定止损比例: 跌破entry_cost*(1-stop_loss)止损
         ("trail_pct", 0.12),  # 移动止盈回撤比例(fixed模式): peak_price*(1-trail_pct)
         ("sector_diversify", False),  # 板块分散: TOP3必须来自不同板块
         ("confirm_days", 0),  # 换仓延迟确认天数: 连续N天在/不在TOP N才换仓
@@ -451,12 +451,12 @@ class ETFStrategy(bt.Strategy):
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
         need = target_shares - current
-        if need < 100: return False  # min_shares from config
+        if need < 100: return False
         # 资金约束
         cost = need * price * (1 + SLIPPAGE_PCT) + FEE
         if cost > self.broker.getcash():
             need = int(self.broker.getcash() / price / 100) * 100
-            if need < 100: return False  # min_shares from config
+            if need < 100: return False
         self._order_pending[name] = self.buy(data=data, size=need)
         self.ps[name]['_last_entry_reason'] = reason
         return True
@@ -596,19 +596,18 @@ class ETFStrategy(bt.Strategy):
                     entry_cost = ps.get("entry_avg_cost", 0) or avg
                     if entry_cost > 0:
                         pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
-                        _sl = CONF.get("stop_loss", {})
-                        if pos_ratio > _sl.get("tier1_ratio", 0.80):
-                            stop_pct = _sl.get("tier1_pct", 0.15)
-                        elif pos_ratio >= _sl.get("tier2_ratio", 0.50):
-                            stop_pct = _sl.get("tier2_pct", 0.20)
+                        if pos_ratio > 0.80:
+                            stop_pct = 0.15
+                        elif pos_ratio >= 0.50:
+                            stop_pct = 0.20
                         else:
-                            stop_pct = _sl.get("tier3_pct", 0.25)
-                        # P1-1: 浮盈止损上移 — 从config读取阈值
+                            stop_pct = 0.25
+                        # P1-1: 浮盈止损上移 — 浮盈>5%止损线上移到保本, 浮盈>10%上移到+5%
                         float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
-                        if float_profit_pct > _sl.get("float_profit_trigger2", 0.10):
-                            adjusted_stop = entry_cost * (1 + _sl.get("float_profit_stop2", 0.05))
-                        elif float_profit_pct > _sl.get("float_profit_trigger1", 0.05):
-                            adjusted_stop = entry_cost * (1 + _sl.get("float_profit_stop1", 0.0))
+                        if float_profit_pct > 0.10:
+                            adjusted_stop = entry_cost * 1.05  # 浮盈>10%, 止损线=成本+5%
+                        elif float_profit_pct > 0.05:
+                            adjusted_stop = entry_cost  # 浮盈>5%, 止损线=保本
                         else:
                             adjusted_stop = entry_cost * (1 - stop_pct)
                         if price <= adjusted_stop:
@@ -620,8 +619,8 @@ class ETFStrategy(bt.Strategy):
                             continue
 
                     # 硬止损25%
-                    if ps["peak_price"] > 0 and price < ps["peak_price"] * (1 - CONF.get("stop_loss", {}).get("hard_stop_pct", 0.25)):
-                        self._close(d, f"硬止损{CONF.get('stop_loss', {}).get('hard_stop_pct', 0.25)*100:.0f}% peak={ps['peak_price']:.3f}")
+                    if ps["peak_price"] > 0 and price < ps["peak_price"] * 0.75:
+                        self._close(d, f"硬止损25% peak={ps['peak_price']:.3f}")
                         self._full_liquidate_state(ps, date_str)
                         continue
 
@@ -629,11 +628,11 @@ class ETFStrategy(bt.Strategy):
                     trail_pct_val = self.p.trail_pct
                     # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%
                     if self.p.trail_mode == "e1":
-                        trail_activation = CONF["profit_take"]["e1_activation"]
-                        trail_lockin = CONF["profit_take"]["e1_lockin"]
+                        trail_activation = 0.08
+                        trail_lockin = 0.15
                     elif self.p.trail_mode == "e2":
-                        trail_activation = CONF["profit_take"]["e2_activation"]
-                        trail_lockin = CONF["profit_take"]["e2_lockin"]
+                        trail_activation = 0.10
+                        trail_lockin = 0.18
                     else:
                         trail_activation = trail_pct_val + 0.01
                         trail_lockin = trail_pct_val + 0.08
@@ -659,7 +658,7 @@ class ETFStrategy(bt.Strategy):
                     if entry_cost > 0 and price > entry_cost:
                         float_profit = (price - entry_cost) / entry_cost
                         current_value = shares * price
-                        max_value = TOTAL_FUND * POSITION_CAP  # 单只ETF仓位上限50%
+                        max_value = TOTAL_FUND * 0.50  # 单只ETF仓位上限50%
 
                         if ps["pyramid_count"] == 0 and float_profit > 0.05:
                             # 加仓金额 = 首次建仓金额 × 0.5
@@ -890,11 +889,11 @@ class ETFStrategy(bt.Strategy):
                 trail_pct = self.p.trail_pct
                 # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%, fixed保持原逻辑
                 if self.p.trail_mode == "e1":
-                    trail_activation = CONF["profit_take"]["e1_activation"]
-                    trail_lockin = CONF["profit_take"]["e1_lockin"]
+                    trail_activation = 0.08
+                    trail_lockin = 0.15
                 elif self.p.trail_mode == "e2":
-                    trail_activation = CONF["profit_take"]["e2_activation"]
-                    trail_lockin = CONF["profit_take"]["e2_lockin"]
+                    trail_activation = 0.10
+                    trail_lockin = 0.18
                 else:
                     trail_activation = trail_pct + 0.01
                     trail_lockin = trail_pct + 0.08
@@ -1286,11 +1285,11 @@ class ETFStrategy(bt.Strategy):
                 trail_pct = self.p.trail_pct
                 # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%, fixed保持原逻辑
                 if self.p.trail_mode == "e1":
-                    trail_activation = CONF["profit_take"]["e1_activation"]
-                    trail_lockin = CONF["profit_take"]["e1_lockin"]
+                    trail_activation = 0.08
+                    trail_lockin = 0.15
                 elif self.p.trail_mode == "e2":
-                    trail_activation = CONF["profit_take"]["e2_activation"]
-                    trail_lockin = CONF["profit_take"]["e2_lockin"]
+                    trail_activation = 0.10
+                    trail_lockin = 0.18
                 else:
                     trail_activation = trail_pct + 0.01  # 激活阈值=trail_pct+1%
                     trail_lockin = trail_pct + 0.08  # 锁仓阈值=trail_pct+8%
@@ -1591,11 +1590,11 @@ class ETFStrategy(bt.Strategy):
                 trail_pct_val = self.p.trail_pct
                 # P0修复: e1模式激活线8%/锁仓线15%, e2模式10%/18%
                 if self.p.trail_mode == "e1":
-                    trail_activation = CONF["profit_take"]["e1_activation"]
-                    trail_lockin = CONF["profit_take"]["e1_lockin"]
+                    trail_activation = 0.08
+                    trail_lockin = 0.15
                 elif self.p.trail_mode == "e2":
-                    trail_activation = CONF["profit_take"]["e2_activation"]
-                    trail_lockin = CONF["profit_take"]["e2_lockin"]
+                    trail_activation = 0.10
+                    trail_lockin = 0.18
                 else:
                     trail_activation = trail_pct_val + 0.01
                     trail_lockin = trail_pct_val + 0.08
@@ -1695,7 +1694,7 @@ class ETFStrategy(bt.Strategy):
                         if "pyramid_count" not in ps:
                             ps["pyramid_count"] = 0
                         current_value = shares * price
-                        max_value = TOTAL_FUND * POSITION_CAP
+                        max_value = TOTAL_FUND * 0.50
                         if ps["pyramid_count"] == 0 and float_profit > 0.05:
                             add_value = self.p.fund_per_etf * 0.30
                             if current_value + add_value <= max_value:
@@ -2208,7 +2207,7 @@ def main():
     ma60_filter = False   # MA60趋势过滤
     dynamic_pct = False   # 动态仓位
     rebalance = 5         # 重平衡周期(天)
-    stop_loss = 0.25      # 固定止损比例(对齐config.yaml hard_stop_pct)
+    stop_loss = 0.08      # 固定止损比例
     trail_pct = CONF.get('trail_pct', 0.12)      # 移动止盈回撤比例(fixed模式): 从config读取
     sector_diversify = False  # 板块分散
     confirm_days = 0      # 换仓延迟确认天数

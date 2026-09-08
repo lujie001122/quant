@@ -12,12 +12,6 @@ from strategies.base import BaseStrategy
 from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time, TOTAL_FUND
 from position_info import MAX_POSITION_RATIO
 from money_manager import calc_t0_pair_price
-
-import os, yaml
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yaml')
-with open(_CONFIG_PATH) as _f:
-    _CONF = yaml.safe_load(_f)
-
 from datetime import datetime
 
 
@@ -49,9 +43,9 @@ class T0Strategy(BaseStrategy):
             sell_score = t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min)
 
             if ma20_5min_slope is not None:
-                if ma20_5min_slope > _CONF.get("t0", {}).get("ma20_slope_sell_cap", 0.003):
+                if ma20_5min_slope > 0.003:
                     sell_score = 0
-                elif ma20_5min_slope < _CONF.get("t0", {}).get("ma20_slope_buy_cap", -0.005):
+                elif ma20_5min_slope < -0.005:
                     buy_score = 0
 
         t0_signal = "无"
@@ -110,15 +104,15 @@ class T0Strategy(BaseStrategy):
             if "买入" in t0_signal:
                 if record_t0:
                     pos.record_t0(today_str)
-                ratio = _CONF.get("t0", {}).get("t0_buy_ratio", 0.30)
+                ratio = 0.30
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_shares = max(int(pos.shares * ratio / 100) * 100, _CONF.get("trade", {}).get("min_shares", 5000))
+                    pair_shares = max(int(pos.shares * ratio / 100) * 100, 5000)
                     pair_price = calc_t0_pair_price(price, pair_shares, True)  # 固定+150价差
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(pair_price - price) * pair_shares
-                        if spread > _CONF.get("t0", {}).get("min_spread", 150):
+                        if spread > 150:
                             t0_pair = {
                                 "trade_type": "t0_pair",
                                 "action": "卖出(配对挂单)",
@@ -126,22 +120,22 @@ class T0Strategy(BaseStrategy):
                                 "pair_price": pair_price,
                                 "shares": pair_shares,
                                 "spread": round(spread, 2),
-                                "reason": f"做T买入后高位卖出: 固定价差={_CONF.get('t0', {}).get('min_spread', 150)}元, 挂单价={pair_price:.3f}",
+                                "reason": f"做T买入后高位卖出: 固定价差=150元, 挂单价={pair_price:.3f}",
                             }
                 return ("买入", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 
             elif "卖出" in t0_signal:
                 if record_t0:
                     pos.record_t0(today_str)
-                ratio = _CONF.get("t0", {}).get("t0_sell_ratio", _CONF.get("signal", {}).get("t0_sell_half_ratio", 0.1))
+                ratio = 0.2
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_shares = max(int(pos.shares * ratio / 100) * 100, _CONF.get("trade", {}).get("min_shares", 5000))
+                    pair_shares = max(int(pos.shares * ratio / 100) * 100, 5000)
                     pair_price = calc_t0_pair_price(price, pair_shares, False)  # 固定+150价差
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(price - pair_price) * pair_shares
-                        if spread > _CONF.get("t0", {}).get("min_spread", 150):
+                        if spread > 150:
                             t0_pair = {
                                 "trade_type": "t0_pair",
                                 "action": "买入(配对挂单)",
@@ -149,7 +143,7 @@ class T0Strategy(BaseStrategy):
                                 "pair_price": pair_price,
                                 "shares": pair_shares,
                                 "spread": round(spread, 2),
-                                "reason": f"做T卖出后低位接回: 固定价差={_CONF.get('t0', {}).get('min_spread', 150)}元, 挂单价={pair_price:.3f}",
+                                "reason": f"做T卖出后低位接回: 固定价差=150元, 挂单价={pair_price:.3f}",
                             }
                 return ("卖出", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 

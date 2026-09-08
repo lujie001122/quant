@@ -50,11 +50,11 @@ def t0_buy_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """
     if rsi_5min is None:
         return 0
-    if rsi_5min > _CONF.get("t0", {}).get("rsi_extreme_sell", 75):
+    if rsi_5min > 75:
         return 0
-    if rsi_5min < _CONF.get("t0", {}).get("rsi_extreme_buy", 25):
+    if rsi_5min < 25:
         return 3
-    if rsi_5min >= _CONF.get("t0", {}).get("rsi_buy_max", 50):
+    if rsi_5min >= 50:
         return 0
     score = 1
     if macd_5min_status in ["金叉", "红柱放大"]:
@@ -76,11 +76,11 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     """
     if rsi_5min is None:
         return 0
-    if rsi_5min < _CONF.get("t0", {}).get("rsi_extreme_buy", 25):
+    if rsi_5min < 25:
         return 0
-    if rsi_5min > _CONF.get("t0", {}).get("rsi_extreme_sell", 75):
+    if rsi_5min > 75:
         return 3
-    if rsi_5min <= _CONF.get("t0", {}).get("rsi_sell_min", 50):
+    if rsi_5min <= 50:
         return 0
     score = 1
     if macd_5min_status in ["死叉", "绿柱放大"]:
@@ -94,18 +94,15 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
 # 止损计算辅助
 # ═══════════════════════════════════════════════
 
-def _compute_stop_loss_price(avg_cost, peak_price, avg_pct=None, hard_pct=None):
+def _compute_stop_loss_price(avg_cost, peak_price, avg_pct=0.20, hard_pct=0.25):
     """计算止损价格(极限方案C: 放宽)"""
-    if avg_pct is None: avg_pct = _CONF.get("stop_loss", {}).get("tier2_pct", 0.20)
-    if hard_pct is None: hard_pct = _CONF.get("stop_loss", {}).get("hard_stop_pct", 0.25)
     avg_stop = avg_cost * (1 - avg_pct) if avg_cost > 0 else 0.0
     hard_stop = peak_price * (1 - hard_pct) if peak_price > 0 else 0.0
     return avg_stop, hard_stop
 
 
-def _compute_breakeven_price(avg_cost, margin=None):
+def _compute_breakeven_price(avg_cost, margin=0.02):
     """计算保本价格: 成本 + margin"""
-    if margin is None: margin = _CONF.get("stop_loss", {}).get("breakeven_margin", 0.02)
     return avg_cost * (1 + margin) if avg_cost > 0 else 0.0
 
 
@@ -160,7 +157,7 @@ class RSIMACDStrategy(BaseStrategy):
     @staticmethod
     def _update_entry_cost(pos, price, ratio, code):
         """买入时加权平均更新 entry_avg_cost（不回改shares，回测引擎自己管理）"""
-        fund = ETFS.get(code, {}).get("fund", _CONF.get("max_per_etf", 220000) // max(len(ETFS), 1))
+        fund = ETFS.get(code, {}).get("fund", 44000)
         shares = int(fund * ratio / price / 100) * 100
         if shares >= 100 and pos.shares > 0 and pos.entry_avg_cost > 0:
             pos.entry_avg_cost = (pos.entry_avg_cost * pos.shares + price * shares) / (pos.shares + shares)
@@ -208,8 +205,8 @@ class RSIMACDStrategy(BaseStrategy):
                for r2 in [realtime.get(c2, {})] if r2):
             return ("持有(观望)", "0%", None, "止盈期不新开(已有仓位触发硬止盈)")
 
-        rsi_ok = t["rsi"] is not None and t["rsi"] > _CONF.get("entry", {}).get("rsi_min", 40)
-        rsi_minimal = t["rsi"] is not None and t["rsi"] > _CONF.get("entry", {}).get("rsi_minimal", 30)
+        rsi_ok = t["rsi"] is not None and t["rsi"] > 40
+        rsi_minimal = t["rsi"] is not None and t["rsi"] > 30
         # 多头排列: MA5>MA20 才允许建仓（放宽：不再要求MA10）
         bullish_align = t["ma5"] and t["ma20"] and t["ma5"] > t["ma20"]
 
@@ -218,7 +215,7 @@ class RSIMACDStrategy(BaseStrategy):
             if not bullish_align:
                 return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA20={t['ma20']:.3f}),暂停建仓")
             # 通道1: RSI抄底 (MACD金叉+RSI≤55) → 30%(极限方案C: 去掉MA20过滤)
-            if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= _CONF.get("entry", {}).get("rsi_entry_max", 55)) and pos.can_buy_today(today_str, atr_pct):
+            if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= 55) and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"RSI抄底:MACD金叉(RSI={t['rsi']})")
@@ -245,13 +242,13 @@ class RSIMACDStrategy(BaseStrategy):
                 return (action, position_ratio, trade_type, "分批建仓1:首笔30%试探(MACD健康+RSI满足+站上MA5)")
 
             # 通道5: Test抄底 (RSI<35+绿柱缩短+站MA5) → 30%(极限方案C: 去掉MA20过滤)
-            if t["rsi"] is not None and t["rsi"] < _CONF.get("entry", {}).get("test_cap_rsi", 35) and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
+            if t["rsi"] is not None and t["rsi"] < 35 and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(Test抄底)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5")
 
             # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>35+站MA5+站MA20) → 30%
-            if t["macd_status"] in ["绿柱缩短", "震荡"] and t["rsi"] is not None and t["rsi"] > _CONF.get("entry", {}).get("test_cap_rsi", 35) and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
+            if t["macd_status"] in ["绿柱缩短", "震荡"] and t["rsi"] is not None and t["rsi"] > 35 and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(试探)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, f"试探建仓:30%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站MA5+站MA20)")
@@ -263,9 +260,9 @@ class RSIMACDStrategy(BaseStrategy):
             _position_capped = _position_ratio_val >= MAX_POSITION_RATIO
 
             # ── 逆势补仓: 跌超3%允许第二次买入（需检查仓位上限）──
-            if pos.build_first_price > 0 and pos.add_count < _CONF.get("entry", {}).get("add_count_limit", 5):
+            if pos.build_first_price > 0 and pos.add_count < 5:
                 dip_pct = (price - pos.build_first_price) / pos.build_first_price
-                if dip_pct < _CONF.get("entry", {}).get("dip_pct", -0.03) and pos.can_buy_today(today_str, atr_pct) and t["macd_status"] not in ["死叉", "绿柱放大"] and (t["rsi"] is None or t["rsi"] < 40):
+                if dip_pct < -0.03 and pos.can_buy_today(today_str, atr_pct) and t["macd_status"] not in ["死叉", "绿柱放大"] and (t["rsi"] is None or t["rsi"] < 40):
                     if _position_capped:
                         return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"补仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                     pos.record_buy(today_str)
