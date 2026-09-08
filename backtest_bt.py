@@ -349,6 +349,8 @@ class ETFStrategy(bt.Strategy):
                 "breakeven_activated": False,  # 浮盈≥10%激活保本线
                 "entry_avg_cost": 0.0,  # 建仓锁定均价(止损用)
                 "market_reduced": False,  # 大盘自适应减仓标记
+                "market_drawdown_level": 0,  # 大盘回撤减仓等级: 0=无, 1=>5%, 2=>8%, 3=>12%
+                "market_drawdown_date": "",  # 大盘回撤减仓最近触发日期(防同日重复)
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -626,6 +628,8 @@ class ETFStrategy(bt.Strategy):
         ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
         ps["pyramid_count"] = 0  # 重置金字塔加仓次数
         ps["market_reduced"] = False  # 重置大盘自适应减仓标记
+        ps["market_drawdown_level"] = 0  # 重置大盘回撤减仓等级
+        ps["market_drawdown_date"] = ""
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -1027,50 +1031,82 @@ class ETFStrategy(bt.Strategy):
                             self._init_on_entry(ps, price)
                             entered = True
 
-            # ── 大盘自适应仓位: 指数<MA20减半仓, 指数>MA20满仓 ──
+            # ── 大盘回撤保护: 510300的20日高点回撤替代破MA20减仓 ──
             # 使用沪深300ETF(510300)作为大盘指标
             market_index_code = "510300"
-            market_below_ma20 = False
+            market_drawdown_pct = 0.0  # 当前回撤百分比
+            market_idx_price = 0.0
+            market_idx_ma20 = 0.0
             if market_index_code in self.ps:
                 for dd in self.datas:
                     if dd._name == market_index_code:
-                        if dd.volume[0] > 0 and len(dd.close) > 0:
-                            idx_price = dd.close[0]
-                            idx_ma20 = self.ma20[market_index_code][0] if market_index_code in self.ma20 else 0
-                            if idx_ma20 > 0 and idx_price < idx_ma20:
-                                market_below_ma20 = True
+                        if dd.volume[0] > 0 and len(dd.close) > 20:
+                            market_idx_price = dd.close[0]
+                            market_idx_ma20 = self.ma20[market_index_code][0] if market_index_code in self.ma20 else 0
+                            high_20 = max(dd.close[-i] for i in range(20))
+                            if high_20 > 0:
+                                market_drawdown_pct = (high_20 - market_idx_price) / high_20 * 100
                         break
 
-            if market_below_ma20:
+            # 确定当前回撤等级
+            # 等级: 0=无(回撤<5%), 1=>5%, 2=>8%, 3=>12%
+            # 渐进减仓: 从等级0到等级1减30%, 从1到2减20%(累计50%), 从2到3减20%(累计70%)
+            current_level = 0
+            if market_drawdown_pct >= 12:
+                current_level = 3
+            elif market_drawdown_pct >= 8:
+                current_level = 2
+            elif market_drawdown_pct >= 5:
+                current_level = 1
+
+            # 恢复条件: 回撤<3% 或 价格收复MA20
+            market_recovered = (market_drawdown_pct < 3) or (market_idx_ma20 > 0 and market_idx_price > market_idx_ma20)
+
+            if current_level > 0:
                 for d in self.datas:
                     name = d._name
                     ps = self.ps[name]
-                    price = d.close[0]
                     if d.volume[0] < 0:
                         continue
                     if name in self._order_pending:
                         continue
                     if not self._has_position(d):
                         continue
-                    # 如果尚未减仓(标记)，卖出50%仓位
-                    if not ps.get("market_reduced", False):
+                    # 防同日重复触发
+                    prev_level = ps.get("market_drawdown_level", 0)
+                    prev_date = ps.get("market_drawdown_date", "")
+                    if current_level <= prev_level:
+                        continue  # 等级未升级，跳过
+                    if prev_date == date_str and prev_level > 0:
+                        continue  # 同日已触发过，跳过
+
+                    # 计算本次需要额外减仓比例
+                    # 目标累计减仓: level1=30%, level2=50%, level3=70%
+                    target_reduction = {1: 30, 2: 50, 3: 70}[current_level]
+                    already_reduced = {0: 0, 1: 30, 2: 50, 3: 70}[prev_level]
+                    extra_reduction = target_reduction - already_reduced
+
+                    if extra_reduction > 0:
                         shares = self._get_shares(d)
                         if shares >= 200:
-                            if self._sell(d, 50, f"大盘自适应减仓50% 指数<MA20"):
+                            if self._sell(d, extra_reduction, f"大盘回撤保护减仓{extra_reduction}% 回撤={market_drawdown_pct:.1f}%"):
+                                ps["market_drawdown_level"] = current_level
+                                ps["market_drawdown_date"] = date_str
                                 ps["market_reduced"] = True
-            else:
-                # 指数>MA20, 恢复满仓: 对已减仓标的加仓回满仓
+            elif market_recovered:
+                # 恢复满仓: 对已减仓标的加仓回满仓
                 for d in self.datas:
                     name = d._name
                     ps = self.ps[name]
-                    price = d.close[0]
                     if d.volume[0] < 0:
                         continue
                     if name in self._order_pending:
                         continue
-                    if ps.get("market_reduced", False) and self._has_position(d):
-                        # 已减仓且指数恢复, 加仓回50%(原来减半后剩50%, 需补回)
-                        if self._buy(d, self.p.init_pct * 0.5, f"大盘自适应加仓 指数>MA20"):
+                    if ps.get("market_drawdown_level", 0) > 0 and self._has_position(d):
+                        # 已减仓且回撤恢复, 加仓补回
+                        if self._buy(d, self.p.init_pct * 0.7, f"大盘回撤恢复加仓 回撤={market_drawdown_pct:.1f}%"):
+                            ps["market_drawdown_level"] = 0
+                            ps["market_drawdown_date"] = ""
                             ps["market_reduced"] = False
 
             self._update_prev_macd()
