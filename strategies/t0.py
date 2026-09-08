@@ -9,7 +9,8 @@ T0Strategy — 做T配对策略
 """
 
 from strategies.base import BaseStrategy
-from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time, TOTAL_FUND
+from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time
+from position_info import TOTAL_FUND
 from position_info import MAX_POSITION_RATIO
 from money_manager import calc_t0_pair_price
 

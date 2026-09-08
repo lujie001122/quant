@@ -26,8 +26,7 @@ from typing import Tuple
 
 # 从 position_info 导入统一常量
 from position_info import (
-    TOTAL_FUND, MAX_POSITION_RATIO, MAX_DAILY_LOSS_PCT,
-    DEAD_RATIO, ACTIVE_RATIO,
+    TOTAL_FUND, MAX_POSITION_RATIO,
 )
 
 # 从 config.yaml 读取日亏损限额
@@ -287,17 +286,6 @@ class RiskManager:
             return 0.0
         return pos.shares * price / total_fund
 
-    @staticmethod
-    def can_open_new_position(pos, price, total_fund=None):
-        """是否可以新开仓位
-
-        检查: 仓位上限
-        """
-        capped, ratio = RiskManager.is_position_capped(pos, price, total_fund)
-        if capped:
-            return False, f"仓位已达{ratio*100:.0f}%上限50%"
-        return True, ""
-
     # ═══════════════════════════════════════════════
     # 3. 日亏损限额检查
     # ═══════════════════════════════════════════════
@@ -344,11 +332,6 @@ class RiskManager:
 
         return True, "通过"
 
-    @staticmethod
-    def is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct=None, prev_close=None):
-        """检查当日是否超过日亏损限额（极限方案C: 已取消，始终返回 False）"""
-        return False, 0.0, ""
-
 
 # ═══════════════════════════════════════════════
 # 模块级快捷函数（向后兼容）
@@ -388,8 +371,3 @@ def is_position_capped(pos, price, total_fund=None):
 def get_position_ratio(pos, price, total_fund=None):
     """获取当前持仓占比（快捷方式）"""
     return RiskManager.get_position_ratio(pos, price, total_fund)
-
-
-def is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct=None):
-    """检查日亏损限额（快捷方式）"""
-    return RiskManager.is_daily_loss_limit_hit(positions, realtime, today_str, max_loss_pct)

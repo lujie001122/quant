@@ -88,24 +88,9 @@ class MoneyManager:
         shares = int(pos.shares * ratio / round_lot) * round_lot
         return max(shares, MIN_SHARES)
 
-    @staticmethod
-    def calc_position_ratio(pos, price, total_fund=None):
-        """计算当前持仓占比 (0-1)"""
-        if total_fund is None:
-            total_fund = TOTAL_FUND
-        if not pos.has_position or total_fund <= 0:
-            return 0.0
-        return pos.shares * price / total_fund
-
     # ══════════════════════════════════════════════
     # 2. 分批建仓调度
     # ══════════════════════════════════════════════
-
-    @staticmethod
-    def get_initial_entry_ratio(pos):
-        """获取首笔建仓比例 (根据通道)"""
-        # 6通道统一返回首笔建仓比例，build_phase逻辑由策略层处理
-        return _CONF.get("entry", {}).get("confirm_entry_ratio", 1.0) * 0.30
 
     @staticmethod
     def get_build_ratio(pos):
@@ -226,13 +211,6 @@ class MoneyManager:
             # 做T卖出：先卖后买，配对的买入价需低于卖出价
             return round(current_price - _CONF.get("t0", {}).get("min_spread", 150) / shares, 3)
 
-    @staticmethod
-    def is_t0_pair_viable(current_price, pair_price, shares, min_spread=None):
-        """检查做T配对挂单是否有经济意义 (价差*量>200元)"""
-        if min_spread is None:
-            min_spread = _CONF.get("t0", {}).get("min_spread", 150)
-        spread = abs(pair_price - current_price) * shares
-        return spread > min_spread, round(spread, 2)
 
 
 # ═══════════════════════════════════════════════

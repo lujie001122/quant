@@ -163,7 +163,7 @@ market_data.py          行情获取(腾讯+新浪+akshare)+指标计算(RSI/MAC
         ▼
 signal_generator.py     信号生成：遍历ETF池，调rsi_macd/t0/grid生成买卖信号
         │                      集中模式下：非监控池ETF只允许卖出
-        ├──▶ strategies/rsi_macd.py   建仓(6通道) + 止损(3级) + 止盈
+        ├──▶ strategies/rsi_macd.py   建仓(4通道) + 做T评分 + 防御检查
         ├──▶ strategies/t0.py         做T(5分钟MACD, RSI<50/>50)
         └──▶ strategies/grid.py       网格(倒金字塔5档买/3档卖)
         │
@@ -232,16 +232,14 @@ score = 20日涨幅×0.4 + MA20斜率×0.4 + ATR归一化(ATR/price)×0.2
 3. 对新进入TOP3的ETF按信号建仓
 4. 止损/止盈每天检查，不受重平衡周期影响
 
-### 建仓（6通道，任一满足即触发）
+### 建仓（4通道，任一满足即触发）
 
 | 通道 | 条件 |
 |------|------|
 | 1 | RSI≤55 + MACD金叉 → 建仓30%(集中模式50%) |
-| 2 | MACD金叉/绿柱缩短 + RSI 35-55 → 分批建仓 |
+| 2 | 空仓>N天 + MACD红柱 → 趋势跟踪 |
 | 3 | 突破10日高点 + MACD金叉 → 突破入场 |
-| 4 | 多头排列(MA5>MA10>MA20) + 回踩MA20 → 趋势跟踪 |
-| 5 | RSI≤55 + MACD金叉 + 空仓N天 → 试探建仓 |
-| 6 | RSI<30极值反弹 → 抄底 |
+| 4 | MACD金叉/红柱放大 + RSI>40 + 站MA5 → 分批建仓 |
 
 ### 止损（分级，由risk_manager统一管理）
 

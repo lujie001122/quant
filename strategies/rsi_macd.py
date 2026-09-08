@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-RSIMACDStrategy — RSI+MACD建仓止损策略
+RSIMACDStrategy — RSI+MACD建仓策略
 
 从 strategy.py 拆分:
-  - evaluate_stop: 分级止损/保本止盈/硬止损/趋势止盈/移动止盈
-  - evaluate_entry: 6通道建仓判定
-  - t0_buy_score / t0_sell_score: 做T评分(从 strategy 移至此, 供 T0Strategy 调用)
-  - resolve_stop_signal: 止损信号解析
-  - _compute_stop_loss_price / _compute_breakeven_price / _compute_trailing_stop: 止损计算辅助
+  - evaluate_entry: 4通道建仓判定 + 补仓/确认加仓
+  - t0_buy_score / t0_sell_score: 做T评分(供 T0Strategy 调用)
+  - check_defense: 防御标弱势检查
+  - is_auction_time: 集合竞价时段判定
+
+止损逻辑已统一到 risk_manager.py, 此文件不再包含止损相关代码。
 """
 
 from strategies.base import BaseStrategy
@@ -90,50 +91,6 @@ def t0_sell_score(rsi_5min, macd_5min_status, vol_ratio_5min):
     return score
 
 
-# ═══════════════════════════════════════════════
-# 止损计算辅助
-# ═══════════════════════════════════════════════
-
-def _compute_stop_loss_price(avg_cost, peak_price, avg_pct=None, hard_pct=None):
-    """计算止损价格(极限方案C: 放宽)"""
-    if avg_pct is None: avg_pct = _CONF.get("stop_loss", {}).get("tier2_pct", 0.20)
-    if hard_pct is None: hard_pct = _CONF.get("stop_loss", {}).get("hard_stop_pct", 0.25)
-    avg_stop = avg_cost * (1 - avg_pct) if avg_cost > 0 else 0.0
-    hard_stop = peak_price * (1 - hard_pct) if peak_price > 0 else 0.0
-    return avg_stop, hard_stop
-
-
-def _compute_breakeven_price(avg_cost, margin=None):
-    """计算保本价格: 成本 + margin"""
-    if margin is None: margin = _CONF.get("stop_loss", {}).get("breakeven_margin", 0.02)
-    return avg_cost * (1 + margin) if avg_cost > 0 else 0.0
-
-
-def _compute_trailing_stop(avg_cost, peak_price, reached_8pct, reached_15pct):
-    """计算移动止盈价格(从config读取trail_pct)"""
-    trail_pct = _CONF.get('trail_pct', 0.12)
-    concentrated = _CONF.get('concentrated_mode', False)
-    if concentrated:
-        if reached_15pct and peak_price > 0:
-            return peak_price * (1 - trail_pct)
-        if reached_8pct:
-            return avg_cost * 1.05
-    else:
-        if reached_15pct and peak_price > 0:
-            return peak_price * (1 - trail_pct)
-        if reached_8pct:
-            return avg_cost * 1.05
-    return 0.0
-
-
-# ═══════════════════════════════════════════════
-# 通用辅助
-# ═══════════════════════════════════════════════
-
-# _parse_position_ratio / _get_position_shares 已统一到 state_center
-# 统一使用 state_center.parse_position_ratio / state_center.get_position_shares
-
-
 def check_defense(DEFENSE_CODE, all_tech, realtime):
     """检查防御标的(515080)是否弱势
     返回 True 表示全市场弱势，应暂停建仓
@@ -150,12 +107,8 @@ def check_defense(DEFENSE_CODE, all_tech, realtime):
     return False
 
 
-# ═══════════════════════════════════════════════
-# RSIMACDStrategy
-# ═══════════════════════════════════════════════
-
 class RSIMACDStrategy(BaseStrategy):
-    """RSI+MACD 建仓/止损策略"""
+    """RSI+MACD 建仓策略"""
 
     @staticmethod
     def _update_entry_cost(pos, price, ratio, code):
@@ -167,26 +120,10 @@ class RSIMACDStrategy(BaseStrategy):
         elif shares >= 100:
             pos.entry_avg_cost = price
 
-    def evaluate_stop(self, pos, t, price, today_str):
-        """评估止盈止损信号（统一入口：委托给 RiskManager，避免逻辑重复）
-
-        返回:
-          stop_actions: [(signal_name, signal_type), ...]
-            signal_type: "breakeven_stop" | "avg_stop_20pct" | "liquidate_60pct" |
-                         "liquidate_trailing" | "hard_stop_25pct" |
-                         "reduce_30pct_all" | "liquidate_trend" |
-                         "trend_profit_sell" | "sell_active_5pct"
-        """
-        from risk_manager import check_stop_loss as _rm_check_stop
-        return _rm_check_stop(pos, t, price, today_str)
-
-    def resolve_stop_signal(self, pos, stop_actions):
-        """从 stop_actions 列表解析最终止盈止损信号文本（统一入口：委托给 RiskManager）"""
-        from risk_manager import resolve_stop_signal as _rm_resolve_stop
-        return _rm_resolve_stop(pos, stop_actions)
-
     def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
-        """6通道建仓判定 + 补仓/确认加仓
+        """4通道建仓判定 + 补仓/确认加仓
+
+        通道: 1.RSI抄底 2.趋势跟踪 3.突破入场 4.分批建仓
 
         返回:
           (action, position_ratio, trade_type, reason) 或 None
@@ -209,7 +146,6 @@ class RSIMACDStrategy(BaseStrategy):
             return ("持有(观望)", "0%", None, "止盈期不新开(已有仓位触发硬止盈)")
 
         rsi_ok = t["rsi"] is not None and t["rsi"] > _CONF.get("entry", {}).get("rsi_min", 40)
-        rsi_minimal = t["rsi"] is not None and t["rsi"] > _CONF.get("entry", {}).get("rsi_minimal", 30)
         # 多头排列: MA5>MA20 才允许建仓（放宽：不再要求MA10）
         bullish_align = t["ma5"] and t["ma20"] and t["ma5"] > t["ma20"]
 
@@ -243,18 +179,6 @@ class RSIMACDStrategy(BaseStrategy):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(分批1)")
                 self._update_entry_cost(pos, price, 0.30, code)
                 return (action, position_ratio, trade_type, "分批建仓1:首笔30%试探(MACD健康+RSI满足+站上MA5)")
-
-            # 通道5: Test抄底 (RSI<35+绿柱缩短+站MA5) → 30%(极限方案C: 去掉MA20过滤)
-            if t["rsi"] is not None and t["rsi"] < _CONF.get("entry", {}).get("test_cap_rsi", 35) and t["macd_status"] == "绿柱缩短" and t["ma5"] and price > t["ma5"] and pos.prev_macd_status == "绿柱缩短" and pos.can_buy_today(today_str, atr_pct):
-                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(Test抄底)")
-                self._update_entry_cost(pos, price, 0.30, code)
-                return (action, position_ratio, trade_type, f"Test抄底:RSI={t['rsi']:.1f}+绿柱缩短+站MA5")
-
-            # 通道6: 试探建仓 (绿柱缩短/震荡+RSI>35+站MA5+站MA20) → 30%
-            if t["macd_status"] in ["绿柱缩短", "震荡"] and t["rsi"] is not None and t["rsi"] > _CONF.get("entry", {}).get("test_cap_rsi", 35) and price > t["ma5"] and t["ma20"] and price > t["ma20"] and pos.can_buy_today(today_str, atr_pct):
-                action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(试探)")
-                self._update_entry_cost(pos, price, 0.30, code)
-                return (action, position_ratio, trade_type, f"试探建仓:30%底仓(MACD{t['macd_status']}+RSI{t['rsi']}+站MA5+站MA20)")
 
             return ("持有(观望)", "0%", None, f"建仓条件未满足(MACD{t['macd_status']},RSI{t['rsi']})")
 
