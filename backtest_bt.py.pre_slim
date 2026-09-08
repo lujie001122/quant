@@ -6,7 +6,7 @@ backtrader 回测引擎 v3: 9 ETF 共享资金池量化策略
 核心:
   - 9只ETF共享一个broker资金池(backtrader天然支持)
   - 每只ETF资金=总资金/9, 按比例下单
-  - 4通道入场 + 分级止损 + 移动止盈 + 趋势止盈
+  - 6通道入场 + 分级止损 + 移动止盈 + 趋势止盈 + 破MA5卖活动仓
   - Wilder RSI / 自定义MACD / AO动量(与实盘一致)
 
 ═══════════════════════════════════════════════════════════════════
@@ -53,10 +53,11 @@ with open(_CONFIG_PATH) as f:
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
 from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
-# 网格策略已删除(集中模式仓位已满，网格几乎不触发)
+from strategies.grid import GridStrategy
 from risk_manager import check_stop_loss as _rm_check_stop_loss, resolve_stop_signal as _rm_resolve_stop
 
 _rsi_macd_strategy = RSIMACDStrategy()
+_grid_strategy = GridStrategy()
 
 
 def evaluate_stop(pos, t, price, today_str):
@@ -329,8 +330,10 @@ class ETFStrategy(bt.Strategy):
 
         # 每ETF状态
         self.ps = {}
+        _etfs_config = get_etfs_config()
         for d in self.datas:
             n = d._name
+            _base_spacing = _etfs_config.get(n, {}).get("base_spacing", 0.025)
             self.ps[n] = {
                 "base": 0.0, "first_price": 0.0, "build_phase": 0,
                 "bought_today": False, "stop_level": 0,
@@ -348,6 +351,14 @@ class ETFStrategy(bt.Strategy):
                 "ma5_sell_cooling_until": "",  # 破MA5卖活动仓冷却截止日期
                 "breakeven_activated": False,  # 浮盈≥10%激活保本线
                 "entry_avg_cost": 0.0,  # 建仓锁定均价(止损用)
+                # 网格策略状态
+                "grid_base_price": 0.0,  # 网格基准价
+                "grid_frozen": False,  # 网格冻结
+                "last_grid_trigger": None,  # 上次网格触发
+                "last_reset_date": "",  # 上次网格重置日期
+                "grid_entry_avg": 0.0,  # 网格买入均价(独立止损用)
+                "grid_entry_shares": 0,  # 网格买入总股数(加权平均用)
+                "base_spacing": _base_spacing,  # ETF基础网格间距
                 "market_reduced": False,  # 大盘自适应减仓标记
             }
         # 全仓轮动状态
@@ -494,6 +505,10 @@ class ETFStrategy(bt.Strategy):
         ps["ma5_sell_today"] = 0; ps["ma5_sell_cooling_until"] = ""
         ps["breakeven_activated"] = False
         ps["entry_avg_cost"] = 0.0
+        ps["grid_base_price"] = 0.0; ps["grid_frozen"] = False
+        ps["last_grid_trigger"] = None; ps["last_reset_date"] = ""
+        ps["grid_entry_avg"] = 0.0
+        ps["grid_entry_shares"] = 0
         ps["confirm_batch_count"] = 0; ps["confirm_batch_date"] = ""
         ps["pyramid_count"] = 0  # 重置金字塔加仓次数
         ps["market_reduced"] = False  # 重置大盘自适应减仓标记
@@ -1064,10 +1079,15 @@ class ETFStrategy(bt.Strategy):
                             self._init_on_entry(ps, price)
                             entered = True
 
-                    # 通道3: 趋势入场(合并原突破入场+分批建仓)
-                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40:
-                        reason_extra = f" 10日高={h10:.3f}" if (h10 is not None and price > h10) else ""
-                        if self._buy(d, pct, f"每周轮动趋势入场{pct*100:.0f}% MACD{ms}{reason_extra}"):
+                    # 通道3: 突破入场
+                    if not entered and h10 is not None and price > h10 and ms == "金叉":
+                        if self._buy(d, pct, f"每周轮动突破入场{pct*100:.0f}% 10日高={h10:.3f}"):
+                            self._init_on_entry(ps, price)
+                            entered = True
+
+                    # 通道4: 分批建仓
+                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
+                        if self._buy(d, pct, f"每周轮动分批建仓{pct*100:.0f}% MACD{ms}"):
                             self._init_on_entry(ps, price)
                             entered = True
 
@@ -1494,10 +1514,12 @@ class ETFStrategy(bt.Strategy):
             self.daily_values.append((date_str, total, self.broker.getcash()))
             return  # 轮动模式不执行其他逻辑
 
-        # 每日计数器重置: 趋势止盈的当日计数
+        # 每日计数器重置: 趋势止盈和破MA5卖活动仓的当日计数
         for ps in self.ps.values():
             ps["trend_sell_today"] = 0
             ps["ma5_sell_today"] = 0
+            # B3: 跨天重置网格触发档位
+            ps["last_grid_trigger"] = None
 
         for ps in self.ps.values():
             ps["bought_today"] = False
@@ -1553,6 +1575,14 @@ class ETFStrategy(bt.Strategy):
                 # ── 极限方案C: 取消保本止盈 ──
                 # (保本止盈已移除，保留注释以标记)
 
+                # 网格买入独立止损-10%: 网格买入均价跌10%止损
+                if ps.get("grid_entry_avg", 0) > 0 and price <= ps["grid_entry_avg"] * 0.90:
+                    grid_shares = int(shares * 0.20 / 100) * 100  # 卖20%仓位
+                    if grid_shares >= 100:
+                        if self._sell(d, 20, f"网格止损-10% grid_entry={ps['grid_entry_avg']:.3f}"):
+                            ps["grid_entry_avg"] = 0.0  # 止损后重置
+                            ps["peak_price"] = price
+
                 # 更新移动止盈线 (backtrader用avg而非entry_cost计算盈利比例)
                 trail_pct_val = self.p.trail_pct
                 # P0修复: e1模式激活线5%/锁仓线12%, e2模式10%/18%
@@ -1582,6 +1612,76 @@ class ETFStrategy(bt.Strategy):
                     continue
                 if name in self._order_pending:
                     continue
+
+                # ═══ 网格策略 (对齐实盘) ═══
+                # 网格基准价初始化
+                if ps["grid_base_price"] == 0.0 and ps["base"] > 0:
+                    ps["grid_base_price"] = ps["base"]
+                elif ps["grid_base_price"] == 0.0 and ps["first_price"] > 0:
+                    ps["grid_base_price"] = ps["first_price"]
+
+                # 网格解冻: 站上MA5解冻
+                if ps["grid_frozen"] and ma5_v and price > ma5_v:
+                    ps["grid_frozen"] = False
+
+                if ps["grid_base_price"] > 0:
+                    # 计算动态间距 (使用ETF的base_spacing，与实盘dynamic_spacing一致)
+                    atr_pct_grid = atr_val / price if atr_val and price > 0 else 0.025
+                    base_sp = ps.get("base_spacing", 0.025)
+                    spacing = round(max(base_sp * 0.5, min(base_sp * 2.0, 0.6 * base_sp + 0.4 * atr_pct_grid)), 4)
+
+                    # 网格重置检查
+                    upper_limit = ps["grid_base_price"] * (1 + spacing * 4)
+                    lower_limit = ps["grid_base_price"] * (1 - spacing * 6)
+                    if price > upper_limit and ps["last_reset_date"] != date_str:
+                        ps["grid_base_price"] = round(price, 3)
+                        ps["last_reset_date"] = date_str
+                    elif price < lower_limit and ps["last_reset_date"] != date_str:
+                        ps["grid_base_price"] = round(price, 3)
+                        ps["last_reset_date"] = date_str
+
+                    # 网格信号评估
+                    grid_signal, grid_weight = _grid_strategy.evaluate_grid_signals(
+                        price, ps["grid_base_price"], spacing, ps["grid_frozen"])
+
+                    # 网格买入
+                    if grid_signal != "无" and "买入" in grid_signal and not ps["grid_frozen"] and name not in self._order_pending:
+                        grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                        if ps["last_grid_trigger"] != grid_key:
+                            ps["last_grid_trigger"] = grid_key
+                            pct = grid_weight  # 网格权重 (0.20-0.40)
+                            if self._buy(d, pct, f"网格{grid_signal}"):
+                                ps["bought_today"] = True
+                                # 更新网格买入均价（加权平均）
+                                if ps["grid_entry_avg"] == 0.0:
+                                    ps["grid_entry_avg"] = price
+                                    ps["grid_entry_shares"] = int(self.p.fund_per_etf * pct / price / 100) * 100
+                                else:
+                                    old_avg = ps["grid_entry_avg"]
+                                    old_shares = ps["grid_entry_shares"]
+                                    new_shares = int(self.p.fund_per_etf * pct / price / 100) * 100
+                                    ps["grid_entry_avg"] = (old_avg * old_shares + price * new_shares) / (old_shares + new_shares)
+                                    ps["grid_entry_shares"] += new_shares
+                                if "熔断" in grid_signal:
+                                    ps["grid_frozen"] = True
+                            # B3: 不立即重置，跨天重置
+
+                    # 网格卖出 (趋势止盈触发当天不触发网格卖出)
+                    if grid_signal != "无" and "卖出" in grid_signal and name not in self._order_pending:
+                        # 趋势止盈互斥: 当天趋势止盈已触发则跳过网格卖出
+                        if ps["trend_sell_today"] > 0:
+                            continue
+                        grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
+                        if ps["last_grid_trigger"] != grid_key:
+                            ps["last_grid_trigger"] = grid_key
+                            # 卖活动仓
+                            active_shares = int(shares * ACTIVE_RATIO)
+                            if active_shares >= 100:
+                                sell_shares = int(active_shares * 0.20 / 100) * 100
+                                if sell_shares >= 100:
+                                    if self._sell(d, 20, f"网格{grid_signal}"):
+                                        ps["grid_base_price"] = round(price, 3)  # 上移基准价
+                            # B3: 不立即重置，跨天重置
 
                 # ═══ 趋势加码逻辑 (金字塔加仓) ═══
                 if self.p.pyramid_mode:
