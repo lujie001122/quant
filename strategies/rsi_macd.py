@@ -120,10 +120,13 @@ class RSIMACDStrategy(BaseStrategy):
         elif shares >= 100:
             pos.entry_avg_cost = price
 
-    def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
+    def evaluate_entry(self, pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, skip_profit_filter=False):
         """4通道建仓判定 + 补仓/确认加仓
 
         通道: 1.RSI抄底 2.趋势跟踪 3.突破入场 4.分批建仓
+
+        参数:
+          skip_profit_filter: 跳过"止盈期不新开"过滤器(集中/轮动模式使用，因多持仓常触发)
 
         返回:
           (action, position_ratio, trade_type, reason) 或 None
@@ -140,7 +143,8 @@ class RSIMACDStrategy(BaseStrategy):
             return ("持有(观望)", "0%", None, f"ATR异常{atr_pct*100:.0f}%,疑似除权,暂停建仓")
 
         # 过滤器2: 止盈期不新开(任何持仓盈利>30%时禁止新开)
-        if any(p.has_position and p.base_price and r2["price"] > p.base_price * 1.30
+        # 集中/轮动模式跳过此过滤器(多持仓常触发，不适合动量轮动场景)
+        if not skip_profit_filter and any(p.has_position and p.base_price and r2["price"] > p.base_price * 1.30
                for c2, p in positions.items() if c2 != code
                for r2 in [realtime.get(c2, {})] if r2):
             return ("持有(观望)", "0%", None, "止盈期不新开(已有仓位触发硬止盈)")

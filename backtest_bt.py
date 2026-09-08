@@ -73,8 +73,8 @@ def check_stop_loss(pos, t, price, today_str):
     return _rm_check_stop_loss(pos, t, price, today_str)
 
 
-def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak):
-    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak)
+def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, skip_profit_filter=False):
+    return _rsi_macd_strategy.evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, skip_profit_filter)
 
 # ═══════════════════════════════════════════════
 #  Config (从 config.yaml 同步)
@@ -691,38 +691,7 @@ class ETFStrategy(bt.Strategy):
                     if price > ps["peak_price"]:
                         ps["peak_price"] = price
 
-                    # 均价止损: 用锁定建仓均价
-                    entry_cost = ps.get("entry_avg_cost", 0) or avg
-                    if entry_cost > 0:
-                        pos_ratio = shares * price / TOTAL_FUND if price > 0 else 0
-                        _sl = CONF.get("stop_loss", {})
-                        if pos_ratio > _sl.get("tier1_ratio", 0.80):
-                            stop_pct = _sl.get("tier1_pct", 0.15)
-                        elif pos_ratio >= _sl.get("tier2_ratio", 0.50):
-                            stop_pct = _sl.get("tier2_pct", 0.20)
-                        else:
-                            stop_pct = _sl.get("tier3_pct", 0.25)
-                        # P1-1: 浮盈止损上移 — 从config读取阈值
-                        float_profit_pct = (price - entry_cost) / entry_cost if entry_cost > 0 else 0
-                        if float_profit_pct > _sl.get("float_profit_trigger2", 0.10):
-                            adjusted_stop = entry_cost * (1 + _sl.get("float_profit_stop2", 0.05))
-                        elif float_profit_pct > _sl.get("float_profit_trigger1", 0.05):
-                            adjusted_stop = entry_cost * (1 + _sl.get("float_profit_stop1", 0.0))
-                        else:
-                            adjusted_stop = entry_cost * (1 - stop_pct)
-                        if price <= adjusted_stop:
-                            if float_profit_pct > 0.05:
-                                self._close(d, f"集中金字塔浮盈止损上移 浮盈{float_profit_pct*100:.1f}% entry={entry_cost:.3f} stop={adjusted_stop:.3f}")
-                            else:
-                                self._close(d, f"集中金字塔均价止损{stop_pct*100:.0f}% entry={entry_cost:.3f}")
-                            self._full_liquidate_state(ps, date_str)
-                            continue
-
-                    # 硬止损25%
-                    if ps["peak_price"] > 0 and price < ps["peak_price"] * (1 - CONF.get("stop_loss", {}).get("hard_stop_pct", 0.25)):
-                        self._close(d, f"硬止损{CONF.get('stop_loss', {}).get('hard_stop_pct', 0.25)*100:.0f}% peak={ps['peak_price']:.3f}")
-                        self._full_liquidate_state(ps, date_str)
-                        continue
+                    # 均价止损+硬止损25%已移除, 统一由risk_manager.check_stop_loss处理
 
                     # 移动止盈（从config读取trail_pct）
                     atr_pct_cp = (atr_val / price * 100) if atr_val and price > 0 else 0
@@ -732,10 +701,19 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
                         continue
 
+                    # ── 调用实盘 risk_manager.check_stop_loss ──
+                    pos_cp, t_cp = self._build_pos_and_tech(d, name, date_str)
+                    stop_actions = check_stop_loss(pos_cp, t_cp, price, date_str)
+                    self._sync_pos_to_ps(name, pos_cp, date_str)
+                    liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
+                    if liquidated:
+                        continue
+
                     # ═══ 金字塔加码逻辑 ═══
                     if "pyramid_count" not in ps:
                         ps["pyramid_count"] = 0
                     
+                    entry_cost = ps.get("entry_avg_cost", 0) or avg
 
                     if entry_cost > 0 and price > entry_cost:
                         float_profit = (price - entry_cost) / entry_cost
@@ -800,30 +778,52 @@ class ETFStrategy(bt.Strategy):
                     if len(d.close) >= 11:
                         h10 = max(d.close.get(size=10, ago=1))
 
-                    entered = False
+                    # ── 调用实盘策略模块 evaluate_entry (统一入场管线) ──
+                    _realtime_cp = {dd._name: {"price": dd.close[0]} for dd in self.datas}
+                    _positions_cp = {}
+                    for dd in self.datas:
+                        nn = dd._name
+                        _pp_cp, _ = self._build_pos_and_tech(dd, nn, date_str)
+                        _positions_cp[nn] = _pp_cp
+                    _all_klines_cp = {}
+                    for dd in self.datas:
+                        nn = dd._name
+                        n_bars = min(21, len(dd.close))
+                        closes_cp = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
+                        _all_klines_cp[nn] = [{"close": c} for c in closes_cp]
 
-                    # 通道1: RSI抄底 → 50%建仓
-                    if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
-                        if self._buy(d, 0.50, f"集中金字塔RSI抄底50% RSI={rsi_val:.1f}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
+                    atr_pct_cp_entry = atr_val / price if atr_val and price > 0 else 0
+                    # 防御盾过滤: 只拦同板块
+                    defense_weak_cp = False
+                    if DEFENSE_CODE:
+                        for dd in self.datas:
+                            if dd._name == DEFENSE_CODE:
+                                dd_price = dd.close[0]
+                                all_tech_d = {DEFENSE_CODE: {
+                                    "ma20": self.ma20[DEFENSE_CODE][0],
+                                    "dif": self.macd[DEFENSE_CODE].dif[0],
+                                    "macd_status": MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡"),
+                                }}
+                                realtime_d = {DEFENSE_CODE: {"price": dd_price}}
+                                defense_weak_cp = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
+                                if defense_weak_cp:
+                                    defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
+                                    name_sector = self.SECTOR_MAP.get(name, "")
+                                    if defense_sector and name_sector == defense_sector:
+                                        defense_weak_cp = True
+                                    else:
+                                        defense_weak_cp = False
+                                break
 
-                    # 通道2: 趋势跟踪 → 50%建仓
-                    if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                        if self._buy(d, 0.50, f"集中金字塔趋势跟踪50% 空仓{ps['empty_days']}d"):
-                            self._init_on_entry(ps, price)
-                            entered = True
-
-                    # 通道3: 突破入场 → 50%建仓
-                    if not entered and h10 is not None and price > h10 and ms == "金叉":
-                        if self._buy(d, 0.50, f"集中金字塔突破入场50% 10日高={h10:.3f}"):
-                            self._init_on_entry(ps, price)
-                            entered = True
-
-                    # 通道4: 分批建仓 → 50%建仓
-                    if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
-                        if self._buy(d, 0.50, f"集中金字塔分批建仓50% MACD{ms}"):
-                            self._init_on_entry(ps, price)
+                    pos_cp_e, t_cp_e = self._build_pos_and_tech(d, name, date_str)
+                    entry_result = evaluate_entry(
+                        pos_cp_e, t_cp_e, price, _realtime_cp, _positions_cp,
+                        _all_klines_cp, name, date_str, atr_pct_cp_entry, defense_weak_cp,
+                        skip_profit_filter=True  # 金字塔模式跳过"止盈期不新开"
+                    )
+                    self._sync_pos_to_ps(name, pos_cp_e, date_str)
+                    if entry_result and entry_result[0] == "买入" and entry_result[2] == "buy":
+                        if self._execute_entry_result(d, name, entry_result, date_str, init_pct=0.50):
                             entered = True
 
             # 更新prev_macd_status
@@ -1086,31 +1086,61 @@ class ETFStrategy(bt.Strategy):
 
                         entered = False
 
-                        # 方案A: 趋势建仓通道 (--trend-entry)  P1修复: 加RSI<65过滤防追高
+                        # 方案A: 趋势建仓通道 (--trend-entry) — 保留轮动模式专用快速建仓
                         if not entered and self.p.trend_entry:
                             if rsi_val is not None and rsi_val < 65:
                                 if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
                                     self._init_on_entry(ps, price)
                                     entered = True
 
-                        # 通道1: RSI抄底
-                        if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
-                            if self._buy(d, pct, f"每周轮动RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                        # ── 调用实盘策略模块 evaluate_entry (统一入场管线) ──
+                        if not entered:
+                            _realtime = {dd._name: {"price": dd.close[0]} for dd in self.datas}
+                            _positions = {}
+                            for dd in self.datas:
+                                nn = dd._name
+                                _pp, _ = self._build_pos_and_tech(dd, nn, date_str)
+                                _positions[nn] = _pp
+                            _all_klines = {}
+                            for dd in self.datas:
+                                nn = dd._name
+                                n_bars = min(21, len(dd.close))
+                                closes = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
+                                _all_klines[nn] = [{"close": c} for c in closes]
 
-                        # 通道2: 趋势跟踪
-                        if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                            if self._buy(d, pct, f"每周轮动趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                            atr_pct_wr = atr_val / price if atr_val and price > 0 else 0
+                            # 防御盾过滤: 只拦同板块
+                            defense_weak_wr = False
+                            if DEFENSE_CODE:
+                                for dd in self.datas:
+                                    if dd._name == DEFENSE_CODE:
+                                        dd_price = dd.close[0]
+                                        all_tech_d = {DEFENSE_CODE: {
+                                            "ma20": self.ma20[DEFENSE_CODE][0],
+                                            "dif": self.macd[DEFENSE_CODE].dif[0],
+                                            "macd_status": MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡"),
+                                        }}
+                                        realtime_d = {DEFENSE_CODE: {"price": dd_price}}
+                                        defense_weak_wr = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
+                                        if defense_weak_wr:
+                                            defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
+                                            name_sector = self.SECTOR_MAP.get(name, "")
+                                            if defense_sector and name_sector == defense_sector:
+                                                defense_weak_wr = True
+                                            else:
+                                                defense_weak_wr = False
+                                        break
 
-                        # 通道3: 趋势入场(合并原突破入场+分批建仓)
-                        if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40:
-                            reason_extra = f" 10日高={h10:.3f}" if (h10 is not None and price > h10) else ""
-                            if self._buy(d, pct, f"每周轮动趋势入场{pct*100:.0f}% MACD{ms}{reason_extra}"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                            pos_wr, t_wr = self._build_pos_and_tech(d, name, date_str)
+                            entry_result = evaluate_entry(
+                                pos_wr, t_wr, price, _realtime, _positions,
+                                _all_klines, name, date_str, atr_pct_wr, defense_weak_wr,
+                                skip_profit_filter=True  # 轮动模式跳过"止盈期不新开"
+                            )
+                            self._sync_pos_to_ps(name, pos_wr, date_str)
+                            if entry_result and entry_result[0] == "买入" and entry_result[2] == "buy":
+                                if self._execute_entry_result(d, name, entry_result, date_str, init_pct=self.p.init_pct):
+                                    entered = True
 
             self._update_prev_macd()
             return
@@ -1167,6 +1197,14 @@ class ETFStrategy(bt.Strategy):
                 if should_close:
                     self._close(d, trail_reason)
                     self._full_liquidate_state(ps, date_str)
+                    continue
+
+                # ── 调用实盘 risk_manager.check_stop_loss ──
+                pos, t = self._build_pos_and_tech(d, name, date_str)
+                stop_actions = check_stop_loss(pos, t, price, date_str)
+                self._sync_pos_to_ps(name, pos, date_str)
+                liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
+                if liquidated:
                     continue
 
             # ── 重平衡日: 基于排名换仓 (方向A: --rebalance / 方向E: --confirm-days) ──
@@ -1243,37 +1281,61 @@ class ETFStrategy(bt.Strategy):
 
                         entered = False
 
-                        # 方案A: 趋势建仓通道 (--trend-entry)  P1修复: 加RSI<65过滤防追高
-                        # TOP3 C2动量 + 多头排列 + 空仓 + RSI<65 → 直接50%建仓
+                        # 方案A: 趋势建仓通道 (--trend-entry) — 保留集中模式专用快速建仓
                         if not entered and self.p.trend_entry:
                             if rsi_val is not None and rsi_val < 65:
                                 if self._buy(d, 0.50, f"集中趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
                                     self._init_on_entry(ps, price)
                                     entered = True
 
-                        # 通道1: RSI抄底
-                        if not entered and rsi_val is not None and rsi_val <= self.p.rsi_entry_max and ms == "金叉":
-                            if self._buy(d, pct, f"集中RSI抄底{pct*100:.0f}% RSI={rsi_val:.1f}"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                        # ── 调用实盘策略模块 evaluate_entry (统一入场管线) ──
+                        if not entered:
+                            _realtime = {dd._name: {"price": dd.close[0]} for dd in self.datas}
+                            _positions = {}
+                            for dd in self.datas:
+                                nn = dd._name
+                                _pp, _ = self._build_pos_and_tech(dd, nn, date_str)
+                                _positions[nn] = _pp
+                            _all_klines = {}
+                            for dd in self.datas:
+                                nn = dd._name
+                                n_bars = min(21, len(dd.close))
+                                closes = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
+                                _all_klines[nn] = [{"close": c} for c in closes]
 
-                        # 通道2: 趋势跟踪
-                        if not entered and ps["empty_days"] > 5 and ms in ("红柱放大", "红柱缩短"):
-                            if self._buy(d, pct, f"集中趋势跟踪{pct*100:.0f}% 空仓{ps['empty_days']}d"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                            atr_pct_cm = atr_val / price if atr_val and price > 0 else 0
+                            # 防御盾过滤: 只拦同板块
+                            defense_weak_cm = False
+                            if DEFENSE_CODE:
+                                for dd in self.datas:
+                                    if dd._name == DEFENSE_CODE:
+                                        dd_price = dd.close[0]
+                                        all_tech_d = {DEFENSE_CODE: {
+                                            "ma20": self.ma20[DEFENSE_CODE][0],
+                                            "dif": self.macd[DEFENSE_CODE].dif[0],
+                                            "macd_status": MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡"),
+                                        }}
+                                        realtime_d = {DEFENSE_CODE: {"price": dd_price}}
+                                        defense_weak_cm = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
+                                        if defense_weak_cm:
+                                            defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
+                                            name_sector = self.SECTOR_MAP.get(name, "")
+                                            if defense_sector and name_sector == defense_sector:
+                                                defense_weak_cm = True
+                                            else:
+                                                defense_weak_cm = False
+                                        break
 
-                        # 通道3: 突破入场
-                        if not entered and h10 is not None and price > h10 and ms == "金叉":
-                            if self._buy(d, pct, f"集中突破入场{pct*100:.0f}% 10日高={h10:.3f}"):
-                                self._init_on_entry(ps, price)
-                                entered = True
-
-                        # 通道4: 分批建仓
-                        if not entered and ms in ("金叉", "红柱放大") and rsi_val is not None and rsi_val > 40 and price > ma5_v:
-                            if self._buy(d, pct, f"集中分批建仓{pct*100:.0f}% MACD{ms}"):
-                                self._init_on_entry(ps, price)
-                                entered = True
+                            pos_cm, t_cm = self._build_pos_and_tech(d, name, date_str)
+                            entry_result = evaluate_entry(
+                                pos_cm, t_cm, price, _realtime, _positions,
+                                _all_klines, name, date_str, atr_pct_cm, defense_weak_cm,
+                                skip_profit_filter=True  # 集中模式跳过"止盈期不新开"
+                            )
+                            self._sync_pos_to_ps(name, pos_cm, date_str)
+                            if entry_result and entry_result[0] == "买入" and entry_result[2] == "buy":
+                                if self._execute_entry_result(d, name, entry_result, date_str, init_pct=self.p.init_pct):
+                                    entered = True
 
             self._update_prev_macd()
             return
