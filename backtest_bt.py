@@ -953,20 +953,16 @@ class ETFStrategy(bt.Strategy):
             # ── 轮动日: 基于排名换仓+建仓 ──
             if is_rotation_day:
                 self._weekly_top3 = top_set
-                # 退出: 跌出effective_top_drop → 清仓 (与集中模式一致)
+                # 退出: 跌出TOP的持仓不再清仓，对齐实盘(只重置空仓状态)
                 for d in self.datas:
                     name = d._name
                     ps = self.ps[name]
-                    price = d.close[0]
                     if d.volume[0] < 0:
                         continue
                     if name in self._order_pending:
                         continue
-                    if self._has_position(d) and name not in effective_top_drop:
-                        self._close(d, f"每周轮动清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%")
-                        self._full_liquidate_state(ps, date_str)
-                    elif not self._has_position(d) and name not in top_set:
-                        # 已空仓+跌出TOP3 → 完全退出，重置状态
+                    if not self._has_position(d) and name not in top_set:
+                        # 已空仓+跌出TOP → 完全退出，重置状态
                         self._full_liquidate_state(ps, date_str)
 
                 # ── 趋势加仓: 已持仓+仍在TOP+浮盈>3%+MA5>MA20 → 追加init_pct仓位 ──
