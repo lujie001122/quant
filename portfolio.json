@@ -93,7 +93,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 56.24,
+      "prev_rsi": 56.46,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [
         "2026-08-12",
@@ -134,7 +134,7 @@
       "below_ma20_date": "2026-09-07",
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 53.1,
+      "prev_rsi": 51.24,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -172,7 +172,7 @@
       "below_ma20_date": "2026-09-03",
       "add_count": 1,
       "ma5_touch_count": 2,
-      "prev_rsi": 51.14,
+      "prev_rsi": 53.16,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -210,7 +210,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 76.54,
+      "prev_rsi": 67.94,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -248,7 +248,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 73.66,
+      "prev_rsi": 74.48,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -357,5 +357,5 @@
     "cash": 66394.61,
     "market_value": 97108.2
   },
-  "last_updated": "2026-09-09 13:01"
+  "last_updated": "2026-09-09 17:00"
 }
