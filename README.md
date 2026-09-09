@@ -8,23 +8,23 @@
 
 ```bash
 source .venv/bin/activate
-python3 backtest_bt.py --concentrated --weekly-rotation --rotation-interval 5 \
-    --trend-entry --enhanced-trend \
-    --init-pct=0.95 --top-n=6 --trail=e1 --lookback=14 \
-    --rebalance=2 --momentum=simple --stop-loss=0.06
+python3 backtest_bt.py --concentrated-pyramid --weekly-rotation --rotation-interval 5 \
+    --trend-entry --init-pct=0.50 --top-n=5 --trail=e1 \
+    --lookback=10 --momentum=simple --stop-loss=0.06
 ```
 
 ## 回测基线（2024-07-01 → 2026-06-30）
 
 | 周期 | 总收益 | 年化 | 回撤 | 夏普 |
 |------|:---:|:---:|:---:|:---:|
-| 3年 | +33.17% | +10.02% | 24.78% | 0.56 |
-| 2年 | +71.35% | +30.95% | 19.33% | 1.37 |
-| 1年 | +9.44% | +9.47% | 14.31% | 0.48 |
-| 9个月 | +10.77% | +14.72% | 13.79% | 0.72 |
-| 6个月 | +18.76% | +41.72% | 5.29% | 2.47 |
+| 3年 | +31.28% | +9.50% | 17.87% | 0.61 |
+| 2年 | +85.41% | +36.22% | 17.18% | 1.68 |
+| 1年 | +39.78% | +39.90% | 12.11% | 1.84 |
+| 9个月 | +34.46% | +48.78% | 10.32% | 2.14 |
+| 6个月 | +32.71% | +77.51% | 8.32% | 2.99 |
+| 3个月 | +9.87% | +46.47% | 0.59% | 2.86 |
 
-详细数据：`python3 backtest_bt.py --concentrated --weekly-rotation --rotation-interval 5 --trend-entry --enhanced-trend --init-pct=0.95 --top-n=6 --trail=e1 --lookback=14 --rebalance=2 --momentum=simple --stop-loss=0.06 --start=YYYY-MM-DD --end=YYYY-MM-DD`
+详细数据：`python3 backtest_bt.py --concentrated-pyramid --weekly-rotation --rotation-interval 5 --trend-entry --init-pct=0.50 --top-n=5 --trail=e1 --lookback=10 --momentum=simple --stop-loss=0.06 --start=YYYY-MM-DD --end=YYYY-MM-DD`
 
 ---
 
@@ -32,7 +32,13 @@ python3 backtest_bt.py --concentrated --weekly-rotation --rotation-interval 5 \
 
 ### 轮动
 
-每5个交易日（周轮动）从26只候选ETF中重算动量排名，选TOP6。
+每5个交易日（周轮动）从26只候选ETF中重算动量排名，选TOP5。
+
+### 金字塔加仓（concentrated-pyramid）
+
+- 浮盈>5%：追加25%仓位
+- 浮盈>10%：追加25%仓位
+- 排名跌出TOP10：清仓
 
 ### 建仓（轮动日，4通道按优先级）
 
