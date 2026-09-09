@@ -1946,6 +1946,8 @@ def main():
             init_pct = float(arg.split("=", 1)[1])
         elif arg.startswith("--top-n="):
             top_n = int(arg.split("=", 1)[1])
+        elif arg == "--top-n":
+            if i + 1 < len(args): top_n = int(args[i+1]); i += 1
         elif arg.startswith("--lookback="):
             lookback = int(arg.split("=", 1)[1])
         elif arg == "--ma60-filter":
