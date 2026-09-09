@@ -2110,7 +2110,8 @@ def main():
                         confirm_days=confirm_days,
                         trend_entry=trend_entry,
                         rsi_entry_max=rsi_entry_max,
-                        rotation_interval=rotation_interval)
+                        rotation_interval=rotation_interval,
+                        enhanced_trend=run_enhanced_trend)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)

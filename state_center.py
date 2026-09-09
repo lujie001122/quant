@@ -124,26 +124,6 @@ class StateCenter:
             self.t0_account.cash = self.t0_account.initial_cash
 
 
-def get_main_position(code: str):
-    """便捷函数：获取主策略子账户持仓"""
-    return StateCenter.get_instance().get_position(code, account="main")
-
-
-def get_t0_position(code: str):
-    """便捷函数：获取做T子账户持仓"""
-    return StateCenter.get_instance().get_position(code, account="t0")
-
-
-def get_main_cash() -> float:
-    """便捷函数：获取主策略子账户现金"""
-    return StateCenter.get_instance().get_cash(account="main")
-
-
-def get_t0_cash() -> float:
-    """便捷函数：获取做T子账户现金"""
-    return StateCenter.get_instance().get_cash(account="t0")
-
-
 # ── 路径常量 ──────────────────────────────────────────────────────────────
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _POOL_PATH = os.path.join(_DIR, "etf_pool.json")

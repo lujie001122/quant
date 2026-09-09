@@ -926,21 +926,6 @@ DEFAULT_POOL = {
     },
 }
 
-
-def load_etf_pool():
-    """加载 etf_pool.json，不存在则回退到默认5只"""
-    pool_path = os.path.join(_DIR, "etf_pool.json")
-    if os.path.exists(pool_path):
-        try:
-            with open(pool_path, "r", encoding="utf-8") as f:
-                pool = json.load(f)
-            if pool.get("etf_pool") and len(pool["etf_pool"]) >= 3:
-                return pool
-        except Exception:
-            pass
-    return DEFAULT_POOL
-
-
 # ═══════════════════════════════════════════════════════
 #  CLI
 # ═══════════════════════════════════════════════════════

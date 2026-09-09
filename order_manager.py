@@ -564,19 +564,3 @@ def cleanup_old_intent_files(keep_days: int = 3):
     return _get_om().cleanup_old_intent_files(keep_days)
 
 
-def check_pending_orders(mode: Optional[str] = None, sync_entrust: bool = False):
-    """向后兼容: 检查 pending 订单
-
-    返回: (pending_map: Dict, filled_codes: set)
-    """
-    om = _get_om()
-    pending = {}
-    filled = set()
-
-    for order in om._orders.values():
-        if order.status == "pending":
-            pending[order.order_id] = order.to_dict()
-        if order.status in ("filled", "pending", "failed"):
-            filled.add((order.code, order.action, order.direction))
-
-    return pending, filled

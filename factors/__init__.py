@@ -24,7 +24,6 @@ from factors.ao import calc_ao
 from factors.indicators import (
     calc_ma,
     calc_rsi_wilder,
-    calc_vol_ratio,
     calc_5min_indicators,
     dynamic_spacing,
 )

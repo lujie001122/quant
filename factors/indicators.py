@@ -9,7 +9,6 @@ factors/ — 指标计算因子模块
   - calc_macd: SMA-init MACD
   - calc_atr: 真实波幅均值
   - calc_ao: Awesome Oscillator
-  - calc_vol_ratio: 量比
   - calc_5min_indicators: 5分钟分时指标
   - dynamic_spacing: 动态网格间距
 """
@@ -52,15 +51,6 @@ def calc_rsi_wilder(closes: list, period: int = 14) -> Optional[float]:
     rs = avg_gain / avg_loss
     return round(100 - 100 / (1 + rs), 2)
 
-
-def calc_vol_ratio(volumes: list, period: int = 20) -> Optional[float]:
-    """量比: 当前量 / 过去N期均量"""
-    if len(volumes) < period + 1:
-        return None
-    avg_vol = sum(volumes[-(period + 1):-1]) / period
-    if avg_vol == 0:
-        return None
-    return round(volumes[-1] / avg_vol, 2)
 
 
 # ═══════════════════════════════════════════════════════

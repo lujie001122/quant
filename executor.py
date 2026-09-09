@@ -546,16 +546,6 @@ def get_default_broker() -> BaseBroker:
     return _broker
 
 
-def execute_order(order: Order) -> ExecutionResult:
-    """快捷函数: 执行订单"""
-    return get_default_broker().execute(order)
-
-
-def cancel_all_orders() -> bool:
-    """快捷函数: 全撤"""
-    return get_default_broker().cancel_all()
-
-
 # ═══════════════════════════════════════════════════════
 # 信号执行器 (P2-9: 从 signal_generator.py 迁移)
 # ═══════════════════════════════════════════════════════
