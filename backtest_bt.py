@@ -359,6 +359,7 @@ class ETFStrategy(bt.Strategy):
         # 每周轮动状态
         self._weekly_top3 = set()  # 当前TOP3 ETF代码
         self._weekly_rotation_day = 0  # 轮动日计数器
+        self._last_rotation_date = ""  # 日期守卫: 同一天不重复计数
 
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
@@ -835,15 +836,13 @@ class ETFStrategy(bt.Strategy):
         #   --rebalance, --ma60-filter, --dynamic-pct, --sector-diversify, --confirm-days,
         #   --trend-entry, --rsi-entry-max, --trail, --stop-loss) 均生效
         if self.p.weekly_rotation_mode:
-            self._weekly_rotation_day += 1
+            # 日期守卫: 同一天next()被多次调用时不重复计数
+            if date_str != self._last_rotation_date:
+                self._last_rotation_date = date_str
+                self._weekly_rotation_day += 1
             is_rotation_day = (self._weekly_rotation_day % self.p.rotation_interval == 1)
-            # DEBUG: count rotation days
-            if is_rotation_day:
-                if not hasattr(self, '_debug_rotation_count'):
-                    self._debug_rotation_count = 0
-                self._debug_rotation_count += 1
 
-            # ── 动量评分 ──
+    # ── 动量评分 ──
             lb = self.p.lookback
             momentum_scores, ranked = self._calc_momentum_scores(lb)
             top_n = self.p.top_n
@@ -1870,9 +1869,6 @@ class ETFStrategy(bt.Strategy):
         return False
 
     def stop(self):
-        # DEBUG: print rotation day count
-        if hasattr(self, '_debug_rotation_count'):
-            print(f"\n[DEBUG] rotation_interval={self.p.rotation_interval} total_days={self._weekly_rotation_day} rotation_days={self._debug_rotation_count}")
         print("\n" + "=" * 100)
         print("                    每笔交易明细")
         print("=" * 100)
@@ -1913,12 +1909,15 @@ def main():
     confirm_days = 0      # 换仓延迟确认天数
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
-    rotation_interval = 5  # 每周轮动间隔(天)
+    rotation_interval = 5  # 每周轮动间隔(天): 5天最优(周轮动) | 20天(月轮动)
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
     custom_end = None
-    for arg in sys.argv:
+    args = sys.argv
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg.startswith("--start="):
             custom_start = arg.split("=", 1)[1]
         elif arg.startswith("--end="):
@@ -1953,6 +1952,12 @@ def main():
             rsi_entry_max = float(arg.split("=", 1)[1])
         elif arg.startswith("--rotation-interval="):
             rotation_interval = int(arg.split("=", 1)[1])
+        elif arg == "--rotation-interval":
+            # 空格格式: --rotation-interval 20
+            if i + 1 < len(args):
+                rotation_interval = int(args[i + 1])
+                i += 1
+        i += 1
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']
