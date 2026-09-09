@@ -43,14 +43,7 @@ except Exception:
 class RiskManager:
     """风险管理器 — 统一处理止损、仓位上限、日亏损限额、连续亏损熔断"""
 
-    # 阶梯锁利配置
-    LADDER_LEVELS = [
-        (0.08, 0.10),  # 浮盈8% → 卖10%
-        (0.15, 0.15),  # 浮盈15% → 再卖15%
-        (0.20, 0.20),  # 浮盈20% → 再卖20%
-    ]
-
-    def __init__(self, state_center=None, ladder_mode=False, enhanced_trend=False):
+    def __init__(self, state_center=None, enhanced_trend=False):
         # 延迟导入 state_center，避免循环依赖
         if state_center is None:
             from state_center import StateCenter
@@ -65,8 +58,7 @@ class RiskManager:
         self.last_pnl_date = None
         self._circuit_breaker_active = False
         self._circuit_breaker_reason = ""
-        # 阶梯锁利 + 增强趋势止盈模式
-        self.ladder_mode = ladder_mode
+        # 增强趋势止盈模式
         self.enhanced_trend = enhanced_trend
 
     def record_daily_pnl(self, today_str, pnl_amount=None):
@@ -234,7 +226,7 @@ class RiskManager:
 
         # 趋势止盈 — 增强版 or 原版
         if self.enhanced_trend:
-            # 方案2: 增强趋势止盈 — MACD红柱缩短+RSI<60 (放宽触发), 卖20%
+            # 增强趋势止盈 — MACD红柱缩短+RSI<60 (放宽触发), 卖20%
             if t["macd_status"] == "红柱缩短" and t["rsi"] is not None and t["rsi"] < 60:
                 if pos.can_trend_profit_today(today_str):
                     stop_actions.append(("趋势止盈增强(MACD红柱缩短+RSI<60)卖20%活动仓", "trend_profit_sell_enhanced"))
@@ -245,17 +237,6 @@ class RiskManager:
                 if pos.can_trend_profit_today(today_str):
                     stop_actions.append(("趋势止盈(MACD红柱缩短+破MA5)卖10%活动仓", "trend_profit_sell"))
                     pos.record_trend_profit(today_str)
-
-        # ── 阶梯锁利 ──
-        if self.ladder_mode and pos.entry_cost > 0:
-            float_profit_pct = (price - pos.entry_cost) / pos.entry_cost if pos.entry_cost > 0 else 0
-            for i, (trigger_pct, sell_pct) in enumerate(self.LADDER_LEVELS):
-                if pos.ladder_triggered <= i and float_profit_pct >= trigger_pct:
-                    stop_actions.append((
-                        f"阶梯锁利{i+1}: 浮盈{float_profit_pct*100:.1f}%≥{trigger_pct*100:.0f}%卖{sell_pct*100:.0f}%",
-                        f"ladder_sell_{i+1}"
-                    ))
-                    pos.ladder_triggered = i + 1  # 每级只触发一次，不可逆
 
         # 破MA5卖活动仓5% — 带冷却机制(保留：贡献显著)
         if price < t["ma5"] and t["rsi"] and t["rsi"] > 50:
@@ -270,16 +251,13 @@ class RiskManager:
         if not stop_actions:
             return "未触发" if pos.has_position else "未触发(无持仓)"
 
-        # 优先级: 清仓 > 减仓 > 阶梯锁利 > 卖活动仓
+        # 优先级: 清仓 > 减仓 > 卖活动仓
         for sig_name, sig_type in stop_actions:
             if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct",
                             "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
                 return sig_name
         for sig_name, sig_type in stop_actions:
             if sig_type in ("reduce_30pct_all",):
-                return sig_name
-        for sig_name, sig_type in stop_actions:
-            if sig_type.startswith("ladder_sell_"):
                 return sig_name
         return stop_actions[0][0]
 
@@ -372,30 +350,18 @@ class RiskManager:
 # 默认实例(无增强)
 _rm = RiskManager()
 
-# 回测用: 可切换模式的实例
-_rm_ladder = None  # 阶梯锁利实例(lazy init)
-_rm_enhanced = None  # 增强趋势止盈实例(lazy init)
-_rm_both = None  # 阶梯+增强实例(lazy init)
+# 回测用: 增强趋势止盈实例(lazy init)
+_rm_enhanced = None
 
 
-def _get_rm(ladder_mode=False, enhanced_trend=False):
+def _get_rm(enhanced_trend=False):
     """获取对应模式的RiskManager实例"""
-    global _rm, _rm_ladder, _rm_enhanced, _rm_both
-    if not ladder_mode and not enhanced_trend:
+    global _rm, _rm_enhanced
+    if not enhanced_trend:
         return _rm
-    if ladder_mode and not enhanced_trend:
-        if _rm_ladder is None:
-            _rm_ladder = RiskManager(ladder_mode=True, enhanced_trend=False)
-        return _rm_ladder
-    if not ladder_mode and enhanced_trend:
-        if _rm_enhanced is None:
-            _rm_enhanced = RiskManager(ladder_mode=False, enhanced_trend=True)
-        return _rm_enhanced
-    if ladder_mode and enhanced_trend:
-        if _rm_both is None:
-            _rm_both = RiskManager(ladder_mode=True, enhanced_trend=True)
-        return _rm_both
-    return _rm
+    if _rm_enhanced is None:
+        _rm_enhanced = RiskManager(enhanced_trend=True)
+    return _rm_enhanced
 
 
 def check_order(order_intent):
@@ -411,20 +377,19 @@ def check_order(order_intent):
     return _rm.check_order(order_intent)
 
 
-def check_stop_loss(pos, t, price, today_str, ladder_mode=False, enhanced_trend=False):
+def check_stop_loss(pos, t, price, today_str, enhanced_trend=False):
     """评估止盈止损信号（快捷方式）
     
     参数:
-      ladder_mode: 启用阶梯锁利
       enhanced_trend: 启用增强趋势止盈
     """
-    rm = _get_rm(ladder_mode, enhanced_trend)
+    rm = _get_rm(enhanced_trend)
     return rm.check_stop_loss(pos, t, price, today_str)
 
 
-def resolve_stop_signal(pos, stop_actions, ladder_mode=False, enhanced_trend=False):
+def resolve_stop_signal(pos, stop_actions, enhanced_trend=False):
     """解析止盈止损信号（快捷方式）"""
-    rm = _get_rm(ladder_mode, enhanced_trend)
+    rm = _get_rm(enhanced_trend)
     return rm.resolve_stop_signal(pos, stop_actions)
 
 
