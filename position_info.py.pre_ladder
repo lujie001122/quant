@@ -105,9 +105,6 @@ class PositionInfo:
         self.entry_avg_cost = 0.0
         self.trend_profit_trigger_date = None
         self.ma5_sell_trigger_date = None
-        # 阶梯锁利状态: 每级只触发一次，不可逆
-        # 0: 未触发, 1: 8%已触发(卖10%), 2: 15%已触发(再卖15%), 3: 20%已触发(再卖20%)
-        self.ladder_triggered = 0
 
     @property
     def entry_cost(self):
@@ -244,7 +241,6 @@ class PositionInfo:
         self.last_grid_trigger = None
         self.peak_price = 0.0
         self.breakeven_activated = False
-        self.ladder_triggered = 0
         self.liquidate_dates.append(date_str)
         self.empty_days = 0
         try:
@@ -310,7 +306,6 @@ class PositionInfo:
             "daily_trade_log": {today_str: self.daily_trade_log.get(today_str, {"buy_count": 0, "t0_count": 0})},
             "trend_profit_trigger_date": self.trend_profit_trigger_date,
             "ma5_sell_trigger_date": self.ma5_sell_trigger_date,
-            "ladder_triggered": self.ladder_triggered,
             "confirm_batch_count": getattr(self, 'confirm_batch_count', 0),
             "confirm_batch_date": getattr(self, 'confirm_batch_date', None),
             "shares": self.shares,
@@ -348,7 +343,6 @@ class PositionInfo:
         self.entry_avg_cost = data.get("entry_avg_cost", 0.0)
         self.trend_profit_trigger_date = data.get("trend_profit_trigger_date")
         self.ma5_sell_trigger_date = data.get("ma5_sell_trigger_date")
-        self.ladder_triggered = data.get("ladder_triggered", 0)
         self.confirm_batch_count = data.get("confirm_batch_count", 0)
         self.confirm_batch_date = data.get("confirm_batch_date", None)
         self.base_price = data.get("base_price")

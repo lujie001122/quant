@@ -59,18 +59,18 @@ from risk_manager import check_stop_loss as _rm_check_stop_loss, resolve_stop_si
 _rsi_macd_strategy = RSIMACDStrategy()
 
 
-def evaluate_stop(pos, t, price, today_str, ladder_mode=False, enhanced_trend=False):
+def evaluate_stop(pos, t, price, today_str):
     """评估止盈止损信号（统一入口：委托给 RiskManager，避免逻辑重复）"""
-    return _rm_check_stop_loss(pos, t, price, today_str, ladder_mode=ladder_mode, enhanced_trend=enhanced_trend)
+    return _rm_check_stop_loss(pos, t, price, today_str)
 
 
-def resolve_stop_signal(pos, stop_actions, ladder_mode=False, enhanced_trend=False):
+def resolve_stop_signal(pos, stop_actions):
     """解析止盈止损信号（统一入口：委托给 RiskManager）"""
-    return _rm_resolve_stop(pos, stop_actions, ladder_mode=ladder_mode, enhanced_trend=enhanced_trend)
+    return _rm_resolve_stop(pos, stop_actions)
 
-def check_stop_loss(pos, t, price, today_str, ladder_mode=False, enhanced_trend=False):
+def check_stop_loss(pos, t, price, today_str):
     """risk_manager.check_stop_loss 的模块级别名"""
-    return _rm_check_stop_loss(pos, t, price, today_str, ladder_mode=ladder_mode, enhanced_trend=enhanced_trend)
+    return _rm_check_stop_loss(pos, t, price, today_str)
 
 
 def evaluate_entry(pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak, skip_profit_filter=False):
@@ -288,8 +288,6 @@ class ETFStrategy(bt.Strategy):
         ("trend_entry", False),  # 趋势建仓通道: TOP3+多头排列+空仓时直接50%建仓
         ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
         ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
-        ("ladder_mode", False),  # 阶梯锁利: 浮盈8%卖10%, 15%卖15%, 20%卖20%
-        ("enhanced_trend", False),  # 增强趋势止盈: MACD红柱缩短+RSI<60, 卖20%
     )
 
     # 板块分类: 用于板块分散
@@ -353,7 +351,6 @@ class ETFStrategy(bt.Strategy):
                 "market_reduced": False,  # 大盘自适应减仓标记
                 "market_drawdown_level": 0,  # 大盘回撤减仓等级: 0=无, 1=>5%, 2=>8%, 3=>12%
                 "market_drawdown_date": "",  # 大盘回撤减仓最近触发日期(防同日重复)
-                "ladder_triggered": 0,  # 阶梯锁利状态: 0=未触发, 1=8%已触发, 2=15%已触发, 3=20%已触发
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -634,7 +631,6 @@ class ETFStrategy(bt.Strategy):
         ps["market_reduced"] = False  # 重置大盘自适应减仓标记
         ps["market_drawdown_level"] = 0  # 重置大盘回撤减仓等级
         ps["market_drawdown_date"] = ""
-        ps["ladder_triggered"] = 0  # 重置阶梯锁利状态
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -708,7 +704,7 @@ class ETFStrategy(bt.Strategy):
 
                     # ── 调用实盘 risk_manager.check_stop_loss ──
                     pos_cp, t_cp = self._build_pos_and_tech(d, name, date_str)
-                    stop_actions = check_stop_loss(pos_cp, t_cp, price, date_str, ladder_mode=self.p.ladder_mode, enhanced_trend=self.p.enhanced_trend)
+                    stop_actions = check_stop_loss(pos_cp, t_cp, price, date_str)
                     self._sync_pos_to_ps(name, pos_cp, date_str)
                     liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
                     if liquidated:
@@ -897,7 +893,7 @@ class ETFStrategy(bt.Strategy):
 
                 # ── 调用实盘 risk_manager.check_stop_loss ──
                 pos, t = self._build_pos_and_tech(d, name, date_str)
-                stop_actions = check_stop_loss(pos, t, price, date_str, ladder_mode=self.p.ladder_mode, enhanced_trend=self.p.enhanced_trend)
+                stop_actions = check_stop_loss(pos, t, price, date_str)
                 self._sync_pos_to_ps(name, pos, date_str)
                 liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
                 if liquidated:
@@ -1209,7 +1205,7 @@ class ETFStrategy(bt.Strategy):
 
                 # ── 调用实盘 risk_manager.check_stop_loss ──
                 pos, t = self._build_pos_and_tech(d, name, date_str)
-                stop_actions = check_stop_loss(pos, t, price, date_str, ladder_mode=self.p.ladder_mode, enhanced_trend=self.p.enhanced_trend)
+                stop_actions = check_stop_loss(pos, t, price, date_str)
                 self._sync_pos_to_ps(name, pos, date_str)
                 liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
                 if liquidated:
@@ -1485,7 +1481,7 @@ class ETFStrategy(bt.Strategy):
 
                 # ── 调用实盘 risk_manager.check_stop_loss ──
                 pos, t = self._build_pos_and_tech(d, name, date_str)
-                stop_actions = check_stop_loss(pos, t, price, date_str, ladder_mode=self.p.ladder_mode, enhanced_trend=self.p.enhanced_trend)
+                stop_actions = check_stop_loss(pos, t, price, date_str)
                 self._sync_pos_to_ps(name, pos, date_str)
                 liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
                 if liquidated:
@@ -1644,7 +1640,6 @@ class ETFStrategy(bt.Strategy):
             pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
             pos.confirm_batch_count = ps.get("confirm_batch_count", 0)
             pos.confirm_batch_date = ps.get("confirm_batch_date", None)
-            pos.ladder_triggered = ps.get("ladder_triggered", 0)
             pos.current_price = price
             pos.update_dead_active()
         else:
@@ -1697,7 +1692,6 @@ class ETFStrategy(bt.Strategy):
             ps["cooldown_until"] = pos.cooldown_until
         ps["confirm_batch_count"] = getattr(pos, 'confirm_batch_count', 0)
         ps["confirm_batch_date"] = getattr(pos, 'confirm_batch_date', None)
-        ps["ladder_triggered"] = getattr(pos, 'ladder_triggered', 0)
         # entry_avg_cost / base / first_price / peak_price 由回测引擎管理，
         # 但策略 evaluate_entry 可能通过 pos._enter_position 更新了 build_phase,
         # 或 evaluate_stop 更新了 stop_level / below_ma20_count
@@ -1737,27 +1731,6 @@ class ETFStrategy(bt.Strategy):
                                 ps["trend_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
                             except:
                                 ps["trend_sell_cooling_until"] = ""
-                return False
-            elif sig_type == "trend_profit_sell_enhanced":
-                # 增强趋势止盈: 卖20%活动仓(替代原版10%)
-                active_shares = int(shares * ACTIVE_RATIO)
-                sell_shares = int(active_shares * 0.20 / 100) * 100
-                if sell_shares >= 100:
-                    if self._sell(d, 20, sig_name):
-                        ps["trend_sell_today"] += 1
-                        if ps["trend_sell_today"] >= TREND_PROFIT_MAX_DAILY:
-                            try:
-                                dt = datetime.strptime(date_str, "%Y-%m-%d")
-                                ps["trend_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
-                            except:
-                                ps["trend_sell_cooling_until"] = ""
-                return False
-            elif sig_type.startswith("ladder_sell_"):
-                # 阶梯锁利: ladder_sell_1=卖10%, ladder_sell_2=卖15%, ladder_sell_3=卖20%
-                ladder_sell_map = {"ladder_sell_1": 10, "ladder_sell_2": 15, "ladder_sell_3": 20}
-                sell_pct = ladder_sell_map.get(sig_type, 10)
-                if self._sell(d, sell_pct, sig_name):
-                    ps["ladder_triggered"] = int(sig_type.split("_")[-1])
                 return False
             elif sig_type == "sell_active_5pct":
                 active_shares = int(shares * ACTIVE_RATIO)
@@ -1920,8 +1893,6 @@ def main():
     run_weekly_rotation = "--weekly-rotation" in sys.argv  # 每周轮动: 从候选池重算TOP3动量
     run_concentrated_pyramid = "--concentrated-pyramid" in sys.argv  # 集中TOP N+50%建仓+趋势加码
     run_pyramid = "--pyramid" in sys.argv  # 趋势加码模式
-    run_ladder = "--ladder" in sys.argv  # 阶梯锁利
-    run_enhanced_trend = "--enhanced-trend" in sys.argv  # 增强趋势止盈
 
     # 集中持仓策略参数
     momentum_mode = "c2"  # simple | c2
@@ -2123,9 +2094,7 @@ def main():
                         confirm_days=confirm_days,
                         trend_entry=trend_entry,
                         rsi_entry_max=rsi_entry_max,
-                        rotation_interval=rotation_interval,
-                        ladder_mode=run_ladder,
-                        enhanced_trend=run_enhanced_trend)
+                        rotation_interval=rotation_interval)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
