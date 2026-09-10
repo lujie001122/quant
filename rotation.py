@@ -16,7 +16,7 @@ from datetime import datetime
 # ── 项目根目录 ──────────────────────────────────────────
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
-# tracker.py 提供标准ETF名称
+# state_center 提供标准ETF名称
 from market_data import calc_rsi_wilder, calc_macd, calc_ma, calc_atr, fetch_klines_daily_arrays, calc_max_drawdown
 from factors.indicators import calc_ma as _calc_ma, calc_rsi_wilder as _calc_rsi
 import state_center
@@ -128,9 +128,9 @@ def get_scan_targets():
         except Exception:
             pass
 
-    # 4. 用 tracker.py 标准名称覆盖 (腾讯接口名称不用于显示)
+    # 4. 用 state_center 标准名称覆盖 (腾讯接口名称不用于显示)
     #    ETF_CANDIDATES 中的名称已是标准名称，不覆盖
-    #    只对非候选池标的（etf_pool/portfolio 来源）使用 tracker 标准名称
+    #    只对非候选池标的（etf_pool/portfolio 来源）使用标准名称
     try:
         code_map = state_center.get_code_map()
         for code in targets:

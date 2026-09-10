@@ -31,7 +31,7 @@ ORDERS_DIR = os.path.join(SCRIPT_DIR, 'orders')
 INTENT_DIR = os.path.join(ORDERS_DIR, 'intent')
 
 from evolving.evolving import EvolvingSim
-# note: tracker.py 的导入保留向后兼容，实际已通过 state_center 统一
+# state_center 统一提供状态读写接口
 from state_center import get_code_map
 
 import yaml as _yaml
