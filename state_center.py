@@ -17,14 +17,13 @@ state_center.py — 统一状态中心
   from state_center import (
       SubAccount, StateCenter, get_main_position, get_t0_position,
       get_main_cash, get_t0_cash,
-      get_tracked_codes, get_code_map, get_etfs_config,
+      get_code_map, get_etfs_config,
       load_portfolio, save_portfolio,
       get_position_shares, get_position_info,
       load_today_orders, load_intent_files,
       intent_to_dedup_key, write_intent, cleanup_intent_files,
       check_pending_orders, sync_entrust_to_orders, revoke_all,
       trade_type_to_mode, get_signal_direction, signal_direction,
-      # build_retry_cmd,  # [注释] retry_cmd 不再使用
   )
 """
 
@@ -106,12 +105,15 @@ class StateCenter:
         return self.main_account.cash + self.t0_account.cash
 
     def get_daily_pnl(self) -> float:
-        """获取当日盈亏（基于当日开盘资产）"""
+        """获取当日盈亏（基于当日开盘资产）
+        
+        Bug I: 移除自动初始化，未调用 mark_today_open 时返回 0 + 警告。
+        原逻辑在首次调用时自动设基准，导致日亏损限额失效（cron首次调用即刷新基准）。
+        """
         today = datetime.now().strftime("%Y-%m-%d")
         if self._today_open_asset is None or self._today_open_date != today:
-            # 首次调用或跨天：记录当前总资产作为开盘基准
-            self._today_open_asset = self.get_total_asset()
-            self._today_open_date = today
+            print(f"⚠️ get_daily_pnl: 今日未调用 mark_today_open，返回 0")
+            return 0.0
         return self.get_total_asset() - self._today_open_asset
 
     def get_total_asset(self) -> float:
@@ -370,87 +372,6 @@ def get_etfs_config(fund_per_etf=None):
     return etfs
 
 
-def get_tracked_with_keywords():
-    """
-    返回 {code: {name, kw}}，供 sentiment_check 使用。
-    kw = [name, name+"ETF"(如果不以ETF结尾), code] + industry_kw(从 etf_pool.json)
-    """
-    pool = _load_pool()
-    pf = load_portfolio()
-
-    industry_kw_map = pool.get("industry_kw", {}) if pool else {}
-
-    tracked = {}
-
-    if pool:
-        codes = pool.get("etf_pool", [])
-        names = pool.get("names", {})
-        for code in codes:
-            name = names.get(code, code)
-            kw = [name]
-            if not name.endswith("ETF"):
-                kw.append(name + "ETF")
-            kw.append(code)
-            ikw = industry_kw_map.get(code, [])
-            for k in ikw:
-                if k not in kw:
-                    kw.append(k)
-            tracked[code] = {"name": name, "kw": kw}
-    else:
-        _DEFAULT_INDUSTRY_KW = {
-            "159516": ["半导体", "芯片", "光刻", "CPO", "光模块"],
-            "515880": ["通信", "5G", "6G", "光通信", "CPO", "光模块"],
-            "588170": ["科创", "半导体", "芯片", "科创板"],
-            "159532": ["中证2000", "小盘", "微盘"],
-            "515050": ["全指", "A股", "沪深"],
-            "159611": ["电力", "绿电", "新能源"],
-            "512170": ["医疗", "医药", "医疗器械", "生物医药", "创新药"],
-        }
-        _DEFAULT_TRACKED = {
-            "159516": {"name": "半导体设备ETF", "kw": ["半导体设备ETF", "159516"]},
-            "515880": {"name": "通信ETF", "kw": ["通信ETF", "515880"]},
-            "588170": {"name": "科创半导体ETF", "kw": ["科创半导体ETF", "588170"]},
-            "159532": {"name": "中证2000ETF", "kw": ["中证2000ETF", "159532"]},
-            "515050": {"name": "中证全指ETF", "kw": ["中证全指ETF", "515050"]},
-            "159611": {"name": "电力ETF", "kw": ["电力ETF", "159611"]},
-            "512170": {"name": "医疗ETF", "kw": ["医疗ETF", "512170"]},
-        }
-        for code, ikw in _DEFAULT_INDUSTRY_KW.items():
-            if code in _DEFAULT_TRACKED:
-                for k in ikw:
-                    if k not in _DEFAULT_TRACKED[code]["kw"]:
-                        _DEFAULT_TRACKED[code]["kw"].append(k)
-        tracked = dict(_DEFAULT_TRACKED)
-
-    # 合并 portfolio 实际持仓
-    for code, pos_data in pf.get("positions", {}).items():
-        name = pos_data.get("name", code)
-        if code not in tracked:
-            kw = [name]
-            if not name.endswith("ETF"):
-                kw.append(name + "ETF")
-            kw.append(code)
-            ikw = industry_kw_map.get(code, [])
-            for k in ikw:
-                if k not in kw:
-                    kw.append(k)
-            tracked[code] = {"name": name, "kw": kw}
-        else:
-            if name and name != tracked[code]["name"]:
-                tracked[code]["name"] = name
-                kw = [name]
-                if not name.endswith("ETF"):
-                    kw.append(name + "ETF")
-                kw.append(code)
-                ikw = industry_kw_map.get(code, [])
-                for k in ikw:
-                    if k not in kw:
-                        kw.append(k)
-                tracked[code]["kw"] = kw
-
-    return tracked
-
-
 # ====================================================================
 # 二、持仓信息查询
 # ====================================================================
@@ -465,34 +386,6 @@ def get_position_info(code):
     """从 portfolio.json 读取指定标的的持仓信息"""
     pf = load_portfolio()
     return pf.get("positions", {}).get(code, {})
-
-
-def get_all_positions():
-    """返回所有持仓 {code: pos_dict}"""
-    pf = load_portfolio()
-    return pf.get("positions", {})
-
-
-def get_account_info():
-    """返回账户信息 dict"""
-    pf = load_portfolio()
-    return pf.get("account", {})
-
-
-def get_signal_state():
-    """返回 _signal_state dict"""
-    pf = load_portfolio()
-    return pf.get("_signal_state", {})
-
-
-def save_signal_state(state_dict, account_update=None):
-    """保存信号状态到 portfolio.json"""
-    pf = load_portfolio()
-    pf["_signal_state"] = state_dict
-    if account_update:
-        pf["account"] = account_update
-        pf["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    save_portfolio(pf)
 
 
 # ====================================================================
@@ -620,30 +513,6 @@ def write_order(code, action, shares, price, contract, status='pending'):
             json.dump(order, f, ensure_ascii=False, indent=2)
     except IOError as e:
         print(f"  ⚠️ 订单持久化失败: {e}")
-
-
-def update_order_status(code, action, new_status):
-    """更新 orders/ 中订单的状态。"""
-    today = datetime.now().strftime('%Y%m%d')
-    # 查找匹配的订单文件（支持序号后缀）
-    order_path = None
-    if os.path.exists(_ORDERS_DIR):
-        for fname in sorted(os.listdir(_ORDERS_DIR), reverse=True):
-            if fname.startswith(f'{today}_{code}_{action}') and fname.endswith('.json'):
-                order_path = os.path.join(_ORDERS_DIR, fname)
-                break
-    if not order_path or not os.path.exists(order_path):
-        print(f"  ⚠️ 订单文件不存在: {today}_{code}_{action}_*.json")
-        return
-    try:
-        with open(order_path, 'r') as f:
-            order = json.load(f)
-        order['status'] = new_status
-        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(order_path, 'w') as f:
-            json.dump(order, f, ensure_ascii=False, indent=2)
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"  ⚠️ 更新订单状态失败: {e}")
 
 
 # ====================================================================

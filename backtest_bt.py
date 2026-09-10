@@ -1767,16 +1767,40 @@ class ETFStrategy(bt.Strategy):
             pos.current_price = price
             pos.update_dead_active()
         else:
-            # 保留 daily_trade_log 等跨调用状态，仅重置持仓相关
+            # Bug14: 空仓分支完全重置所有持仓相关字段
+            # 保留 daily_trade_log（跨日期）、empty_days/prev_macd_status/cooldown_until（跨调用状态）
             pos.shares = 0
             pos.avg_cost = 0.0
             pos.base_price = None
             pos.peak_price = 0.0
-            pos.build_phase = 0
+            pos.current_price = price
             pos.dead_shares = 0
             pos.active_shares = 0
+            pos.stop_level = 0
+            pos.below_ma20_count = 0
+            pos.below_ma20_date = None
+            pos.trailing_stop_price = 0.0
+            pos.reached_8pct = False
+            pos.reached_15pct = False
+            pos.build_phase = 0
+            pos.build_first_price = 0.0
+            pos.ma5_touch_count = 0
+            pos.last_reset_date = None
+            pos.liquidate_dates = []
+            pos.grid_frozen = False
+            pos.last_grid_trigger = None
+            pos.prev_rsi = None
+            pos.add_count = 0
             pos.empty_days = ps["empty_days"]
+            pos.empty_days_date = None
             pos.prev_macd_status = ps["prev_macd_status"]
+            pos.breakeven_activated = False
+            pos.entry_avg_cost = 0.0
+            pos.trend_profit_trigger_date = None
+            pos.ma5_sell_trigger_date = None
+            pos.last_grid_trigger_date = None
+            pos.confirm_batch_count = 0
+            pos.confirm_batch_date = None
             pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
 
         # ── 构建 tech dict ──

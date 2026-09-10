@@ -17,6 +17,9 @@ import os
 import sys
 from datetime import datetime
 
+# ── 日志降噪: 设 QUANT_DEBUG=1 环境变量开启详细日志 ──
+_DEBUG = os.environ.get("QUANT_DEBUG", "").strip() in ("1", "true", "yes")
+
 # ── 行情数据与指标 ──
 from market_data import (
     fetch_realtime_quotes, fetch_klines_daily, fetch_klines_5min,
@@ -74,28 +77,7 @@ def evaluate_t0(t, pos, price, today_str, atr_pct):
 def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True):
     return _t0_strategy.evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0)
 
-# ── 状态中心（执行层瘦身：订单管理、同步、intent、错误检测等） ──
-from state_center import (
-    # 持仓信息
-    get_position_shares as _get_position_shares,
-    # 订单管理
-    load_today_orders as _load_today_orders,
-    load_intent_files as _load_intent_files,
-    intent_to_dedup_key as _intent_to_dedup_key,
-    sync_entrust_to_orders as _sync_entrust_to_orders,
-    check_pending_orders as _check_pending_orders,
-    # 工具函数
-    trade_type_to_mode as _trade_type_to_mode,
-    get_signal_direction as _get_signal_direction,
-    signal_direction as _signal_direction,
-    detect_error_type as _detect_error_type,
-    # build_retry_cmd as _build_retry_cmd,  # [注释] retry_cmd 不再使用
-    parse_position_ratio as _parse_position_ratio,
-    # intent 清理
-    cleanup_intent_files as _cleanup_intent_files,
-    cleanup_intent_force as _cleanup_intent_force,
-    cleanup_old_intent_files as _cleanup_old_intent_files,
-)
+# ── 状态中心（执行层已迁移到 executor.py，此文件仅保留需要的导入） ──
 
 
 # ============================================================
@@ -195,7 +177,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         _sc.set_cached_prices({code: realtime.get(code, {}).get("price", 0) for code in ETFS if code in realtime})
         _sc.mark_today_open()
         _open_asset = _sc._today_open_asset
-        print(f"[SC] 缓存行情已更新, mark_today_open={'%.0f' % _open_asset if _open_asset else 'N/A'}")
+        if _DEBUG:
+            print(f"[SC] 缓存行情已更新, mark_today_open={'%.0f' % _open_asset if _open_asset else 'N/A'}")
     except Exception as _sc_err:
         print(f"[WARN] StateCenter 缓存行情失败: {_sc_err}")
 
@@ -282,7 +265,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     except Exception:
         _total_asset_for_alloc = pf_data.get("account", {}).get("total_asset", TOTAL_FUND) if pf_data else TOTAL_FUND
     _allocated_funds = _pm.allocate_fund(active_codes, actual_total_asset=_total_asset_for_alloc)
-    print(f"[PM] 资金分配(总资产={_total_asset_for_alloc:.0f}): {_allocated_funds}")
+    if _DEBUG:
+        print(f"[PM] 资金分配(总资产={_total_asset_for_alloc:.0f}): {_allocated_funds}")
 
     # ── Kelly公式辅助: 从近60日交易计算Kelly比例 ──
     try:
@@ -295,11 +279,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             avg_loss=abs(_report.get("avg_loss", 0)) if _report.get("avg_loss", 0) != 0 else 0,
             fraction=0.5,
         )
-        print(f"[Kelly] 近60日: 胜率{_report.get('win_rate', 0):.1%} "
-              f"盈亏比{abs(_report.get('avg_win', 0) / _report.get('avg_loss', 1)):.2f} "
-              f"半Kelly={_kelly_half:.1%}")
+        if _DEBUG:
+            print(f"[Kelly] 近60日: 胜率{_report.get('win_rate', 0):.1%} "
+                  f"盈亏比{abs(_report.get('avg_win', 0) / _report.get('avg_loss', 1)):.2f} "
+                  f"半Kelly={_kelly_half:.1%}")
     except Exception as _ke:
-        print(f"[Kelly] 计算跳过: {_ke}")
+        if _DEBUG:
+            print(f"[Kelly] 计算跳过: {_ke}")
 
     # 信号生成
     signals_output = {}
@@ -671,12 +657,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
 
 # ============================================================
-# 三、执行层 — 所有函数已移至 state_center.py
-# 包括: _load_today_orders, _load_intent_files, _intent_to_dedup_key,
-#       _write_intent_for_sg, _sync_entrust_to_orders, _check_pending_orders,
-#       _detect_error_type, _signal_direction, _build_retry_cmd,
-#       _cleanup_intent_files, _cleanup_intent_force, _cleanup_old_intent_files
-# 统一从 state_center 导入，见文件顶部 import 段。
+# 三、执行层 — 所有函数已移至 executor.py
+# 统一通过 executor.execute_signals() 调用。
 # ============================================================
 
 
