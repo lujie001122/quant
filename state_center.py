@@ -109,10 +109,12 @@ class StateCenter:
         
         Bug I: 移除自动初始化，未调用 mark_today_open 时返回 0 + 警告。
         原逻辑在首次调用时自动设基准，导致日亏损限额失效（cron首次调用即刷新基准）。
+        Bug K: 警告改为 QUANT_DEBUG 控制，避免刷屏。
         """
         today = datetime.now().strftime("%Y-%m-%d")
         if self._today_open_asset is None or self._today_open_date != today:
-            print(f"⚠️ get_daily_pnl: 今日未调用 mark_today_open，返回 0")
+            if os.environ.get("QUANT_DEBUG", "").strip() in ("1", "true", "yes"):
+                print(f"⚠️ get_daily_pnl: 今日未调用 mark_today_open，返回 0")
             return 0.0
         return self.get_total_asset() - self._today_open_asset
 

@@ -341,17 +341,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # ═══ 综合action判定 ═══
         action = "持有"
         # 计算实际持仓占比（基于总资产，用于无信号时的展示）
-        # Bug F 修复: 优先从 StateCenter 实时计算 total_asset，而非用 portfolio.json 旧值
-        _total_asset = TOTAL_FUND  # 默认兜底
-        try:
-            from state_center import StateCenter as _SC
-            _sc_inst = _SC.get_instance()
-            _sc_ta = _sc_inst.get_total_asset()
-            if _sc_ta and _sc_ta > 0:
-                _total_asset = _sc_ta
-        except Exception:
-            # StateCenter 不可用时降级到 pf_data
-            _total_asset = pf_data.get("account", {}).get("total_asset", TOTAL_FUND) if pf_data else TOTAL_FUND
+        # Bug J 修复: 复用循环外已计算的 _total_asset_for_alloc，避免每个ETF重复调用 StateCenter
+        _total_asset = _total_asset_for_alloc
         if pos.has_position and _total_asset > 0:
             _mv = pos.shares * price
             position_ratio = f"{_mv / _total_asset * 100:.0f}%"
