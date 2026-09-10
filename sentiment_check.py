@@ -245,88 +245,127 @@ def classify_track(code, mkt, sentiment_score):
 
 
 if __name__ == "__main__":
-    now = datetime.now().strftime("%H:%M")
-    print(f"🔍 全赛道舆情分析 | {now}")
-    news = fetch_all()
-    print(f"  抓取 {len(news)} 条新闻（新浪+东财+同花顺）\n")
+    # 分层标签
+    _LABEL = {"🥩 吃肉": "🥩吃肉信号", "🥣 喝汤": "🥣喝汤机会",
+              "🔄 重点关注回暖": "🔄回暖关注", "⚠️ 提示风险": "⚠️风险提示",
+              "⏳ 观察中": "⏳继续观察", "⏳ 数据不足": "⏳数据不足"}
 
+    now = datetime.now().strftime("%H:%M")
+    news = fetch_all()
     targets = get_all_targets()
     mkt_data = fetch_market_data()
-
-    # 舆情关键词匹配
     news_titles = [n.get("title", "") for n in news]
 
-    # 分组收集
+    # 分组收集：每项存 dict，供后续自然语言拼装
     categories = defaultdict(list)
 
     for code, info in sorted(targets.items()):
         if code not in mkt_data:
-            cat = "⏳ 数据不足"
-            detail = f"  {cat}  {code} {info['name']}"
-            categories[cat].append(detail)
+            categories["⏳ 数据不足"].append({
+                "name": info["name"], "monitor": info["is_monitor"],
+                "m4": 0, "rsi": 0, "pct5": 0, "neg": 0, "pos": 0,
+            })
             continue
 
         mkt = mkt_data[code]
         matched = [t for t in news_titles if any(kw in t for kw in info["kw"])]
         s, neg, pos = score(matched)
-
         track, reason = classify_track(code, mkt, s)
 
-        monitor_tag = "📌" if info["is_monitor"] else "  "
-        sector_tag = f"[{info['sector']}]" if info.get("sector") else ""
+        categories[track].append({
+            "name": info["name"], "monitor": info["is_monitor"],
+            "m4": mkt["m4"], "rsi": mkt["rsi"], "pct5": mkt["pct_5d"],
+            "neg": neg, "pos": pos, "reason": reason,
+        })
 
-        lines = []
-        lines.append(f"{monitor_tag} {track:<16} {code} {info['name']:<14} {sector_tag}")
-        lines.append(f"   原因: {reason}")
-        mkt_line = f"   m4={mkt['m4']*100:+.1f}%  rsi={mkt['rsi']:.0f}  5d={mkt['pct_5d']:+.1f}%  20d={mkt['pct_20d']:+.1f}%"
-        if s != 0:
-            mkt_line += f"  舆情(负{neg}/正{pos})"
-        lines.append(mkt_line)
-        if matched:
-            lines.append(f"   新闻: {matched[0][:55]}")
-        categories[track].append("\n".join(lines))
-
-    # 按赛道输出
-    track_order = ["🥩 吃肉", "🥣 喝汤", "🔄 重点关注回暖", "⏳ 观察中", "⚠️ 提示风险", "⏳ 数据不足"]
+    # ── 自然语言+分层摘要 QQ友好输出 ──
+    track_order = ["🥩 吃肉", "🥣 喝汤", "🔄 重点关注回暖",
+                   "⚠️ 提示风险", "⏳ 观察中", "⏳ 数据不足"]
+    out = [f"🔍 舆情扫描 {now}｜共抓取{len(news)}条新闻"]
 
     for track in track_order:
         items = categories.get(track, [])
         if not items:
             continue
-        print(f"\n{'='*50}")
-        print(f"{track} ({len(items)})")
-        print(f"{'='*50}")
-        for item in items:
-            print(item)
-            print()
+        label = _LABEL.get(track, track)
+        out.append(f"")
+        out.append(f"【{label}】{len(items)}只")
+
+        for it in items:
+            name = it["name"]
+            mon_tag = "📌" if it["monitor"] else ""
+
+            # 数据不足用简短格式
+            if track == "⏳ 数据不足":
+                out.append(f"  {mon_tag}{name} 暂无行情")
+                continue
+
+            # 自然语言拼装：全名+关键指标用中文描述
+            parts = [f"  {mon_tag}{name}"]
+
+            # 动量描述
+            m4pct = it["m4"] * 100
+            if m4pct > 0:
+                parts.append(f"4周动量+{m4pct:.1f}%")
+            else:
+                parts.append(f"4周动量{m4pct:.1f}%")
+
+            # RSI描述
+            rsi = it["rsi"]
+            if rsi > 70:
+                parts.append(f"RSI{rsi:.0f}超买")
+            elif rsi < 30:
+                parts.append(f"RSI{rsi:.0f}超卖")
+            else:
+                parts.append(f"RSI{rsi:.0f}")
+
+            # 5日涨跌描述
+            p5 = it["pct5"]
+            if abs(p5) < 0.1:
+                parts.append("5日持平")
+            else:
+                parts.append(f"5日{'涨' if p5 > 0 else '跌'}{abs(p5):.1f}%")
+
+            # 舆情描述
+            neg, pos = it["neg"], it["pos"]
+            if neg == 0 and pos == 0:
+                parts.append("舆情平稳")
+            elif neg > pos:
+                parts.append(f"舆情偏空{neg}条利空{pos}条利好")
+            elif pos > neg:
+                parts.append(f"舆情偏多{pos}条利好{neg}条利空")
+            else:
+                parts.append(f"舆情中性 各{neg}条")
+
+            out.append(" ".join(parts))
 
     # 监控池汇总
-    print(f"\n{'='*50}")
-    print("📌 监控池汇总")
-    print(f"{'='*50}")
-    monitor_list = []
+    mon_items = []
     for code, info in sorted(targets.items()):
         if info["is_monitor"] and code in mkt_data:
             mkt = mkt_data[code]
-            track, _ = classify_track(code, mkt, 0)
-            monitor_list.append((track, code, info["name"]))
-    for track, code, name in monitor_list:
-        print(f"  {track:<16} {code} {name}")
+            tr, _ = classify_track(code, mkt, 0)
+            mon_items.append((info["name"], tr))
+    if mon_items:
+        out.append(f"")
+        out.append(f"【📌监控池概览】")
+        # 按状态分组，每组一行
+        for tr in track_order:
+            grp = [n for n, t in mon_items if t == tr]
+            if not grp:
+                continue
+            label = _LABEL.get(tr, tr)
+            out.append(f"  {label}：{'、'.join(grp)}")
 
-    # 全球板块
-    print(f"\n{'='*50}")
-    print("🌍 全局 | 美股/外盘/宏观")
-    print(f"{'='*50}")
+    # 全局/外盘
     global_matched = [t for t in news_titles if any(kw in t for kw in GLOBAL_KW)]
     s, neg, pos = score(global_matched)
+    out.append(f"")
     if s >= NEG_THRESHOLD_BLOCK:
-        print(f"  🛑 利空 (负{neg}/正{pos})")
+        out.append(f"🌍 外盘环境：🛑利空明显｜{neg}条利空 {pos}条利好")
     elif s >= NEG_THRESHOLD_WARN:
-        print(f"  ⚠️ 关注 (负{neg}/正{pos})")
+        out.append(f"🌍 外盘环境：⚠️需关注｜{neg}条利空 {pos}条利好")
     else:
-        print(f"  ✅ 正常 (负{neg}/正{pos})")
-    if global_matched:
-        for title in global_matched[:10]:
-            print(f"    · {title[:60]}")
-        if len(global_matched) > 10:
-            print(f"    ... 共{len(global_matched)}条")
+        out.append(f"🌍 外盘环境：✅整体平稳｜{neg}条利空 {pos}条利好")
+
+    print("\n".join(out))
