@@ -127,6 +127,27 @@ def sync():
             'cash': float(d['可用金额']),
             'market_value': float(d['总市值']),
         }
+    # Bug N: 清理 _signal_state 中已清仓且不在ETF池中的标的
+    signal_state = pf.get('_signal_state', {})
+    if signal_state:
+        # 获取当前持仓和ETF池的标的
+        active_positions = set(pf.get('positions', {}).keys())
+        try:
+            pool_path = os.path.join(SCRIPT_DIR, 'etf_pool.json')
+            with open(pool_path) as _pf:
+                pool_codes = set(json.load(_pf).get('etf_pool', []))
+        except Exception:
+            pool_codes = set()
+        # 保留条件: 有持仓 或 在ETF池中
+        cleaned_codes = []
+        for code in list(signal_state.keys()):
+            if code not in active_positions and code not in pool_codes:
+                del signal_state[code]
+                cleaned_codes.append(code)
+        if cleaned_codes:
+            pf['_signal_state'] = signal_state
+            print(f"  🧹 清理 _signal_state 中已清仓标的: {cleaned_codes}")
+
     pf['last_updated'] = time.strftime('%Y-%m-%d %H:%M')
 
     with open(PF_PATH, 'w') as f:

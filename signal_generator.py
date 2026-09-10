@@ -133,7 +133,16 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     # 从 _signal_state 恢复信号状态
                     if code in saved_state:
                         s = saved_state[code]
+                        # Bug N: 不从 _signal_state 恢复 shares/avg_cost/current_price
+                        # 这些字段由 portfolio positions 独写（下一行），避免旧值覆盖
+                        _saved_shares = s.pop("shares", None)
+                        _saved_avg_cost = s.pop("avg_cost", None)
+                        _saved_cur_price = s.pop("current_price", None)
                         p.from_dict(s)
+                        # 恢复 _signal_state 中的字段供后续使用
+                        if _saved_shares is not None: s["shares"] = _saved_shares
+                        if _saved_avg_cost is not None: s["avg_cost"] = _saved_avg_cost
+                        if _saved_cur_price is not None: s["current_price"] = _saved_cur_price
                         # 恢复daily_trade_log（当天）
                         saved_log = s.get("daily_trade_log", {})
                         if today_str in saved_log:
