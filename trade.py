@@ -8,7 +8,6 @@
   python3 trade.py sell CODE SHARES PRICE        # 卖出
   python3 trade.py t0_buy CODE SHARES PRICE [PAIR_PRICE]  # 做T买入配对：买入+高位卖出挂单
   python3 trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE] # 做T卖出配对：卖出+低位买入挂单
-  python3 trade.py revoke_all                    # 全撤所有买卖委托+清理今日订单文件
 
 铁律:
   1. 只用 EvolvingSim 公开接口: getHoldingShares/getAccountInfo/buy/sell/getEntrust/revokeEntrust
@@ -27,8 +26,6 @@ from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
-ORDERS_DIR = os.path.join(SCRIPT_DIR, 'orders')
-INTENT_DIR = os.path.join(ORDERS_DIR, 'intent')
 
 from evolving.evolving import EvolvingSim
 # state_center 统一提供状态读写接口
@@ -138,270 +135,6 @@ def sync():
     print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{pf['account']['total_asset']:.0f}")
 
 
-# ─── 订单持久化 ──────────────────────────────────────────────────────────
-
-def _write_intent(code, action, shares, price):
-    """下单前写 intent 文件到 orders/intent/ 目录。
-    格式: {date}_{code}_{action}.json
-    记录信号意图，防同 cron 内多个信号重复下单。
-    """
-    os.makedirs(INTENT_DIR, exist_ok=True)
-    today = datetime.now().strftime('%Y%m%d')
-    intent_path = os.path.join(INTENT_DIR, f'{today}_{code}_{action}.json')
-
-    direction = '买入' if 'buy' in action else '卖出'
-    intent = {
-        'code': code,
-        'action': action,
-        'shares': shares,
-        'price': price,
-        'direction': direction,
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    }
-
-    try:
-        with open(intent_path, 'w') as f:
-            json.dump(intent, f, ensure_ascii=False, indent=2)
-    except IOError as e:
-        print(f"  ⚠️ intent 文件写入失败: {e}")
-
-
-def _write_intent_for_failed(code, action, shares, price, reason='failed'):
-    """下单失败时写 intent 文件（status=failed），下次 cron 可去重识别。
-    文件名加 _failed 后缀避免覆盖成功单的 intent。
-    """
-    os.makedirs(INTENT_DIR, exist_ok=True)
-    today = datetime.now().strftime('%Y%m%d')
-    # 失败 intent 用不同文件名避免覆盖正常 intent
-    intent_path = os.path.join(INTENT_DIR, f'{today}_{code}_{action}_failed.json')
-
-    direction = '买入' if 'buy' in action else '卖出'
-    intent = {
-        'code': code,
-        'action': action,
-        'shares': shares,
-        'price': price,
-        'direction': direction,
-        'status': 'failed',
-        'reason': reason,
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    }
-
-    try:
-        with open(intent_path, 'w') as f:
-            json.dump(intent, f, ensure_ascii=False, indent=2)
-    except IOError as e:
-        print(f"  ⚠️ failed intent 文件写入失败: {e}")
-
-
-def _write_order(code, action, shares, price, contract, status='pending'):
-    """写订单到 orders/ 目录。"""
-    os.makedirs(ORDERS_DIR, exist_ok=True)
-    today = datetime.now().strftime('%Y%m%d')
-    # 序号从该目录下已有文件数计算，避免同日同方向覆盖
-    existing = len([f for f in os.listdir(ORDERS_DIR) if f.startswith(today) and f.endswith('.json')])
-    seq = existing + 1
-    order_path = os.path.join(ORDERS_DIR, f'{today}_{code}_{action}_{seq}.json')
-
-    order = {
-        'code': code,
-        'action': action,
-        'shares': shares,
-        'price': price,
-        'contract': contract,
-        'status': status,
-        'direction': '买入' if 'buy' in action else '卖出',
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    }
-
-    try:
-        with open(order_path, 'w') as f:
-            json.dump(order, f, ensure_ascii=False, indent=2)
-    except IOError as e:
-        print(f"  ⚠️ 订单持久化失败: {e}")
-
-
-def _update_order_status(code, action, new_status):
-    """更新 orders/ 中订单的状态。"""
-    today = datetime.now().strftime('%Y%m%d')
-    # 查找匹配的订单文件（支持序号后缀）
-    order_path = None
-    if os.path.exists(ORDERS_DIR):
-        for fname in sorted(os.listdir(ORDERS_DIR), reverse=True):
-            if fname.startswith(f'{today}_{code}_{action}') and fname.endswith('.json'):
-                order_path = os.path.join(ORDERS_DIR, fname)
-                break
-    if not order_path or not os.path.exists(order_path):
-        print(f"  ⚠️ 订单文件不存在: {today}_{code}_{action}_*.json")
-        return
-
-    try:
-        with open(order_path, 'r') as f:
-            order = json.load(f)
-        order['status'] = new_status
-        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(order_path, 'w') as f:
-            json.dump(order, f, ensure_ascii=False, indent=2)
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"  ⚠️ 更新订单状态失败: {e}")
-
-
-# ─── 从 signal_generator.py 复制：_load_today_orders + _sync_entrust_to_orders ──
-
-def _load_today_orders():
-    """从 orders/ 目录加载今日所有订单，返回 {filename: order_dict}"""
-    if not os.path.exists(ORDERS_DIR):
-        return {}
-    today = datetime.now().strftime('%Y%m%d')
-    orders = {}
-    for fname in os.listdir(ORDERS_DIR):
-        if fname.startswith(today) and fname.endswith('.json'):
-            try:
-                with open(os.path.join(ORDERS_DIR, fname)) as f:
-                    order = json.load(f)
-                orders[fname] = order
-            except (json.JSONDecodeError, IOError):
-                pass
-    return orders
-
-
-def _sync_entrust_to_orders(e=None, orders=None):
-    """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
-    将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
-    （从 signal_generator.py 复制过来）
-    e: 可选复用的 EvolvingSim 实例，None 则自建
-    orders: 可选预加载的今日订单 {filename: order_dict}，None 则自加载
-    """
-    own_e = e is None
-    if own_e:
-        e = EvolvingSim()
-    try:
-        ent = e.getEntrust('today', False)
-        time.sleep(2)
-    except Exception as ex:
-        print(f"[_sync_entrust] ⚠️ EvolvingSim 调用失败: {ex}")
-        return
-
-    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
-        print(f"[_sync_entrust] ⚠️ getEntrust 返回异常，跳过同步")
-        return
-
-    # 构建同花顺委托索引: {code: {direction: status}}
-    ths_map = {}
-    for row in ent['data']:
-        if not row or len(row) <= 10:
-            continue
-        code = row[2]
-        direction = row[4]
-        status = row[5]
-        if code not in ths_map:
-            ths_map[code] = {}
-        ths_map[code][direction] = status
-
-    # 遍历本地 pending 订单，同步同花顺状态
-    if orders is None:
-        orders = _load_today_orders()
-    updated = 0
-
-    for fname, order in orders.items():
-        if order.get('status') != 'pending':
-            continue
-        code = order.get('code', '')
-        direction = order.get('direction', '')
-        if code not in ths_map or direction not in ths_map[code]:
-            continue
-        ths_status = ths_map[code][direction]
-
-        new_status = None
-        if ths_status in ('已成交', '全部成交', '部分成交'):
-            new_status = 'filled'
-        elif ths_status in ('已撤单', '已撤销', '废单'):
-            new_status = 'revoked'
-
-        if new_status:
-            order_path = os.path.join(ORDERS_DIR, fname)
-            try:
-                order['status'] = new_status
-                order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                with open(order_path, 'w') as f:
-                    json.dump(order, f, ensure_ascii=False, indent=2)
-                updated += 1
-                print(f"[_sync_entrust] {code} {direction} pending→{new_status} (同花顺:{ths_status})")
-            except (IOError, json.JSONDecodeError) as ex:
-                print(f"[_sync_entrust] ⚠️ 更新 {fname} 失败: {ex}")
-
-    if updated:
-        print(f"[_sync_entrust] 同步完成: {updated} 笔订单状态已更新")
-
-
-# ─── 全撤 ──────────────────────────────────────────────────────────────
-
-def _revoke_all(e=None, orders=None):
-    """全撤：调用 EvolvingSim 撤销全部买卖委托，并标记本地 pending 订单为 revoked。
-    e: 可选复用的 EvolvingSim 实例，None 则自建
-    orders: 可选预加载的今日订单 {filename: order_dict}，None 则自加载
-    """
-    own_e = e is None
-    if own_e:
-        e = EvolvingSim()
-    revoke_ok = False
-    try:
-        result = e.revokeEntrust(revokeType='allBuyAndSell')
-        if result is not None:
-            revoke_ok = result[0]
-            print(f"{'✅ 全撤成功' if revoke_ok else '⚠️ 全撤失败'}: {result[1] if len(result) > 1 else result}")
-        else:
-            print(f"⚠️ 全撤失败: 返回 None")
-    except Exception as ex:
-        print(f"⚠️ 全撤异常: {ex}")
-    finally:
-        time.sleep(2)
-
-    # 标记今日 pending 订单为 revoked，保留 filled
-    if orders is None:
-        orders = _load_today_orders()
-    updated = 0
-    for fname, order in orders.items():
-        if order.get('status') != 'pending':
-            continue
-        order['status'] = 'revoked'
-        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        order_path = os.path.join(ORDERS_DIR, fname)
-        try:
-            with open(order_path, 'w') as f:
-                json.dump(order, f, ensure_ascii=False, indent=2)
-            updated += 1
-        except (IOError, OSError) as ex:
-            print(f"  ⚠️ 标记 revoked 失败 {fname}: {ex}")
-    if updated:
-        print(f"✅ 已标记 {updated} 个 pending 订单为 revoked（filled 订单保留）")
-
-    return revoke_ok
-
-
-def revoke_all():
-    """公开接口：全撤所有买卖委托（已注销）。"""
-    print("revoke_all 已注销，不执行撤单操作")
-    return False
-
-
-def _cleanup_intent_trade():
-    """清理 intent 文件（trade.py 侧）。"""
-    if not os.path.exists(INTENT_DIR):
-        return
-    removed = 0
-    for fname in os.listdir(INTENT_DIR):
-        if fname.endswith('.json'):
-            try:
-                os.remove(os.path.join(INTENT_DIR, fname))
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        print(f"🧹 清理 {removed} 个 intent 文件")
-
-
 # ─── 连续竞价判断 ──────────────────────────────────────────────────────
 
 def _is_continuous_auction():
@@ -430,13 +163,15 @@ def _unified_trade(action, code, shares, price, pair_price=None):
             pass
 
     e = EvolvingSim()
-    orders = _load_today_orders()
-    _sync_entrust_to_orders(e=e, orders=orders)
-    _write_intent(code, action, shares, price)
+    # v2: 统一使用 state_center 的订单管理接口
+    from state_center import sync_entrust_to_orders, write_intent, write_intent_failed, write_order
+    sync_entrust_to_orders(e=e)
+    direction = '买入' if 'buy' in action else '卖出'
+    write_intent(code, action, direction)
 
     if is_t0 and not _is_continuous_auction():
         print(f"❌ 非连续竞价时段，不执行挂单")
-        _write_intent_for_failed(code, action, shares, price, reason='非连续竞价时段')
+        write_intent_failed(code, action, shares, price, reason='非连续竞价时段')
         return False
 
     if action in ('buy', 't0_buy'):
@@ -469,14 +204,13 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         except Exception:
             pass
 
-    # Bug6: 双重写订单修复 — 删除 trade._write_order 调用，统一由 state_center.write_order 管理
-    from state_center import write_order as _sc_write_order
-    _sc_write_order(code, action, shares, price, 'pending')
+    # Bug6: 双重写订单修复 — 统一由 state_center.write_order 管理
+    write_order(code, action, shares, price, 'pending')
 
     if is_t0 and pair_price is not None:
         time.sleep(5)
         _call_evolving(pair_method, code, shares, pair_price, e=e)
-        _sc_write_order(code, pair_action, shares, pair_price, 'pending')
+        write_order(code, pair_action, shares, pair_price, 'pending')
 
     return True
 
@@ -540,9 +274,6 @@ if __name__ == '__main__':
             sys.exit(1)
         pair_p = float(sys.argv[5]) if len(sys.argv) >= 6 else None
         do_t0_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
-
-    elif cmd == 'revoke_all':
-        revoke_all()
 
     else:
         print(f"未知命令: {cmd}")

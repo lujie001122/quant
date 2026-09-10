@@ -26,9 +26,69 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
+from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional, Tuple
 
-from order_manager import Order
+
+# ═══════════════════════════════════════════════════════
+# 数据类（从 order_manager.py 迁移）
+# ═══════════════════════════════════════════════════════
+
+@dataclass
+class OrderIntent:
+    """交易意图 — 决策引擎输出的交易意图（原decision_engine模块，已内联）"""
+    code: str                     # ETF代码
+    name: str = ""                # ETF名称
+    trade_type: str = "main"      # main / t0
+    direction: str = "买入"       # 买入 / 卖出
+    shares: int = 0
+    price: float = 0.0
+    pair_price: float = 0.0       # 做T配对价
+    reason: str = ""
+    source: str = "strategy"
+    confidence: float = 1.0
+
+
+@dataclass
+class Order:
+    """订单 — 完整的订单状态机"""
+    order_id: str
+    code: str
+    action: str                    # 'buy', 'sell', 't0_buy', 't0_sell'
+    direction: str                 # '买入', '卖出'
+    shares: int
+    price: float
+    pair_price: float = 0.0       # 做T配对价
+    status: str = "pending"       # pending, filled, partially_filled, revoked, failed, expired
+    filled_shares: int = 0
+    avg_fill_price: float = 0.0
+    reason: str = ""
+    source: str = "strategy"
+    confidence: float = 1.0
+    broker_order_id: str = ""     # 券商返回的订单ID
+    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    updated_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    expires_at: str = ""           # 超时时间
+    error_message: str = ""
+    retry_count: int = 0
+    account: str = "main"         # "main" 或 "t0"，逻辑子账户标识
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+    def is_active(self) -> bool:
+        """是否处于活跃状态（pending/partially_filled）"""
+        return self.status in ("pending", "partially_filled")
+
+    def is_done(self) -> bool:
+        """是否已终态"""
+        return self.status in ("filled", "revoked", "failed", "expired")
+
+    def is_buy(self) -> bool:
+        return 'buy' in self.action and 'sell' not in self.action
+
+    def is_sell(self) -> bool:
+        return 'sell' in self.action
 
 # ── 基础设施模块 ──
 from core.trade_recorder import get_recorder

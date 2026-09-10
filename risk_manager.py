@@ -358,11 +358,6 @@ class RiskManager:
 _rm = RiskManager()
 
 
-def _get_rm(enhanced_trend=False):
-    """获取 RiskManager 单例（enhanced_trend 通过参数传递，不通过实例状态）"""
-    return _rm
-
-
 def check_order(order_intent):
     """统一风控入口（P0 修复：日亏损限额在此实际生效）
     
