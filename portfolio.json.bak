@@ -10,6 +10,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": "2026-08-18",
       "peak_price": 0.745,
       "breakeven_activated": false,
@@ -48,6 +49,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": "2026-08-18",
       "peak_price": 0.674,
       "breakeven_activated": false,
@@ -86,6 +88,7 @@
       "cooldown_until": "2026-08-14",
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": "2026-08-12",
       "peak_price": 1.677,
       "breakeven_activated": false,
@@ -127,6 +130,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
       "peak_price": 1.72,
       "breakeven_activated": false,
@@ -165,6 +169,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
       "peak_price": 1.932,
       "breakeven_activated": false,
@@ -203,6 +208,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
       "peak_price": 2.306,
       "breakeven_activated": false,
@@ -241,6 +247,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
       "peak_price": 1.693,
       "breakeven_activated": false,
@@ -353,9 +360,9 @@
     }
   },
   "account": {
-    "total_asset": 163502.81,
-    "cash": 66394.61,
-    "market_value": 97108.2
+    "total_asset": 17341.95,
+    "cash": 17341.95,
+    "market_value": 0.0
   },
-  "last_updated": "2026-09-10 10:11"
+  "last_updated": "2026-09-10 11:41"
 }

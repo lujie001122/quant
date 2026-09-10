@@ -133,7 +133,7 @@ t0:
   t0_sell_ratio: 0.1
 total_fund: 220000
 trade:
-  min_shares: 5000
+  min_shares: 100
 trail_pct: 0.12
 trend:
   empty_days_threshold: 5

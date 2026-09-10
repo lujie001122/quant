@@ -354,6 +354,7 @@ class PositionManager:
         codes: List[str],
         volatilities: Optional[Dict[str, float]] = None,
         method: str = "equal",
+        actual_total_asset: Optional[float] = None,
     ) -> Dict[str, float]:
         """在多只ETF之间分配资金
 
@@ -364,6 +365,7 @@ class PositionManager:
             "equal" — 等权分配
             "risk_parity" — 风险平价
             "concentrated" — 集中持仓（前N只占更大权重）
+          actual_total_asset: 实际总资产（Bug C 修复：优先用此值，而非config的220000）
 
         返回:
           dict: {code: 分配金额}
@@ -371,7 +373,9 @@ class PositionManager:
         if not codes:
             return {}
 
-        active_fund = self.total_fund * self.active_ratio
+        # Bug C: 优先使用实际总资产，而非config的固定值
+        fund_base = actual_total_asset if actual_total_asset is not None and actual_total_asset > 0 else self.total_fund
+        active_fund = fund_base * self.active_ratio
 
         if method == "risk_parity" and volatilities:
             weights = self.risk_parity(volatilities)

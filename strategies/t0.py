@@ -116,7 +116,7 @@ class T0Strategy(BaseStrategy):
                 t0_pair = None
                 if atr_5m and price > 0:
                     pair_shares = max(int(pos.shares * ratio / 100) * 100, _CONF.get("trade", {}).get("min_shares", 5000))
-                    pair_price = calc_t0_pair_price(price, pair_shares, True)  # 固定+150价差
+                    pair_price = calc_t0_pair_price(price, pair_shares, True, atr_5min=atr_5m)  # Bug D: 传入ATR
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(pair_price - price) * pair_shares
                         if spread > _CONF.get("t0", {}).get("min_spread", 150):
@@ -139,7 +139,7 @@ class T0Strategy(BaseStrategy):
                 t0_pair = None
                 if atr_5m and price > 0:
                     pair_shares = max(int(pos.shares * ratio / 100) * 100, _CONF.get("trade", {}).get("min_shares", 5000))
-                    pair_price = calc_t0_pair_price(price, pair_shares, False)  # 固定+150价差
+                    pair_price = calc_t0_pair_price(price, pair_shares, False, atr_5min=atr_5m)  # Bug D: 传入ATR
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(price - pair_price) * pair_shares
                         if spread > _CONF.get("t0", {}).get("min_spread", 150):

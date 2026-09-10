@@ -187,29 +187,45 @@ class MoneyManager:
             return max(signal_price, live_price) if live_price > 0 else signal_price
 
     @staticmethod
-    def calc_t0_pair_price(current_price, shares, is_buy_t0):
-        """计算做T配对挂单价（固定+150元总价差）
+    def calc_t0_pair_price(current_price, shares, is_buy_t0, atr_5min=None, pair_atr_multiplier=None):
+        """计算做T配对挂单价
+
+        Bug D 修复：优先使用ATR乘数计算价差，否则回退到固定min_spread。
 
         参数:
           current_price: 当前价
           shares: 配对股数
           is_buy_t0: True=T0买入(配对卖出), False=T0卖出(配对买入)
+          atr_5min: 5分钟ATR值（用于动态价差计算）
+          pair_atr_multiplier: ATR乘数（从config t0.pair_atr_multiplier读取）
+
         返回:
           float: 配对挂单价, 或 0.0 表示无效
 
         公式:
-          - 买入信号（做T买入后高位卖出）: pair_price = (shares*price + 150) / shares
-          - 卖出信号（做T卖出后低位接回）: pair_price = (shares*price - 150) / shares
-          确保配对交易总价差为150元。
+          - 优先ATR动态价差: spread = atr_5min * pair_atr_multiplier
+          - 回退固定价差: spread = min_spread (150元)
+          - 买入信号: pair_price = (shares*price + spread) / shares
+          - 卖出信号: pair_price = (shares*price - spread) / shares
         """
         if shares <= 0 or current_price <= 0:
             return 0.0
+
+        # Bug D: 优先使用ATR动态价差
+        spread = _CONF.get("t0", {}).get("min_spread", 150)  # 默认固定价差
+        if atr_5min is not None and atr_5min > 0:
+            if pair_atr_multiplier is None:
+                pair_atr_multiplier = _CONF.get("t0", {}).get("pair_atr_multiplier", 1.1)
+            atr_spread = atr_5min * pair_atr_multiplier * shares
+            if atr_spread > 0:
+                spread = atr_spread  # ATR价差生效
+
         if is_buy_t0:
             # 做T买入：先买后卖，配对的卖出价需高于买入价
-            return round(current_price + _CONF.get("t0", {}).get("min_spread", 150) / shares, 3)
+            return round(current_price + spread / shares, 3)
         else:
             # 做T卖出：先卖后买，配对的买入价需低于卖出价
-            return round(current_price - _CONF.get("t0", {}).get("min_spread", 150) / shares, 3)
+            return round(current_price - spread / shares, 3)
 
 
 
@@ -245,5 +261,5 @@ def calc_limit_price(signal_price, live_price, is_buy):
     return MoneyManager.calc_limit_price(signal_price, live_price, is_buy)
 
 
-def calc_t0_pair_price(current_price, shares, is_buy_t0):
-    return MoneyManager.calc_t0_pair_price(current_price, shares, is_buy_t0)
+def calc_t0_pair_price(current_price, shares, is_buy_t0, atr_5min=None, pair_atr_multiplier=None):
+    return MoneyManager.calc_t0_pair_price(current_price, shares, is_buy_t0, atr_5min, pair_atr_multiplier)

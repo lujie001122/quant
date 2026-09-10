@@ -126,8 +126,14 @@ class StateCenter:
         return total
 
     def mark_today_open(self, total_asset: float = None):
-        """标记当日开盘资产。如未传入则自动用当前总资产。"""
+        """标记当日开盘资产。如未传入则自动用当前总资产。
+        
+        Bug A 修复：同一天只标记一次，防止cron重复调用刷新基准导致日亏损限额失效。
+        """
         today = datetime.now().strftime("%Y-%m-%d")
+        # 日期守卫：同一天不重复标记
+        if self._today_open_date == today and self._today_open_asset is not None:
+            return  # 今天已标记过，跳过
         if total_asset is None:
             total_asset = self.get_total_asset()
         self._today_open_asset = total_asset
@@ -149,7 +155,10 @@ class StateCenter:
             return 0.0
 
     def sync_from_portfolio(self, portfolio_data: dict):
-        """从 portfolio.json 同步账户状态到 StateCenter"""
+        """从 portfolio.json 同步账户状态到 StateCenter
+        
+        Bug B 修复：先清空旧持仓再重建，避免已清仓标的(shares=0)遗留幽灵持仓虚增总资产。
+        """
         account = portfolio_data.get("account", {})
         cash = account.get("cash", 0.0)
 
@@ -160,7 +169,10 @@ class StateCenter:
             self.main_account.cash = self.main_account.initial_cash
             self.t0_account.cash = self.t0_account.initial_cash
 
-        # 同步持仓到主账户（Bug2: 确保 positions 被加载）
+        # Bug B: 先清空旧持仓，再重建，避免幽灵持仓
+        self.main_account.positions.clear()
+
+        # 同步持仓到主账户
         for code, pos_data in portfolio_data.get("positions", {}).items():
             shares = pos_data.get("shares", 0)
             if shares > 0:
