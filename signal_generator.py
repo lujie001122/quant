@@ -271,8 +271,18 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     # ── 仓位管理器: 动态资金分配（替代固定 cfg["fund"]） ──
     _pm = get_position_manager()
     active_codes = [code for code in ETFS if code in realtime and realtime[code].get("price", 0) > 0]
-    _allocated_funds = _pm.allocate_fund(active_codes)
-    print(f"[PM] 资金分配: {_allocated_funds}")
+    # Bug C 修复: 传入 actual_total_asset 给 allocate_fund，而非用 config 固定值
+    _total_asset_for_alloc = TOTAL_FUND
+    try:
+        from state_center import StateCenter as _SC_alloc
+        _sc_alloc = _SC_alloc.get_instance()
+        _sc_alloc_ta = _sc_alloc.get_total_asset()
+        if _sc_alloc_ta and _sc_alloc_ta > 0:
+            _total_asset_for_alloc = _sc_alloc_ta
+    except Exception:
+        _total_asset_for_alloc = pf_data.get("account", {}).get("total_asset", TOTAL_FUND) if pf_data else TOTAL_FUND
+    _allocated_funds = _pm.allocate_fund(active_codes, actual_total_asset=_total_asset_for_alloc)
+    print(f"[PM] 资金分配(总资产={_total_asset_for_alloc:.0f}): {_allocated_funds}")
 
     # ── Kelly公式辅助: 从近60日交易计算Kelly比例 ──
     try:
@@ -345,7 +355,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # ═══ 综合action判定 ═══
         action = "持有"
         # 计算实际持仓占比（基于总资产，用于无信号时的展示）
-        _total_asset = pf_data.get("account", {}).get("total_asset", TOTAL_FUND) if pf_data else TOTAL_FUND
+        # Bug F 修复: 优先从 StateCenter 实时计算 total_asset，而非用 portfolio.json 旧值
+        _total_asset = TOTAL_FUND  # 默认兜底
+        try:
+            from state_center import StateCenter as _SC
+            _sc_inst = _SC.get_instance()
+            _sc_ta = _sc_inst.get_total_asset()
+            if _sc_ta and _sc_ta > 0:
+                _total_asset = _sc_ta
+        except Exception:
+            # StateCenter 不可用时降级到 pf_data
+            _total_asset = pf_data.get("account", {}).get("total_asset", TOTAL_FUND) if pf_data else TOTAL_FUND
         if pos.has_position and _total_asset > 0:
             _mv = pos.shares * price
             position_ratio = f"{_mv / _total_asset * 100:.0f}%"

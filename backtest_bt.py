@@ -39,6 +39,7 @@ backtrader 回测引擎 v3: 9 ETF 共享资金池量化策略
 """
 import sys
 import os
+import copy
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
@@ -1623,6 +1624,8 @@ class ETFStrategy(bt.Strategy):
 
         只对比默认模式（非集中/轮动/金字塔），验证evaluate_entry/check_stop_loss
         与回测引擎实际执行的操作是否一致。打印差异日志，不改策略逻辑。
+
+        Bug E 修复: 对验证用的 PositionInfo 做 deepcopy，避免策略函数修改污染 _pos_cache。
         """
         if self.p.concentrated_mode or self.p.weekly_rotation_mode or \
            self.p.concentrated_pyramid_mode or self.p.rotation_mode:
@@ -1638,7 +1641,9 @@ class ETFStrategy(bt.Strategy):
                 continue
 
             # 构建 PositionInfo + tech dict (与signal_generator同款)
+            # Bug E: 用 deepcopy 副本做验证，不污染 _pos_cache
             pos, t = self._build_pos_and_tech(d, name, date_str)
+            pos = copy.deepcopy(pos)
 
             # ── 1. 止损止盈验证 ──
             sg_stop_actions = check_stop_loss(pos, t, price, date_str, enhanced_trend=self.p.enhanced_trend)
@@ -1659,7 +1664,8 @@ class ETFStrategy(bt.Strategy):
                 for dd in self.datas:
                     nn = dd._name
                     _pp_v, _ = self._build_pos_and_tech(dd, nn, date_str)
-                    _positions_v[nn] = _pp_v
+                    # Bug E: deepcopy 每个 PositionInfo，避免 evaluate_entry 修改污染缓存
+                    _positions_v[nn] = copy.deepcopy(_pp_v)
                 _all_klines_v = {}
                 for dd in self.datas:
                     nn = dd._name
