@@ -131,15 +131,20 @@ class RiskManager:
     # 5. 综合工具
     # ═══════════════════════════════════════════════
 
-    def check_stop_loss(self, pos, t, price, today_str):
+    def check_stop_loss(self, pos, t, price, today_str, enhanced_trend=None):
         """评估止盈止损信号（同 strategy.evaluate_stop 完全一致）
+
+        参数:
+          enhanced_trend: 覆盖实例的 enhanced_trend 设置（默认使用 self.enhanced_trend）
 
         返回:
           stop_actions: [(signal_name, signal_type), ...]
         """
-        return self._evaluate_stop_loss(pos, t, price, today_str)
+        if enhanced_trend is None:
+            enhanced_trend = self.enhanced_trend
+        return self._evaluate_stop_loss(pos, t, price, today_str, enhanced_trend)
 
-    def _evaluate_stop_loss(self, pos, t, price, today_str):
+    def _evaluate_stop_loss(self, pos, t, price, today_str, enhanced_trend=False):
         # P0-6: 已统一止损逻辑 — rsi_macd.py 的 evaluate_stop 和 resolve_stop_signal
         # 现在委托给 risk_manager，单一来源。risk_manager 是唯一止损逻辑真相来源。
         """止盈止损评估核心逻辑"""
@@ -225,7 +230,7 @@ class RiskManager:
             pos.below_ma20_date = None
 
         # 趋势止盈 — 增强版 or 原版
-        if self.enhanced_trend:
+        if enhanced_trend:
             # 增强趋势止盈 — MACD红柱缩短+RSI<60 (放宽触发), 卖20%
             if t["macd_status"] == "红柱缩短" and t["rsi"] is not None and t["rsi"] < 60:
                 if pos.can_trend_profit_today(today_str):
@@ -346,22 +351,16 @@ class RiskManager:
 # ═══════════════════════════════════════════════
 # 模块级快捷函数（向后兼容）
 # ═══════════════════════════════════════════════
+# 模块级快捷函数（向后兼容）
+# ═══════════════════════════════════════════════
 
-# 默认实例(无增强)
+# 单例实例（不再区分 enhanced/非 enhanced，通过参数传递）
 _rm = RiskManager()
-
-# 回测用: 增强趋势止盈实例(lazy init)
-_rm_enhanced = None
 
 
 def _get_rm(enhanced_trend=False):
-    """获取对应模式的RiskManager实例"""
-    global _rm, _rm_enhanced
-    if not enhanced_trend:
-        return _rm
-    if _rm_enhanced is None:
-        _rm_enhanced = RiskManager(enhanced_trend=True)
-    return _rm_enhanced
+    """获取 RiskManager 单例（enhanced_trend 通过参数传递，不通过实例状态）"""
+    return _rm
 
 
 def check_order(order_intent):
@@ -376,21 +375,17 @@ def check_order(order_intent):
     """
     return _rm.check_order(order_intent)
 
-
 def check_stop_loss(pos, t, price, today_str, enhanced_trend=False):
     """评估止盈止损信号（快捷方式）
     
     参数:
-      enhanced_trend: 启用增强趋势止盈
+      enhanced_trend: 启用增强趋势止盈（通过参数传递，避免实例状态污染）
     """
-    rm = _get_rm(enhanced_trend)
-    return rm.check_stop_loss(pos, t, price, today_str)
-
+    return _rm.check_stop_loss(pos, t, price, today_str, enhanced_trend=enhanced_trend)
 
 def resolve_stop_signal(pos, stop_actions, enhanced_trend=False):
     """解析止盈止损信号（快捷方式）"""
-    rm = _get_rm(enhanced_trend)
-    return rm.resolve_stop_signal(pos, stop_actions)
+    return _rm.resolve_stop_signal(pos, stop_actions)
 
 
 def is_position_capped(pos, price, total_fund=None):

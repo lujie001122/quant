@@ -179,12 +179,16 @@ class OrderManager:
 
     @staticmethod
     def _intent_to_action(trade_type: str, direction: str) -> str:
-        """trade_type → action 字符串"""
+        """trade_type → action 字符串
+
+        Bug16: 用 tuple 映射区分 liquidate/reduce，避免混淆。
+        liquidate → "sell_liquidate" (清仓), reduce → "sell_reduce" (减仓)
+        """
         mapping = {
             ("buy", "买入"): "buy",
             ("sell", "卖出"): "sell",
-            ("liquidate", "卖出"): "sell",
-            ("reduce", "卖出"): "sell",
+            ("liquidate", "卖出"): "sell_liquidate",
+            ("reduce", "卖出"): "sell_reduce",
             ("t0", "买入"): "t0_buy",
             ("t0", "卖出"): "t0_sell",
         }

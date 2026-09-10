@@ -370,6 +370,9 @@ class ETFStrategy(bt.Strategy):
         self._last_date = ""  # 上次交易日，用于每日计数器重置
         self._day_count = 0  # 交易日计数器，用于重平衡周期判断
 
+        # Bug14: PositionInfo 缓存 — 避免每次 _build_pos_and_tech 新建实例
+        self._pos_cache = {}  # name -> PositionInfo
+
     def notify_order(self, order):
         """订单状态回调"""
         name = order.data._name
@@ -1615,6 +1618,9 @@ class ETFStrategy(bt.Strategy):
         """将 backtrader 数据转为 (PositionInfo, tech dict)
 
         用于调用实盘策略模块 evaluate_stop / evaluate_entry
+
+        Bug14: 使用缓存 PositionInfo，每次原地更新而非新建，避免 GC 压力
+               和 daily_trade_log 等跨调用状态丢失。
         """
         ps = self.ps[name]
         price = d.close[0]
@@ -1622,8 +1628,12 @@ class ETFStrategy(bt.Strategy):
         avg = self._get_avg_cost(d)
         shares = self._get_shares(d)
 
-        # ── 构建 PositionInfo ──
-        pos = PositionInfo()
+        # ── 构建 PositionInfo（使用缓存） ──
+        pos = self._pos_cache.get(name)
+        if pos is None:
+            pos = PositionInfo()
+            self._pos_cache[name] = pos
+
         if has_pos:
             pos.shares = int(shares)
             pos.avg_cost = avg
@@ -1649,6 +1659,14 @@ class ETFStrategy(bt.Strategy):
             pos.current_price = price
             pos.update_dead_active()
         else:
+            # 保留 daily_trade_log 等跨调用状态，仅重置持仓相关
+            pos.shares = 0
+            pos.avg_cost = 0.0
+            pos.base_price = None
+            pos.peak_price = 0.0
+            pos.build_phase = 0
+            pos.dead_shares = 0
+            pos.active_shares = 0
             pos.empty_days = ps["empty_days"]
             pos.prev_macd_status = ps["prev_macd_status"]
             pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None

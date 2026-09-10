@@ -313,7 +313,7 @@ class RealBroker(BaseBroker):
         try:
             if order.action == "buy":
                 result = self._call_evolving("buy", order.code, order.shares, order.price)
-            elif order.action == "sell":
+            elif order.action in ("sell", "sell_liquidate", "sell_reduce"):
                 result = self._call_evolving("sell", order.code, order.shares, order.price)
             elif order.action == "t0_buy":
                 result = self._call_evolving("buy", order.code, order.shares, order.price)
@@ -488,30 +488,22 @@ class RealBroker(BaseBroker):
 # ═══════════════════════════════════════════════════════
 
 def _load_config() -> Dict:
-    """加载 config.yaml"""
+    """加载 config.yaml
+
+    要求 PyYAML 可用；没有 PyYAML 时明确报错而非返回残缺配置。
+    """
     config_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "config.yaml"
     )
     try:
         import yaml
-        with open(config_path, "r") as f:
-            return yaml.safe_load(f) or {}
     except ImportError:
-        # 没有 PyYAML，尝试手动解析简单配置
-        try:
-            with open(config_path, "r") as f:
-                content = f.read()
-            # 简单的 key: value 解析
-            config = {}
-            for line in content.split("\n"):
-                if ":" in line and not line.strip().startswith("#"):
-                    key, _, val = line.partition(":")
-                    key = key.strip()
-                    val = val.strip().strip('"').strip("'")
-                    config[key] = val
-            return config
-        except Exception:
-            return {}
+        raise RuntimeError(
+            "PyYAML 未安装，无法加载 config.yaml。"
+            "请执行: pip install pyyaml"
+        )
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f) or {}
 
 
 def get_broker() -> BaseBroker:
