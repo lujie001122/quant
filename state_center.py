@@ -54,6 +54,11 @@ class StateCenter:
     def __init__(self):
         self.main_account = SubAccount("main")
         self.t0_account = SubAccount("t0")
+        # ── 当日开盘资产（Bug1: get_daily_pnl 基准）──
+        self._today_open_asset = None
+        self._today_open_date = None
+        # ── 行情缓存（供 get_market_price 使用）──
+        self._cached_prices = {}  # code -> float
 
     @classmethod
     def get_instance(cls):
@@ -101,20 +106,52 @@ class StateCenter:
         return self.main_account.cash + self.t0_account.cash
 
     def get_daily_pnl(self) -> float:
-        """获取当日盈亏（基于初始现金）"""
-        total = self.get_total_cash()
-        initial = self.main_account.initial_cash + self.t0_account.initial_cash
-        return total - initial
+        """获取当日盈亏（基于当日开盘资产）"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._today_open_asset is None or self._today_open_date != today:
+            # 首次调用或跨天：记录当前总资产作为开盘基准
+            self._today_open_asset = self.get_total_asset()
+            self._today_open_date = today
+        return self.get_total_asset() - self._today_open_asset
 
     def get_total_asset(self) -> float:
         """获取总资产（现金 + 持仓市值）"""
-        return self.get_total_cash()  # 简化版，实际需加持仓市值
+        total = self.get_total_cash()
+        # 遍历两个子账户的持仓，加上持仓市值
+        for account in (self.main_account, self.t0_account):
+            for symbol, pos in account.positions.items():
+                shares = pos.get("volume", 0) if isinstance(pos, dict) else getattr(pos, "volume", 0)
+                price = self.get_market_price(symbol)
+                total += shares * price
+        return total
+
+    def mark_today_open(self, total_asset: float = None):
+        """标记当日开盘资产。如未传入则自动用当前总资产。"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        if total_asset is None:
+            total_asset = self.get_total_asset()
+        self._today_open_asset = total_asset
+        self._today_open_date = today
+
+    def set_cached_prices(self, prices: dict):
+        """缓存行情价格 {code: price}，供 get_market_price 使用"""
+        self._cached_prices.update(prices)
+
+    def get_market_price(self, symbol: str) -> float:
+        """获取标的市场价格（优先缓存，否则从 portfolio.json 读取）"""
+        if symbol in self._cached_prices:
+            return self._cached_prices[symbol]
+        # 从 portfolio.json 兜底读取 current_price
+        try:
+            pf = load_portfolio()
+            return pf.get("positions", {}).get(symbol, {}).get("current_price", 0.0)
+        except Exception:
+            return 0.0
 
     def sync_from_portfolio(self, portfolio_data: dict):
         """从 portfolio.json 同步账户状态到 StateCenter"""
         account = portfolio_data.get("account", {})
         cash = account.get("cash", 0.0)
-        total_asset = account.get("total_asset", 0.0)
 
         # 默认按 80/20 分配（主策略80%，做T20%）
         if self.main_account.initial_cash == 0:
@@ -122,6 +159,19 @@ class StateCenter:
             self.t0_account.initial_cash = cash * 0.2
             self.main_account.cash = self.main_account.initial_cash
             self.t0_account.cash = self.t0_account.initial_cash
+
+        # 同步持仓到主账户（Bug2: 确保 positions 被加载）
+        for code, pos_data in portfolio_data.get("positions", {}).items():
+            shares = pos_data.get("shares", 0)
+            if shares > 0:
+                self.main_account.positions[code] = {
+                    "volume": shares,
+                    "avg_cost": pos_data.get("avg_cost", 0.0),
+                }
+                # 缓存当前价格
+                cur_price = pos_data.get("current_price", 0.0)
+                if cur_price > 0:
+                    self._cached_prices[code] = cur_price
 
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────

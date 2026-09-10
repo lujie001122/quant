@@ -314,8 +314,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         trade_type = None
         t0_pair = None  # 做T配对挂单
 
-        # 提前计算持仓占比（用于仓位上限检查，防重复计算）
-        _position_ratio_val = pos.shares * price / TOTAL_FUND if pos.has_position else 0
+        # 提前计算持仓占比（Bug3: 分母从固定TOTAL_FUND改为动态_total_asset）
+        _position_ratio_val = pos.shares * price / _total_asset if pos.has_position and _total_asset > 0 else 0
         _position_capped = pos.has_position and _position_ratio_val >= MAX_POSITION_RATIO
 
         # ═══════════════════════════════════════════════════════
@@ -568,7 +568,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         grid_tables[code] = compute_grid_table(base_prices[code], all_tech[code]["spacing"], ETFS[code]["fund"])
     result["grid_tables"] = grid_tables
 
-    # 持久化信号状态到 portfolio.json
+    # 持久化信号状态到 portfolio.json（Bug5: positions由sync独写，_signal_state由signal_generator独写）
     if pf_path and pf_data is not None:
         try:
             state_to_save = {}
@@ -577,15 +577,25 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 if code in all_tech:
                     pos.prev_macd_status = all_tech[code]["macd_status"]
                 state_to_save[code] = pos.to_dict(today_str)
+            # 只更新 _signal_state、account、last_updated，不触碰 positions（由sync独写）
             pf_data["_signal_state"] = state_to_save
-            # 更新 account 字段
-            mv = sum(p.get("market_value", 0) for p in pf_data.get("positions", {}).values())
-            cash = pf_data.get("account", {}).get("cash", 0) or 0
-            pf_data["account"] = {
-                "total_asset": round(mv + cash, 2),
-                "cash": cash,
-                "market_value": round(mv, 2),
-            }
+            # Bug15: account.total_asset 用 StateCenter 实时计算（替代旧 market_value 求和）
+            try:
+                from state_center import StateCenter as _SC
+                sc = _SC.get_instance()
+                sc.sync_from_portfolio(pf_data)
+                # 缓存实时行情价格到 StateCenter
+                sc.set_cached_prices({code: realtime.get(code, {}).get("price", 0) for code in positions if code in realtime})
+                _ta = sc.get_total_asset()
+                cash = pf_data.get("account", {}).get("cash", 0) or 0
+                _mv = _ta - cash if _ta > 0 else 0
+                pf_data["account"] = {
+                    "total_asset": round(_ta, 2),
+                    "cash": cash,
+                    "market_value": round(_mv, 2),
+                }
+            except Exception:
+                pass  # StateCenter 不可用时保留原 account 不覆盖
             pf_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             with open(pf_path, "w") as _f:
                 json.dump(pf_data, _f, ensure_ascii=False, indent=2)
