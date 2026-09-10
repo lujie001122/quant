@@ -110,11 +110,15 @@ class StateCenter:
         Bug I: 移除自动初始化，未调用 mark_today_open 时返回 0 + 警告。
         原逻辑在首次调用时自动设基准，导致日亏损限额失效（cron首次调用即刷新基准）。
         Bug K: 警告改为 QUANT_DEBUG 控制，避免刷屏。
+        Bug M: 从 portfolio.json 恢复开盘基准，使跨进程（cron新进程）也能获取正确基准。
         """
         today = datetime.now().strftime("%Y-%m-%d")
         if self._today_open_asset is None or self._today_open_date != today:
+            # Bug M: 尝试从 portfolio.json 恢复开盘基准
+            self._restore_open_asset_from_portfolio(today)
+        if self._today_open_asset is None or self._today_open_date != today:
             if os.environ.get("QUANT_DEBUG", "").strip() in ("1", "true", "yes"):
-                print(f"⚠️ get_daily_pnl: 今日未调用 mark_today_open，返回 0")
+                print(f"⚠️ get_daily_pnl: 今日未调用 mark_today_open 且 portfolio.json 无记录，返回 0")
             return 0.0
         return self.get_total_asset() - self._today_open_asset
 
@@ -133,6 +137,7 @@ class StateCenter:
         """标记当日开盘资产。如未传入则自动用当前总资产。
         
         Bug A 修复：同一天只标记一次，防止cron重复调用刷新基准导致日亏损限额失效。
+        Bug M 修复：持久化到 portfolio.json，跨进程（cron新进程）也能恢复基准。
         """
         today = datetime.now().strftime("%Y-%m-%d")
         # 日期守卫：同一天不重复标记
@@ -142,6 +147,31 @@ class StateCenter:
             total_asset = self.get_total_asset()
         self._today_open_asset = total_asset
         self._today_open_date = today
+        # Bug M: 持久化到 portfolio.json
+        self._persist_open_asset_to_portfolio(today, total_asset)
+
+    def _restore_open_asset_from_portfolio(self, today: str):
+        """Bug M: 从 portfolio.json 恢复当日开盘基准资产。
+        仅在 _today_open_asset 为 None 或日期不匹配时调用。
+        """
+        try:
+            pf = load_portfolio()
+            saved = pf.get("_today_open", {})
+            if saved.get("date") == today and saved.get("asset") is not None:
+                self._today_open_asset = saved["asset"]
+                self._today_open_date = today
+        except Exception:
+            pass  # 读取失败不影响主流程
+
+    def _persist_open_asset_to_portfolio(self, today: str, asset: float):
+        """Bug M: 将当日开盘基准资产持久化到 portfolio.json。"""
+        try:
+            pf = load_portfolio()
+            pf["_today_open"] = {"date": today, "asset": asset}
+            save_portfolio(pf)
+        except Exception as e:
+            if os.environ.get("QUANT_DEBUG", "").strip() in ("1", "true", "yes"):
+                print(f"⚠️ _persist_open_asset_to_portfolio 失败: {e}")
 
     def set_cached_prices(self, prices: dict):
         """缓存行情价格 {code: price}，供 get_market_price 使用"""

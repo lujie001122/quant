@@ -18,8 +18,8 @@
       "below_ma20_date": "2026-08-25",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 37.8,
-      "prev_macd_status": "红柱缩短",
+      "prev_rsi": 42.21,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
@@ -57,8 +57,8 @@
       "below_ma20_date": "2026-09-02",
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 46.89,
-      "prev_macd_status": "红柱放大",
+      "prev_rsi": 50.45,
+      "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
@@ -96,7 +96,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 56.24,
+      "prev_rsi": 52.69,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [
         "2026-08-12",
@@ -138,7 +138,7 @@
       "below_ma20_date": "2026-09-07",
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 50.6,
+      "prev_rsi": 45.84,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -177,8 +177,8 @@
       "below_ma20_date": "2026-09-03",
       "add_count": 1,
       "ma5_touch_count": 2,
-      "prev_rsi": 45.4,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 50.86,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": "2026-08-25",
@@ -216,7 +216,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 65.96,
+      "prev_rsi": 53.86,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -255,7 +255,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 74.26,
+      "prev_rsi": 76.51,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -277,92 +277,11 @@
       "base_price": 0.0
     }
   },
-  "positions": {
-    "159516": {
-      "build_phase": 0,
-      "build_first_price": 0.0,
-      "stop_level": 0,
-      "reached_8pct": false,
-      "reached_15pct": false,
-      "trailing_stop_price": 0.0,
-      "cooldown_until": "2026-09-06",
-      "grid_frozen": false,
-      "last_grid_trigger": null,
-      "last_reset_date": null,
-      "peak_price": 0.0,
-      "breakeven_activated": false,
-      "below_ma20_count": 0,
-      "below_ma20_date": null,
-      "add_count": 0,
-      "ma5_touch_count": 0,
-      "prev_rsi": null,
-      "prev_macd_status": null,
-      "liquidate_dates": [
-        "2026-09-04"
-      ],
-      "empty_days": 0,
-      "empty_days_date": null,
-      "daily_trade_log": {
-        "2026-09-04": {
-          "buy_count": 0,
-          "t0_count": 0
-        }
-      },
-      "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
-      "confirm_batch_count": 0,
-      "confirm_batch_date": null,
-      "shares": 0,
-      "avg_cost": 0,
-      "current_price": 0.671,
-      "entry_avg_cost": 0,
-      "base_price": null
-    },
-    "515880": {
-      "name": "通信ETF",
-      "shares": 0,
-      "avg_cost": 0.646,
-      "current_price": 0.652,
-      "market_value": 43358.0,
-      "pnl": 391.64,
-      "pnl_pct": 0.91,
-      "base_price": 0.678
-    },
-    "512400": {
-      "name": "有色ETF",
-      "shares": 0,
-      "avg_cost": 1.955,
-      "current_price": 1.902,
-      "market_value": 19020.0,
-      "pnl": -531.0,
-      "pnl_pct": -2.72,
-      "base_price": 1.942
-    },
-    "513780": {
-      "name": "港股创新药ETF",
-      "shares": 0,
-      "avg_cost": 1.733,
-      "current_price": 1.709,
-      "market_value": 12646.6,
-      "pnl": -179.49,
-      "pnl_pct": -1.4,
-      "base_price": 1.742
-    },
-    "159532": {
-      "name": "中证2000ETF",
-      "shares": 0,
-      "avg_cost": 1.654,
-      "current_price": 1.673,
-      "market_value": 22083.6,
-      "pnl": 244.28,
-      "pnl_pct": 1.12,
-      "base_price": 1.654
-    }
-  },
+  "positions": {},
   "account": {
     "total_asset": 17341.95,
     "cash": 17341.95,
     "market_value": 0.0
   },
-  "last_updated": "2026-09-10 11:53"
+  "last_updated": "2026-09-10 13:01"
 }
