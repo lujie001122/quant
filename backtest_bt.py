@@ -589,7 +589,12 @@ class ETFStrategy(bt.Strategy):
         return False, ""
 
     def _reset_daily(self, date_str):
-        """每日重置: bought_today + empty_days"""
+        """每日重置: bought_today + empty_days
+        Bug9: 加日期守卫防同一天重复重置
+        """
+        if hasattr(self, '_last_reset_date') and self._last_reset_date == date_str:
+            return  # 同一天不重复重置
+        self._last_reset_date = date_str
         for ps in self.ps.values():
             ps["bought_today"] = False
         for name, ps in self.ps.items():

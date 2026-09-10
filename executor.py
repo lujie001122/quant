@@ -613,6 +613,7 @@ class SignalExecutor:
         """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
 
         mode: None=全部, 'buy_sell'=买卖信号+做T信号都执行(互不干扰), 't0'=只执行做T
+        # Bug7修复: buy_sell模式现在也执行T0信号
 
         --execute 下单逻辑（v3.1.2）：
         - 买入限价 = min(信号价, 当前实时价)，确保 ≤ 卖一价能挂进去
@@ -668,9 +669,9 @@ class SignalExecutor:
             if not trade_type:
                 continue
             # 模式过滤
+            # Bug7: buy_sell模式也执行T0信号（原逻辑跳过T0导致做T信号丢失）
             if mode == "buy_sell":
-                if trade_type in T0_TYPES:
-                    continue
+                pass  # buy_sell模式不过滤任何信号
             elif mode == "t0":
                 if trade_type not in T0_TYPES:
                     continue

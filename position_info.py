@@ -105,6 +105,7 @@ class PositionInfo:
         self.entry_avg_cost = 0.0
         self.trend_profit_trigger_date = None
         self.ma5_sell_trigger_date = None
+        self.last_grid_trigger_date = None  # Bug11: 日期字段，用于同一天去重
 
     @property
     def entry_cost(self):
@@ -239,6 +240,7 @@ class PositionInfo:
         self.trailing_stop_price = 0.0
         self.grid_frozen = False
         self.last_grid_trigger = None
+        self.last_grid_trigger_date = None  # Bug11
         self.peak_price = 0.0
         self.breakeven_activated = False
         self.liquidate_dates.append(date_str)
@@ -291,6 +293,7 @@ class PositionInfo:
             "cooldown_until": self.cooldown_until,
             "grid_frozen": self.grid_frozen,
             "last_grid_trigger": self.last_grid_trigger,
+            "last_grid_trigger_date": self.last_grid_trigger_date,  # Bug11
             "last_reset_date": self.last_reset_date,
             "peak_price": self.peak_price,
             "breakeven_activated": self.breakeven_activated,
@@ -334,6 +337,7 @@ class PositionInfo:
         self.prev_macd_status = data.get("prev_macd_status")
         self.liquidate_dates = data.get("liquidate_dates", [])
         self.last_grid_trigger = data.get("last_grid_trigger")
+        self.last_grid_trigger_date = data.get("last_grid_trigger_date")  # Bug11
         self.last_reset_date = data.get("last_reset_date")
         self.empty_days = data.get("empty_days", 0)
         self.empty_days_date = data.get("empty_days_date")

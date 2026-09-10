@@ -469,12 +469,14 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         except Exception:
             pass
 
-    _write_order(code, action, shares, price, 'pending', 'pending')
+    # Bug6: 双重写订单修复 — 删除 trade._write_order 调用，统一由 state_center.write_order 管理
+    from state_center import write_order as _sc_write_order
+    _sc_write_order(code, action, shares, price, 'pending')
 
     if is_t0 and pair_price is not None:
         time.sleep(5)
         _call_evolving(pair_method, code, shares, pair_price, e=e)
-        _write_order(code, pair_action, shares, pair_price, 'pending', 'pending')
+        _sc_write_order(code, pair_action, shares, pair_price, 'pending')
 
     return True
 

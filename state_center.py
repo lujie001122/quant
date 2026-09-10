@@ -303,14 +303,17 @@ def get_etfs_config(fund_per_etf=None):
             with open(config_path, 'r') as f:
                 _cfg = yaml.safe_load(f) or {}
             max_per_etf = _cfg.get('max_per_etf', 220000)
+            # Bug8: 集中模式预留20%现金 — cash_reserve_ratio
+            cash_reserve_ratio = _cfg.get('cash_reserve_ratio', 0.20)
+            investable_fund = int(max_per_etf * (1 - cash_reserve_ratio))
             # 集中模式：每只ETF分一半资金
             if _cfg.get('concentrated_mode', False):
                 top_n = _cfg.get('concentrated_top_n', 3)
-                fund_per_etf = max_per_etf // top_n
+                fund_per_etf = investable_fund // top_n
             else:
                 pool = _load_pool()
                 n_etfs = len(pool['etf_pool']) if pool else len(_DEFAULT_CODES)
-                fund_per_etf = max_per_etf // n_etfs
+                fund_per_etf = investable_fund // n_etfs
         except Exception:
             fund_per_etf = 44000
     pool = _load_pool()

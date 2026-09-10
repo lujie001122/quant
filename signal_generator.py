@@ -165,9 +165,10 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         # entry_avg_cost初始化: 如果为0但实际有持仓, 用当前avg_cost
                         if p.entry_avg_cost == 0 and p.shares > 0:
                             p.entry_avg_cost = p.avg_cost
-                    # last_grid_trigger跨天重置
-                    if p.last_grid_trigger and p.last_grid_trigger != today_str:
+                    # Bug11: last_grid_trigger跨天重置 — 用日期字段判断
+                    if p.last_grid_trigger and p.last_grid_trigger_date != today_str:
                         p.last_grid_trigger = None
+                        p.last_grid_trigger_date = None
         except Exception:
             print("[WARN] portfolio.json 读取失败，跳过状态恢复")
             pass
@@ -388,12 +389,14 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 else:
                     # 检查是否已触发过同一档位
                     grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
-                    if pos.last_grid_trigger == grid_key:
+                    # Bug11: 用日期字段判断是否同一天触发
+                    if pos.last_grid_trigger == grid_key and pos.last_grid_trigger_date == today_str:
                         action = "持有(等下一档)"
                         reason = f"网格{grid_key}今日已触发,等下一档"
                     else:
                         pos.record_buy(today_str)
                         pos.last_grid_trigger = grid_key
+                        pos.last_grid_trigger_date = today_str  # Bug11: 记录日期
                         action = "买入"
                         position_ratio = f"{grid_weight*100:.0f}%"
                         reason = grid_signal
@@ -409,11 +412,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 else:
                     # 提取卖出档位做去重（与买入侧对称）
                     grid_key = grid_signal.split("(")[0] if "(" in grid_signal else grid_signal
-                    if pos.last_grid_trigger == grid_key:
+                    # Bug11: 用日期字段判断是否同一天触发
+                    if pos.last_grid_trigger == grid_key and pos.last_grid_trigger_date == today_str:
                         action = "持有(等下一档)"
                         reason = f"网格{grid_key}今日已触发,等下一档"
                     elif pos.active_shares > 0:
                         pos.last_grid_trigger = grid_key
+                        pos.last_grid_trigger_date = today_str  # Bug11: 记录日期
                         # 更新base_price到当前价，使网格上移，防止同一档位重复触发
                         pos.base_price = round(price, 3)
                         action = "卖出"
