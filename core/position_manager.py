@@ -548,3 +548,24 @@ class PositionManager:
             "max_single_ratio": round(max_ratio, 4),
             "by_code": by_code,
         }
+
+
+# ══════════════════════════════════════════════
+# 全局单例（可选使用）
+# ══════════════════════════════════════════════
+
+_global_pm: Optional["PositionManager"] = None
+
+
+def get_position_manager(total_fund: float = 0) -> "PositionManager":
+    """获取全局仓位管理器实例"""
+    global _global_pm
+    if _global_pm is None:
+        _global_pm = PositionManager(total_fund=total_fund)
+    return _global_pm
+
+
+def set_position_manager(pm: "PositionManager") -> None:
+    """设置全局仓位管理器实例"""
+    global _global_pm
+    _global_pm = pm

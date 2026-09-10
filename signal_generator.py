@@ -31,6 +31,9 @@ from position_info import (
     DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE, MAX_POSITION_RATIO,
 )
 
+# ── 仓位管理器 ──
+from core.position_manager import PositionManager
+
 # ── 策略判定 ──
 from strategies.rsi_macd import (
     check_defense,
@@ -182,6 +185,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                            "volume": 0, "amount": 0, "high": 0, "low": 0, "open": 0, "prev_close": 0}
                     for code in ETFS}
 
+    # ── 缓存行情到 StateCenter ──
+    try:
+        from state_center import StateCenter as _SC
+        _sc = _SC.get_instance()
+        _sc.set_cached_prices({code: realtime.get(code, {}).get("price", 0) for code in ETFS if code in realtime})
+        _sc.mark_today_open()
+        _open_asset = _sc._today_open_asset
+        print(f"[SC] 缓存行情已更新, mark_today_open={'%.0f' % _open_asset if _open_asset else 'N/A'}")
+    except Exception as _sc_err:
+        print(f"[WARN] StateCenter 缓存行情失败: {_sc_err}")
+
     # 如果没有传入K线和指标数据，需要获取
     if all_klines is None:
         all_klines = {}
@@ -251,6 +265,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     # P2: 市场环境过滤(检查防御标的是否也弱势)
     defense_weak = check_defense(DEFENSE_CODE, all_tech, realtime)
 
+    # ── 仓位管理器: 动态资金分配（替代固定 cfg["fund"]） ──
+    _pm = PositionManager()
+    active_codes = [code for code in ETFS if code in realtime and realtime[code].get("price", 0) > 0]
+    _allocated_funds = _pm.allocate_fund(active_codes)
+    print(f"[PM] 资金分配: {_allocated_funds}")
+
     # 信号生成
     signals_output = {}
     for code, cfg in ETFS.items():
@@ -268,7 +288,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         pos = positions[code]
         price = r["price"]
         spacing = t["spacing"]
-        fund = cfg["fund"]
+        fund = _allocated_funds.get(code, cfg["fund"])
         base = base_prices[code]
         atr_pct = (t.get("atr_5min") or t["atr"]) / price if (t.get("atr_5min") or t["atr"]) and price else 0
 
@@ -570,7 +590,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
     grid_tables = {}
     for code in ETFS:
-        grid_tables[code] = compute_grid_table(base_prices[code], all_tech[code]["spacing"], ETFS[code]["fund"])
+        grid_tables[code] = compute_grid_table(base_prices[code], all_tech[code]["spacing"], _allocated_funds.get(code, ETFS[code]["fund"]))
     result["grid_tables"] = grid_tables
 
     # 持久化信号状态到 portfolio.json（Bug5: positions由sync独写，_signal_state由signal_generator独写）

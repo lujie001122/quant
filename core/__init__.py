@@ -10,6 +10,6 @@ core — 基础设施模块包
 """
 
 from core.atomic_writer import atomic_write_json, atomic_read_json
-from core.alert import AlertManager, AlertLevel
-from core.trade_recorder import TradeRecorder
-from core.position_manager import PositionManager
+from core.alert import AlertManager, AlertLevel, get_alert_manager
+from core.trade_recorder import TradeRecorder, get_recorder
+from core.position_manager import PositionManager, get_position_manager

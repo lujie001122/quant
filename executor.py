@@ -30,6 +30,10 @@ from typing import Any, Dict, Optional, Tuple
 
 from order_manager import Order
 
+# ── 基础设施模块 ──
+from core.trade_recorder import get_recorder
+from core.alert import get_alert_manager
+
 
 # ═══════════════════════════════════════════════════════
 # 执行结果
@@ -948,6 +952,19 @@ class SignalExecutor:
                                 save_portfolio(pf)
                             except Exception:
                                 pass
+
+                        # ═══ 记录交易 ═══
+                        try:
+                            _direction = "buy" if is_buy_direction else "sell"
+                            _tag = trade_type if trade_type in ("t0", "grid") else ("liquidate" if trade_type == "liquidate" else "reduce" if trade_type == "reduce" else "signal")
+                            get_recorder().record(
+                                code=code, direction=_direction, shares=shares,
+                                price=price, amount=shares * price,
+                                tag=_tag,
+                            )
+                        except Exception as _rec_err:
+                            print(f"  [WARN] trade_recorder 记录失败: {_rec_err}")
+
                         break
 
                     elif err_type == "tonghuashun_disconnect":
@@ -996,6 +1013,12 @@ class SignalExecutor:
 
             if not success:
                 fail_count += 1
+                # ═══ 交易失败告警 ═══
+                try:
+                    _alert_msg = f"{code} {direction}失败: {final_error or '未知错误'} (类型: {final_error_type or 'unknown'})"
+                    get_alert_manager().critical("交易失败", _alert_msg, dedup_key=f"trade_fail:{code}:{today_str}")
+                except Exception as _alt_err:
+                    print(f"  [WARN] alert 告警失败: {_alt_err}")
 
             if i < len(actionable) - 1:
                 time.sleep(3)

@@ -503,3 +503,24 @@ class TradeRecorder:
         """今日已实现盈亏"""
         trades = self.today_trades()
         return round(sum(t.pnl for t in trades if t.direction == "sell"), 2)
+
+
+# ══════════════════════════════════════════════
+# 全局单例（可选使用）
+# ══════════════════════════════════════════════
+
+_global_recorder: Optional["TradeRecorder"] = None
+
+
+def get_recorder() -> "TradeRecorder":
+    """获取全局交易记录器实例"""
+    global _global_recorder
+    if _global_recorder is None:
+        _global_recorder = TradeRecorder()
+    return _global_recorder
+
+
+def set_recorder(recorder: "TradeRecorder") -> None:
+    """设置全局交易记录器实例"""
+    global _global_recorder
+    _global_recorder = recorder
