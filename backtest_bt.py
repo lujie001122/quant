@@ -373,6 +373,10 @@ class ETFStrategy(bt.Strategy):
         # Bug14: PositionInfo 缓存 — 避免每次 _build_pos_and_tech 新建实例
         self._pos_cache = {}  # name -> PositionInfo
 
+        # 验证采样: 每100天对比signal_generator判定与回测实际操作
+        self._verify_bar_count = 0
+        self._verify_mismatch_log = []  # 收集差异日志
+
     def notify_order(self, order):
         """订单状态回调"""
         name = order.data._name
@@ -1609,6 +1613,104 @@ class ETFStrategy(bt.Strategy):
         # ── End of day ──
         self._update_prev_macd()
 
+        # ── 验证采样: 每100天对比signal_generator判定 ──
+        self._verify_bar_count += 1
+        if self._verify_bar_count % 100 == 0:
+            self._verify_signal_consistency(date_str)
+
+    def _verify_signal_consistency(self, date_str):
+        """每100天采样: 用signal_generator同款策略函数判定，对比回测实际操作
+
+        只对比默认模式（非集中/轮动/金字塔），验证evaluate_entry/check_stop_loss
+        与回测引擎实际执行的操作是否一致。打印差异日志，不改策略逻辑。
+        """
+        if self.p.concentrated_mode or self.p.weekly_rotation_mode or \
+           self.p.concentrated_pyramid_mode or self.p.rotation_mode:
+            return  # 集中/轮动模式有独立逻辑，跳过验证
+
+        for d in self.datas:
+            name = d._name
+            ps = self.ps[name]
+            price = d.close[0]
+
+            # 跳过未上市
+            if d.volume[0] < 0:
+                continue
+
+            # 构建 PositionInfo + tech dict (与signal_generator同款)
+            pos, t = self._build_pos_and_tech(d, name, date_str)
+
+            # ── 1. 止损止盈验证 ──
+            sg_stop_actions = check_stop_loss(pos, t, price, date_str, enhanced_trend=self.p.enhanced_trend)
+            # 回测实际执行了什么？检查 ps 状态变化
+            bt_had_stop = bool(sg_stop_actions)  # signal_generator判定有止损信号
+
+            # 回测中是否执行了止损操作？通过检查当前bar是否有清仓/减仓
+            # (回测先执行了止损再到这里，所以ps已更新)
+            # 简单方式：看是否有order_pending或者liquidated标记
+            bt_liquidated = (not self._has_position(d) and ps.get("_last_exit_reason", "").startswith(("均价", "硬止损", "趋势止盈", "移动止盈", "破MA20", "保本")))
+            bt_reduced = ps.get("_last_exit_reason", "").startswith(("减仓", "卖活动"))
+
+            # ── 2. 入场验证 ──
+            sg_entry_result = None
+            if not self._has_position(d) and ps["build_phase"] == 0 and not ps["bought_today"]:
+                _realtime_v = {dd._name: {"price": dd.close[0]} for dd in self.datas}
+                _positions_v = {}
+                for dd in self.datas:
+                    nn = dd._name
+                    _pp_v, _ = self._build_pos_and_tech(dd, nn, date_str)
+                    _positions_v[nn] = _pp_v
+                _all_klines_v = {}
+                for dd in self.datas:
+                    nn = dd._name
+                    n_bars = min(21, len(dd.close))
+                    closes_v = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
+                    _all_klines_v[nn] = [{"close": c} for c in closes_v]
+                atr_val = self.atr[name].atr[0]
+                atr_pct_v = atr_val / price if atr_val and price > 0 else 0
+                defense_weak_v = False
+                if DEFENSE_CODE:
+                    for dd in self.datas:
+                        if dd._name == DEFENSE_CODE:
+                            dd_price = dd.close[0]
+                            all_tech_d = {DEFENSE_CODE: {
+                                "ma20": self.ma20[DEFENSE_CODE][0],
+                                "dif": self.macd[DEFENSE_CODE].dif[0],
+                                "macd_status": MACDStatus.STATUS_MAP.get(self.macd[DEFENSE_CODE].status[0], "震荡"),
+                            }}
+                            realtime_d = {DEFENSE_CODE: {"price": dd_price}}
+                            defense_weak_v = check_defense(DEFENSE_CODE, all_tech_d, realtime_d)
+                            if defense_weak_v:
+                                defense_sector = self.SECTOR_MAP.get(DEFENSE_CODE, "")
+                                name_sector = self.SECTOR_MAP.get(name, "")
+                                if defense_sector and name_sector != defense_sector:
+                                    defense_weak_v = False
+                            break
+                sg_entry_result = evaluate_entry(
+                    pos, t, price, _realtime_v, _positions_v,
+                    _all_klines_v, name, date_str, atr_pct_v, defense_weak_v
+                )
+
+            # ── 3. 差异检测 ──
+            mismatches = []
+            # 止损差异：signal_generator判定有止损但回测未执行
+            if bt_had_stop and not bt_liquidated and not bt_reduced:
+                stop_desc = ", ".join(f"{n}({ty})" for n, ty in sg_stop_actions)
+                mismatches.append(f"止损信号未执行: sg={stop_desc}")
+            # 入场差异：signal_generator判定买入但回测未买入
+            if sg_entry_result and sg_entry_result[0] == "买入" and sg_entry_result[2] == "buy":
+                if not ps["bought_today"] and ps["build_phase"] == 0:
+                    mismatches.append(f"入场信号未执行: sg={sg_entry_result[3][:50]}")
+            # 回测买入但signal_generator未判定
+            if ps["bought_today"] and (not sg_entry_result or sg_entry_result[0] != "买入"):
+                mismatches.append(f"回测买入但sg无信号: bt_reason={ps.get('_last_entry_reason', '?')[:50]}")
+
+            if mismatches:
+                entry_info = f"pos={pos.shares}股 bp={pos.build_phase} sl={pos.stop_level}"
+                log_line = f"[VERIFY] {date_str} {name} price={price:.3f} {entry_info} | " + " | ".join(mismatches)
+                self._verify_mismatch_log.append(log_line)
+                print(log_line)
+
     # ═══════════════════════════════════════════════
     # 统一策略调用桥: 将 backtrader 数据转为 PositionInfo + tech dict,
     # 调用实盘策略模块 (risk_manager / rsi_macd), 再转回 backtrader 操作
@@ -2213,6 +2315,19 @@ def main():
         mkt = pos.size * d.close[0]
         status = "空仓" if pos.size == 0 else ("建仓中" if strat.ps[name]["build_phase"] == 1 else "持仓中")
         print(f"  {name:<8} {cfg['name']:<12} {pos.size:>10,d} ¥{mkt:>11,.0f} {status:>8}")
+
+    # ── 验证采样汇总 ──
+    verify_log = getattr(strat, '_verify_mismatch_log', [])
+    print(f"\n{'─' * 70}")
+    print(f"  验证采样汇总: 采样{strat._verify_bar_count // 100}次, 差异{len(verify_log)}条")
+    if verify_log:
+        print(f"  {'─' * 70}")
+        for line in verify_log[:30]:  # 最多显示30条
+            print(f"  {line}")
+        if len(verify_log) > 30:
+            print(f"  ... 还有{len(verify_log) - 30}条差异日志")
+    else:
+        print(f"  ✓ signal_generator判定与回测引擎完全一致")
 
     print(f"\n{'=' * 70}")
     print(f"  回测完成 (backtrader引擎)")
