@@ -32,7 +32,10 @@ from position_info import (
 )
 
 # ── 仓位管理器 ──
-from core.position_manager import PositionManager
+from core.position_manager import PositionManager, get_position_manager
+
+# ── 交易记录器 ──
+from core.trade_recorder import get_recorder
 
 # ── 策略判定 ──
 from strategies.rsi_macd import (
@@ -266,10 +269,27 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     defense_weak = check_defense(DEFENSE_CODE, all_tech, realtime)
 
     # ── 仓位管理器: 动态资金分配（替代固定 cfg["fund"]） ──
-    _pm = PositionManager()
+    _pm = get_position_manager()
     active_codes = [code for code in ETFS if code in realtime and realtime[code].get("price", 0) > 0]
     _allocated_funds = _pm.allocate_fund(active_codes)
     print(f"[PM] 资金分配: {_allocated_funds}")
+
+    # ── Kelly公式辅助: 从近60日交易计算Kelly比例 ──
+    try:
+        _recorder = get_recorder()
+        _report = _recorder.performance_report(days=60)
+        _kelly_half = _pm.kelly_from_history(
+            wins=_report.get("win_count", 0),
+            losses=_report.get("loss_count", 0),
+            avg_win=_report.get("avg_win", 0),
+            avg_loss=abs(_report.get("avg_loss", 0)) if _report.get("avg_loss", 0) != 0 else 0,
+            fraction=0.5,
+        )
+        print(f"[Kelly] 近60日: 胜率{_report.get('win_rate', 0):.1%} "
+              f"盈亏比{abs(_report.get('avg_win', 0) / _report.get('avg_loss', 1)):.2f} "
+              f"半Kelly={_kelly_half:.1%}")
+    except Exception as _ke:
+        print(f"[Kelly] 计算跳过: {_ke}")
 
     # 信号生成
     signals_output = {}

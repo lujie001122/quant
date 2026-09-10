@@ -104,10 +104,10 @@ class TradeRecord:
             except (ValueError, TypeError):
                 ts = datetime.now()
         return cls(
-            code=d["code"],
-            direction=d["direction"],
-            shares=d["shares"],
-            price=d["price"],
+            code=d.get("code", ""),
+            direction=d.get("direction", "buy"),
+            shares=d.get("shares", 0),
+            price=d.get("price", 0.0),
             amount=d.get("amount", 0),
             fee=d.get("fee", 0),
             pnl=d.get("pnl", 0),
