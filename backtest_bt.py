@@ -452,12 +452,12 @@ class ETFStrategy(bt.Strategy):
         target_shares = int(target_value / price / 100) * 100
         current = self._get_shares(data)
         need = target_shares - current
-        if need < 100: return False  # min_shares from config
+        if need < MIN_SHARES: return False  # 低于最小交易股数
         # 资金约束
         cost = need * price * (1 + SLIPPAGE_PCT) + FEE
         if cost > self.broker.getcash():
             need = int(self.broker.getcash() / price / 100) * 100
-            if need < 100: return False  # min_shares from config
+            if need < MIN_SHARES: return False  # 低于最小交易股数
         self._order_pending[name] = self.buy(data=data, size=need)
         self.ps[name]['_last_entry_reason'] = reason
         return True
