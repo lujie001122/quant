@@ -52,7 +52,7 @@ with open(_CONFIG_PATH) as f:
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
-from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS
+from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS, MIN_SHARES
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
 # 网格策略已删除(集中模式仓位已满，网格几乎不触发)
 from risk_manager import check_stop_loss as _rm_check_stop_loss, resolve_stop_signal as _rm_resolve_stop
