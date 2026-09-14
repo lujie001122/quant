@@ -146,22 +146,28 @@ def atomic_read_json(
     if data is not None:
         return data
 
-    print(f"[atomic_writer] 主文件损坏: {filepath}，尝试从备份恢复...")
+    file_exists = os.path.exists(filepath)
+    if file_exists and not _QUIET:
+        print(f"[atomic_writer] 主文件损坏: {filepath}，尝试从备份恢复...")
 
     # ── Step 2: 按顺序尝试备份文件 ──
     for i in range(max_backups):
         bak_path = filepath + backup_suffix if i == 0 else f"{filepath}{backup_suffix}{i}"
         data = _try_read_json(bak_path)
         if data is not None:
-            print(f"[atomic_writer] 从备份恢复成功: {bak_path}")
+            if not _QUIET:
+                print(f"[atomic_writer] 从备份恢复成功: {bak_path}")
             # 恢复成功后写回主文件
             atomic_write_json(filepath, data, max_backups=max_backups, backup_suffix=backup_suffix)
             return data
 
     # ── Step 3: 全部失败 ──
-    print(f"[atomic_writer] 所有备份均失败，返回默认值")
+    if file_exists and not _QUIET:
+        print(f"[atomic_writer] 所有备份均失败，返回默认值")
     return default
 
+
+_QUIET = os.environ.get("ATOMIC_WRITER_QUIET", "0") == "1"
 
 def _try_read_json(filepath: str) -> Optional[Any]:
     """尝试读取并解析JSON文件
@@ -176,7 +182,8 @@ def _try_read_json(filepath: str) -> Optional[Any]:
         with open(filepath, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
-        print(f"[atomic_writer] 读取失败 {filepath}: {e}")
+        if not _QUIET:
+            print(f"[atomic_writer] 读取失败 {filepath}: {e}")
         return None
 
 

@@ -365,11 +365,19 @@ class RealBroker(BaseBroker):
         self._ensure_tonghuashun_active()
 
         # 校验数量
+        min_shares = _load_config().get("trade", {}).get("min_shares", 5000)
         if order.shares % 100 != 0:
             return ExecutionResult(
                 success=False,
                 order=order,
                 error_message=f"数量{order.shares}不是100的倍数",
+                error_type="other",
+            )
+        if order.shares < min_shares:
+            return ExecutionResult(
+                success=False,
+                order=order,
+                error_message=f"数量{order.shares}低于{min_shares}股下限",
                 error_type="other",
             )
 
