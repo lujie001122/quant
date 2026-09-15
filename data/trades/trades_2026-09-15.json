@@ -96,5 +96,19 @@
     "pnl": 0.0,
     "tag": "t0",
     "account": "main"
+  },
+  {
+    "timestamp": "2026-09-15T13:33:27.756834",
+    "date": "2026-09-15",
+    "time": "13:33:27",
+    "code": "513780",
+    "direction": "buy",
+    "shares": 5000,
+    "price": 1.639,
+    "amount": 8195.0,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "t0",
+    "account": "main"
   }
 ]

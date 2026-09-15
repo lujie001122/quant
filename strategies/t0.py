@@ -85,11 +85,7 @@ class T0Strategy(BaseStrategy):
             result["t0_signal"] = t0_signal
         elif sell_score >= 2:
             if pos.can_t0_today(today_str, atr_pct):
-                profit_ok = pos.avg_cost > 0 and price > pos.avg_cost
-                if profit_ok:
-                    t0_signal = f"卖出做T5m({sell_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
-                else:
-                    t0_signal = f"卖出做T5m信号但价低于成本({pos.avg_cost:.3f}),不执行"
+                t0_signal = f"卖出做T5m({sell_score}项共振,RSI5m={rsi_5min},MACD5m={macd_5min_status},量比5m={vol_ratio_5min})"
             else:
                 t0_signal = f"卖出做T5m({sell_score}项信号,今日做T次数已用尽({pos._get_daily_log(today_str).get('t0_count', 0)}/{pos.max_daily_t0(atr_pct)}))"
             result["t0_signal"] = t0_signal

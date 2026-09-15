@@ -1041,8 +1041,21 @@ class SignalExecutor:
                         break
 
                     elif err_type == "tonghuashun_disconnect":
-                        print(f"  ⚠️ 同花顺断连，跳过当前信号")
-                        alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连，跳过该信号。"
+                        print(f"  ⚠️ 同花顺断连，尝试重启后重试")
+                        try:
+                            self._subprocess.run(["python3", os.path.join(script_dir, "scripts/restart_ths.py"), "--no-revoke"], timeout=30)
+                            time.sleep(3)
+                            # 重试下单
+                            retry_r = self._subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                            if retry_r.returncode == 0:
+                                print(f"  ✅ {code} 重启后重试成功")
+                                success_count += 1
+                                break
+                            else:
+                                print(f"  ❌ {code} 重启后重试仍失败")
+                        except Exception as restart_err:
+                            print(f"  ❌ 重启失败: {restart_err}")
+                        alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连，重启重试仍失败。"
                         print(alert_msg, file=sys.stderr)
                         final_error = err_detail
                         final_error_type = err_type

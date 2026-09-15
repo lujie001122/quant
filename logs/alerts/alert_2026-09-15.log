@@ -5,3 +5,4 @@
 [11:12:10] [CRIT] 交易失败: 159981 买入失败: 同花顺断连 (类型: tonghuashun_disconnect)
 [11:41:55] [CRIT] 交易失败: 512400 买入失败: 同花顺断连 (类型: tonghuashun_disconnect)
 [11:42:08] [CRIT] 交易失败: 159981 买入失败: 同花顺断连 (类型: tonghuashun_disconnect)
+[13:33:50] [CRIT] 交易失败: 159981 卖出失败: 同花顺断连 (类型: tonghuashun_disconnect)
