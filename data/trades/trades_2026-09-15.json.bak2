@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-09-15T10:00:43.202168",
+    "date": "2026-09-15",
+    "time": "10:00:43",
+    "code": "515880",
+    "direction": "sell",
+    "shares": 38100,
+    "price": 0.657,
+    "amount": 25031.7,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "reduce",
+    "account": "main"
+  }
+]

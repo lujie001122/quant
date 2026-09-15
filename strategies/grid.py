@@ -68,7 +68,7 @@ class GridStrategy(BaseStrategy):
             per_fund = fund * w
             if math.isnan(p) or p <= 0:
                 continue
-            shares = int(per_fund / p / 100) * 100
+            shares = max(int(per_fund / p / 100) * 100, 5000)
             table["buy"].append({"grid": i, "price": round(p, 3), "shares": shares,
                                  "fund": round(shares * p, 0), "weight": f"{w*100:.0f}%"})
         for i in range(1, GRID_SELL_LEVELS + 1):

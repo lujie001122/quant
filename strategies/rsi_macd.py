@@ -114,7 +114,7 @@ class RSIMACDStrategy(BaseStrategy):
     def _update_entry_cost(pos, price, ratio, code):
         """买入时加权平均更新 entry_avg_cost（不回改shares，回测引擎自己管理）"""
         fund = ETFS.get(code, {}).get("fund", _CONF.get("max_per_etf", 220000) // max(len(ETFS), 1))
-        shares = int(fund * ratio / price / 100) * 100
+        shares = max(int(fund * ratio / price / 100) * 100, 5000)
         if shares >= 100 and pos.shares > 0 and pos.entry_avg_cost > 0:
             pos.entry_avg_cost = (pos.entry_avg_cost * pos.shares + price * shares) / (pos.shares + shares)
         elif shares >= 100:

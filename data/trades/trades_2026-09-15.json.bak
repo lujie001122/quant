@@ -1,0 +1,44 @@
+[
+  {
+    "timestamp": "2026-09-15T10:00:43.202168",
+    "date": "2026-09-15",
+    "time": "10:00:43",
+    "code": "515880",
+    "direction": "sell",
+    "shares": 38100,
+    "price": 0.657,
+    "amount": 25031.7,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "reduce",
+    "account": "main"
+  },
+  {
+    "timestamp": "2026-09-15T10:11:38.765899",
+    "date": "2026-09-15",
+    "time": "10:11:38",
+    "code": "159532",
+    "direction": "buy",
+    "shares": 2600,
+    "price": 1.633,
+    "amount": 4245.8,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "t0",
+    "account": "main"
+  },
+  {
+    "timestamp": "2026-09-15T11:00:44.652152",
+    "date": "2026-09-15",
+    "time": "11:00:44",
+    "code": "159981",
+    "direction": "sell",
+    "shares": 1300,
+    "price": 1.771,
+    "amount": 2302.3,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "signal",
+    "account": "main"
+  }
+]

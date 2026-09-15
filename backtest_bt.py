@@ -449,7 +449,7 @@ class ETFStrategy(bt.Strategy):
         name = data._name
         target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * POSITION_CAP)
         price = data.close[0]
-        target_shares = int(target_value / price / 100) * 100
+        target_shares = max(int(target_value / price / 100) * 100, MIN_SHARES)
         current = self._get_shares(data)
         need = target_shares - current
         if need < MIN_SHARES: return False  # 低于最小交易股数
@@ -467,7 +467,7 @@ class ETFStrategy(bt.Strategy):
         name = data._name
         current = self._get_shares(data)
         if current < 100: return False  # 无持仓可卖
-        shares = int(current * pct / 100 / 100) * 100
+        shares = max(int(current * pct / 100 / 100) * 100, MIN_SHARES)
         if shares < 100: return False
         # 防止卖出超过持仓
         if shares > current:
@@ -1407,7 +1407,7 @@ class ETFStrategy(bt.Strategy):
                             price = d.close[0]
                             # 100%资金买入
                             target_value = TOTAL_FUND * 0.98  # 留2%给手续费
-                            target_shares = int(target_value / price / 100) * 100
+                            target_shares = max(int(target_value / price / 100) * 100, MIN_SHARES)
                             if target_shares >= 100:
                                 cost = target_shares * price * (1 + SLIPPAGE_PCT) + FEE
                                 if cost <= self.broker.getcash():
@@ -1877,7 +1877,7 @@ class ETFStrategy(bt.Strategy):
                 return False
             elif sig_type == "trend_profit_sell":
                 active_shares = int(shares * ACTIVE_RATIO)
-                sell_shares = int(active_shares * 0.10 / 100) * 100
+                sell_shares = max(int(active_shares * 0.10 / 100) * 100, MIN_SHARES)
                 if sell_shares >= 100:
                     if self._sell(d, 10, sig_name):
                         ps["trend_sell_today"] += 1
@@ -1891,7 +1891,7 @@ class ETFStrategy(bt.Strategy):
             elif sig_type == "trend_profit_sell_enhanced":
                 # 增强趋势止盈: 卖20%活动仓(替代原版10%)
                 active_shares = int(shares * ACTIVE_RATIO)
-                sell_shares = int(active_shares * 0.20 / 100) * 100
+                sell_shares = max(int(active_shares * 0.20 / 100) * 100, MIN_SHARES)
                 if sell_shares >= 100:
                     if self._sell(d, 20, sig_name):
                         ps["trend_sell_today"] += 1
@@ -1904,7 +1904,7 @@ class ETFStrategy(bt.Strategy):
                 return False
             elif sig_type == "sell_active_5pct":
                 active_shares = int(shares * ACTIVE_RATIO)
-                sell_shares = int(active_shares * 0.05 / 100) * 100
+                sell_shares = max(int(active_shares * 0.05 / 100) * 100, MIN_SHARES)
                 if sell_shares >= 100:
                     if self._sell(d, 5, sig_name):
                         ps["ma5_sell_today"] += 1

@@ -468,8 +468,8 @@ class PositionManager:
         if price <= 0 or fund <= 0 or ratio <= 0:
             return 0
         target_value = fund * ratio
-        shares = int(target_value / price / round_lot) * round_lot
-        return max(shares, self.min_shares)
+        shares = max(int(target_value / price / round_lot) * round_lot, self.min_shares)
+        return shares
 
     def position_value_ratio(
         self,

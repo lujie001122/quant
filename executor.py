@@ -864,7 +864,7 @@ class SignalExecutor:
                     fail_count += 1
                     continue
                 ratio = 0.20
-                shares = int(current_shares * ratio / 100) * 100
+                shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 if shares < 100:
                     shares = 100
                 if "买入" in action:
@@ -882,7 +882,7 @@ class SignalExecutor:
             elif trade_type == "buy":
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
                 fund = self._ETFS.get(code, {}).get("fund", 44000)
-                shares = int(fund * ratio / price / 100) * 100
+                shares = max(int(fund * ratio / price / 100) * 100, 5000)
                 if shares < 100:
                     print(f"[EXECUTE] ⚠️ {code} 买入股数不足(fund={fund}, ratio={ratio:.0%}, shares={shares})，跳过")
                     fail_count += 1
@@ -895,7 +895,7 @@ class SignalExecutor:
                 current_shares = self._get_position_shares(code)
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
                 if ratio > 0:
-                    shares = int(current_shares * ratio / 100) * 100
+                    shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 else:
                     shares = current_shares
                 if shares < 100 or shares > current_shares:
@@ -923,9 +923,9 @@ class SignalExecutor:
                 current_shares = self._get_position_shares(code)
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
                 if ratio > 0:
-                    shares = int(current_shares * ratio / 100) * 100
+                    shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 else:
-                    shares = int(current_shares * 0.30 / 100) * 100
+                    shares = max(int(current_shares * 0.30 / 100) * 100, 5000)
                 if shares < 100 or shares > current_shares:
                     shares = min(current_shares, max(shares, 100))
                 if shares < 100 or current_shares < 100:
