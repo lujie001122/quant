@@ -54,5 +54,47 @@
     "pnl": 0.0,
     "tag": "t0",
     "account": "main"
+  },
+  {
+    "timestamp": "2026-09-15T11:41:41.625077",
+    "date": "2026-09-15",
+    "time": "11:41:41",
+    "code": "513780",
+    "direction": "sell",
+    "shares": 5000,
+    "price": 1.646,
+    "amount": 8230.0,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "t0",
+    "account": "main"
+  },
+  {
+    "timestamp": "2026-09-15T13:11:45.541454",
+    "date": "2026-09-15",
+    "time": "13:11:45",
+    "code": "512400",
+    "direction": "buy",
+    "shares": 6400,
+    "price": 1.734,
+    "amount": 11097.6,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "t0",
+    "account": "main"
+  },
+  {
+    "timestamp": "2026-09-15T13:11:59.064875",
+    "date": "2026-09-15",
+    "time": "13:11:59",
+    "code": "159981",
+    "direction": "buy",
+    "shares": 5900,
+    "price": 1.769,
+    "amount": 10437.1,
+    "fee": 0.0,
+    "pnl": 0.0,
+    "tag": "t0",
+    "account": "main"
   }
 ]

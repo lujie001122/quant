@@ -856,8 +856,9 @@ class SignalExecutor:
                     fail_count += 1
                     continue
 
-            # ── 做T信号(无配对挂单，降级为普通买卖) ──
+            # ── 做T信号(无配对挂单，自动计算配对价执行双边做T) ──
             elif trade_type == "t0" and not t0_pair:
+                from money_manager import calc_t0_pair_price
                 current_shares = self._get_position_shares(code)
                 if current_shares < 100:
                     print(f"[EXECUTE] ⚠️ {code} 做T但无持仓({current_shares}股)，跳过")
@@ -865,14 +866,17 @@ class SignalExecutor:
                     continue
                 ratio = 0.20
                 shares = max(int(current_shares * ratio / 100) * 100, 5000)
-                if shares < 100:
-                    shares = 100
+                atr_5min = sig.get('atr_5min', 0)
                 if "买入" in action:
-                    cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
-                    label = f"做T买入(无配对) {code} {shares}股 @{price:.3f}"
+                    pair_price = calc_t0_pair_price(price, shares, True, atr_5min=atr_5min)
+                    cmd = ["python3", trade_script, "t0_buy",
+                           code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
+                    label = f"做T买入 {code} {shares}股 @{price:.3f} (配对@{pair_price:.3f})"
                 elif "卖出" in action:
-                    cmd = ["python3", trade_script, "sell", code, str(shares), f"{price:.3f}"]
-                    label = f"做T卖出(无配对) {code} {shares}股 @{price:.3f}"
+                    pair_price = calc_t0_pair_price(price, shares, False, atr_5min=atr_5min)
+                    cmd = ["python3", trade_script, "t0_sell",
+                           code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
+                    label = f"做T卖出 {code} {shares}股 @{price:.3f} (配对@{pair_price:.3f})"
                 else:
                     print(f"[EXECUTE] ⚠️ {code} 做T方向未知(action={action})，跳过")
                     fail_count += 1
