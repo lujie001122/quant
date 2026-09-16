@@ -153,6 +153,40 @@ class RiskManager:
         if not pos.has_position:
             return stop_actions
 
+        # ── 阶梯止盈 + 盈利保护(增量: 只加不改现有止损) ──
+        if pos.entry_cost > 0:
+            profit_pct = (price - pos.entry_cost) / pos.entry_cost
+
+            # 盈利保护: 浮盈>=3%时止损线上移到成本×1.005(保本+0.5%)
+            profit_protect_cfg = _cfg.get("profit_protect", {})
+            activate_pct = profit_protect_cfg.get("activate_pct", 0.03)
+            stop_margin = profit_protect_cfg.get("stop_margin", 0.005)
+            if profit_pct >= activate_pct:
+                protect_stop = pos.entry_cost * (1 + stop_margin)
+                pos.trailing_stop_price = max(pos.trailing_stop_price, protect_stop)
+
+            # 阶梯止盈: 三级检查，只卖活动仓
+            ladder_cfg = _cfg.get("ladder_profit", {})
+            if ladder_cfg:
+                l1_pct = ladder_cfg.get("level1_pct", 0.03)
+                l1_sell = ladder_cfg.get("level1_sell", 0.10)
+                l2_pct = ladder_cfg.get("level2_pct", 0.05)
+                l2_sell = ladder_cfg.get("level2_sell", 0.15)
+                l3_pct = ladder_cfg.get("level3_pct", 0.08)
+                l3_sell = ladder_cfg.get("level3_sell", 0.20)
+
+                if profit_pct >= l1_pct and not pos.reached_3pct:
+                    pos.reached_3pct = True
+                    stop_actions.append((f"阶梯止盈{int(l1_pct*100)}%卖活动仓{int(l1_sell*100)}%", f"sell_active_{int(l1_sell*100)}pct"))
+
+                if profit_pct >= l2_pct and not pos.reached_5pct:
+                    pos.reached_5pct = True
+                    stop_actions.append((f"阶梯止盈{int(l2_pct*100)}%卖活动仓{int(l2_sell*100)}%", f"sell_active_{int(l2_sell*100)}pct"))
+
+                if profit_pct >= l3_pct and not pos.reached_8pct_ladder:
+                    pos.reached_8pct_ladder = True
+                    stop_actions.append((f"阶梯止盈{int(l3_pct*100)}%卖活动仓{int(l3_sell*100)}%", f"sell_active_{int(l3_sell*100)}pct"))
+
         # ── 均价止损分级: 仓位<50%→-25%, 50-80%→-20%, >80%→-15% ──
         # ── 浮盈止损上移: 浮盈>5%→保本线, >10%→成本+5% ──
         if pos.entry_cost > 0:

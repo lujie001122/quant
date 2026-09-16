@@ -106,6 +106,10 @@ class PositionInfo:
         self.trend_profit_trigger_date = None
         self.ma5_sell_trigger_date = None
         self.last_grid_trigger_date = None  # Bug11: 日期字段，用于同一天去重
+        # 阶梯止盈标记
+        self.reached_3pct = False
+        self.reached_5pct = False
+        self.reached_8pct_ladder = False
 
     @property
     def entry_cost(self):
@@ -245,6 +249,10 @@ class PositionInfo:
         self.breakeven_activated = False
         self.liquidate_dates.append(date_str)
         self.empty_days = 0
+        # 阶梯止盈标记重置
+        self.reached_3pct = False
+        self.reached_5pct = False
+        self.reached_8pct_ladder = False
         try:
             from datetime import datetime as _dt, timedelta as _td
             dt = _dt.strptime(date_str, "%Y-%m-%d")
@@ -316,6 +324,9 @@ class PositionInfo:
             "current_price": self.current_price,
             "entry_avg_cost": self.entry_avg_cost,
             "base_price": self.base_price,
+            "reached_3pct": self.reached_3pct,
+            "reached_5pct": self.reached_5pct,
+            "reached_8pct_ladder": self.reached_8pct_ladder,
         }
 
     def from_dict(self, data):
@@ -350,3 +361,6 @@ class PositionInfo:
         self.confirm_batch_count = data.get("confirm_batch_count", 0)
         self.confirm_batch_date = data.get("confirm_batch_date", None)
         self.base_price = data.get("base_price")
+        self.reached_3pct = data.get("reached_3pct", False)
+        self.reached_5pct = data.get("reached_5pct", False)
+        self.reached_8pct_ladder = data.get("reached_8pct_ladder", False)

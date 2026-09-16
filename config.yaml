@@ -141,3 +141,18 @@ trend:
 trend_profit:
   cooldown_days: 2
   max_daily: 2
+
+# 阶梯止盈(仅极高利润轻仓)
+ladder_profit:
+  enabled: false
+  level1_pct: 0.30
+  level1_sell: 0.05
+  level2_pct: 0.45
+  level2_sell: 0.05
+  level3_pct: 0.55
+  level3_sell: 0.05
+
+# 盈利保护
+profit_protect:
+  activate_pct: 0.05
+  stop_margin: 0.005

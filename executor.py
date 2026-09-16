@@ -711,7 +711,7 @@ class SignalExecutor:
             print(f"[EXECUTE] ⚠️ 获取实时行情失败: {e}，将使用信号价作为兜底")
 
         # 按模式过滤信号
-        BUY_SELL_TYPES = {"buy", "sell", "liquidate", "reduce"}
+        BUY_SELL_TYPES = {"buy", "sell", "liquidate", "reduce", "sell_active_10pct", "sell_active_15pct", "sell_active_20pct"}
         T0_TYPES = {"t0"}
 
         actionable = []

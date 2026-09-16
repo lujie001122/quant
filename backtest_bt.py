@@ -353,6 +353,9 @@ class ETFStrategy(bt.Strategy):
                 "market_reduced": False,  # 大盘自适应减仓标记
                 "market_drawdown_level": 0,  # 大盘回撤减仓等级: 0=无, 1=>5%, 2=>8%, 3=>12%
                 "market_drawdown_date": "",  # 大盘回撤减仓最近触发日期(防同日重复)
+                "reached_3pct": False,  # 阶梯止盈3%标记
+                "reached_5pct": False,  # 阶梯止盈5%标记
+                "reached_8pct_ladder": False,  # 阶梯止盈8%标记
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -645,6 +648,9 @@ class ETFStrategy(bt.Strategy):
         ps["market_reduced"] = False  # 重置大盘自适应减仓标记
         ps["market_drawdown_level"] = 0  # 重置大盘回撤减仓等级
         ps["market_drawdown_date"] = ""
+        ps["reached_3pct"] = False  # 重置阶梯止盈3%标记
+        ps["reached_5pct"] = False  # 重置阶梯止盈5%标记
+        ps["reached_8pct_ladder"] = False  # 重置阶梯止盈8%标记
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -1765,6 +1771,9 @@ class ETFStrategy(bt.Strategy):
             pos.confirm_batch_count = ps.get("confirm_batch_count", 0)
             pos.confirm_batch_date = ps.get("confirm_batch_date", None)
             pos.current_price = price
+            pos.reached_3pct = ps.get("reached_3pct", False)
+            pos.reached_5pct = ps.get("reached_5pct", False)
+            pos.reached_8pct_ladder = ps.get("reached_8pct_ladder", False)
             pos.update_dead_active()
         else:
             # Bug14: 空仓分支完全重置所有持仓相关字段
@@ -1802,6 +1811,9 @@ class ETFStrategy(bt.Strategy):
             pos.confirm_batch_count = 0
             pos.confirm_batch_date = None
             pos.cooldown_until = ps["cooldown_until"] if ps["cooldown_until"] else None
+            pos.reached_3pct = False
+            pos.reached_5pct = False
+            pos.reached_8pct_ladder = False
 
         # ── 构建 tech dict ──
         rsi_val = self.rsi[name].rsi[0]
@@ -1848,6 +1860,9 @@ class ETFStrategy(bt.Strategy):
             ps["cooldown_until"] = pos.cooldown_until
         ps["confirm_batch_count"] = getattr(pos, 'confirm_batch_count', 0)
         ps["confirm_batch_date"] = getattr(pos, 'confirm_batch_date', None)
+        ps["reached_3pct"] = getattr(pos, 'reached_3pct', False)
+        ps["reached_5pct"] = getattr(pos, 'reached_5pct', False)
+        ps["reached_8pct_ladder"] = getattr(pos, 'reached_8pct_ladder', False)
         # entry_avg_cost / base / first_price / peak_price 由回测引擎管理，
         # 但策略 evaluate_entry 可能通过 pos._enter_position 更新了 build_phase,
         # 或 evaluate_stop 更新了 stop_level / below_ma20_count
@@ -1914,6 +1929,18 @@ class ETFStrategy(bt.Strategy):
                                 ps["ma5_sell_cooling_until"] = (dt + timedelta(days=TREND_PROFIT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
                             except:
                                 ps["ma5_sell_cooling_until"] = ""
+                return False
+            elif sig_type in ("sell_active_10pct", "sell_active_15pct", "sell_active_20pct"):
+                # 阶梯止盈: 只卖活动仓，数量=max(active_shares×sell_pct, 5000)
+                active_shares = int(shares * ACTIVE_RATIO)
+                sell_pct_map = {"sell_active_10pct": 0.10, "sell_active_15pct": 0.15, "sell_active_20pct": 0.20}
+                sell_pct_val = sell_pct_map.get(sig_type, 0.10)
+                sell_shares = max(int(active_shares * sell_pct_val / 100) * 100, MIN_SHARES)
+                if sell_shares >= 100:
+                    # 转为百分比给_sell方法
+                    pct_int = int(sell_pct_val * 100)
+                    if self._sell(d, pct_int, sig_name):
+                        pass  # 阶梯止盈无冷却机制
                 return False
         return False
 
