@@ -50,14 +50,15 @@ class MoneyManager:
         if shares <= 0 or current_price <= 0:
             return 0.0
 
-        # Bug D: 优先使用ATR动态价差
-        spread = _CONF.get("t0", {}).get("min_spread", 150)  # 默认固定价差
+        # Bug D: ATR动态价差与固定价差取最大值
+        min_spread = _CONF.get("t0", {}).get("min_spread", 150)  # 默认固定价差
+        spread = min_spread
         if atr_5min is not None and atr_5min > 0:
             if pair_atr_multiplier is None:
                 pair_atr_multiplier = _CONF.get("t0", {}).get("pair_atr_multiplier", 1.1)
             atr_spread = atr_5min * pair_atr_multiplier * shares
-            if atr_spread > 0:
-                spread = atr_spread  # ATR价差生效
+            if atr_spread > min_spread:
+                spread = atr_spread  # 只有ATR大于固定价差时才覆盖
 
         if is_buy_t0:
             # 做T买入：先买后卖，配对的卖出价需高于买入价
