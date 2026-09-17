@@ -156,3 +156,12 @@ ladder_profit:
 profit_protect:
   activate_pct: 0.05
   stop_margin: 0.005
+
+# 绩效分析管理端数据库（MySQL 8.0 + SQLAlchemy 2.0）
+database:
+  url: "mysql+pymysql://root:lujie001122@127.0.0.1:3306/quant?charset=utf8mb4"
+  echo: false
+  pool_size: 10
+  max_overflow: 20
+  pool_recycle: 3600
+  pool_pre_ping: true

@@ -50,7 +50,7 @@ class TradeRecord:
 
     __slots__ = (
         'timestamp', 'date', 'time', 'code', 'direction',
-        'shares', 'price', 'amount', 'fee', 'pnl', 'tag', 'account',
+        'shares', 'price', 'amount', 'fee', 'pnl', 'tag', 'account', 'trade_id',
     )
 
     def __init__(
@@ -78,6 +78,7 @@ class TradeRecord:
         self.pnl = pnl  # 卖出时记录已实现盈亏
         self.tag = tag  # 标签: "t0" / "grid" / "signal" / "stop_loss" 等
         self.account = account  # "main" / "t0"
+        self.trade_id = None  # MySQL trades 表主键（record() 写库后回填）
 
     def to_dict(self) -> dict:
         return {
@@ -157,8 +158,19 @@ class TradeRecorder:
         pnl: float = 0.0,
         tag: str = "",
         account: str = "main",
+        contract_no: Optional[str] = None,
+        deal_no: Optional[str] = None,
+        signal_date: Optional[str] = None,
+        signal_source: Optional[str] = None,
+        strategy_name: Optional[str] = None,
+        entry_cost: Optional[float] = None,
+        hold_days: int = 0,
+        trade_category: str = "normal",
+        pair_deal_no: Optional[str] = None,
+        pair_pnl: Optional[float] = None,
+        reason: Optional[str] = None,
     ) -> TradeRecord:
-        """记录一笔交易
+        """记录一笔交易（写入 MySQL trades 表）
 
         参数:
           code: ETF代码
@@ -168,11 +180,22 @@ class TradeRecorder:
           amount: 成交金额
           fee: 手续费
           pnl: 已实现盈亏（卖出时）
-          tag: 交易标签
+          tag: 交易标签（兼容旧参数，映射到 trade_category）
           account: 账户（main/t0）
+          contract_no: 合同编号（同花顺委托编号）
+          deal_no: 成交编号
+          signal_date: 信号生成日期（'YYYY-MM-DD'，隔夜单与成交日不同）
+          signal_source: 信号来源（RSI抄底/趋势止盈/做T/网格/阶梯止盈等）
+          strategy_name: 策略名称
+          entry_cost: 建仓均价（卖出时填写）
+          hold_days: 持仓天数
+          trade_category: normal/t0/grid/sell_core
+          pair_deal_no: 做T配对成交编号
+          pair_pnl: 做T套利金额
+          reason: 交易原因
 
         返回:
-          TradeRecord: 创建的记录
+          TradeRecord: 创建的记录（内存对象，同时已写 MySQL）
         """
         trade = TradeRecord(
             code=code,
@@ -186,6 +209,56 @@ class TradeRecorder:
             account=account,
         )
 
+        # 兼容旧 tag 参数: 未显式传 trade_category 时从 tag 推断
+        category = trade_category
+        if category in (None, "", "normal") and tag in ("t0", "grid"):
+            category = tag
+
+        # ── 写 MySQL（主存储）──
+        trade_id = None
+        try:
+            from core.repositories import TradeRepo
+            from decimal import Decimal as _D
+            from datetime import date as _date
+
+            _signal_date = None
+            if signal_date:
+                try:
+                    _signal_date = _date.fromisoformat(str(signal_date)[:10])
+                except (ValueError, TypeError):
+                    _signal_date = None
+
+            trade_id = TradeRepo.insert({
+                'trade_date': trade.timestamp.date(),
+                'trade_time': trade.timestamp.time(),
+                'code': code,
+                'name': self._code_name(code),
+                'direction': trade.direction,
+                'shares': int(shares),
+                'price': _D(str(price)),
+                'amount': _D(str(amount)) if amount else _D(str(shares * price)),
+                'fee': _D(str(fee or 0)),
+                'pnl': _D(str(pnl or 0)),
+                'contract_no': contract_no,
+                'deal_no': deal_no,
+                'signal_date': _signal_date,
+                'signal_source': signal_source,
+                'strategy_name': strategy_name,
+                'entry_cost': _D(str(entry_cost)) if entry_cost else None,
+                'hold_days': int(hold_days or 0),
+                'trade_category': category or 'normal',
+                'pair_deal_no': pair_deal_no,
+                'pair_pnl': _D(str(pair_pnl)) if pair_pnl else None,
+                'account': account,
+                'reason': reason,
+            })
+        except Exception as db_err:
+            # MySQL 写入失败时回退到 JSON 文件（保证交易记录不丢）
+            print(f"  [WARN] MySQL写入失败, 回退JSON: {db_err}")
+            self._append_to_daily_file(trade)
+
+        trade.trade_id = trade_id
+
         # 更新内存缓存
         today = trade.date
         if today != self._cache_date:
@@ -193,10 +266,17 @@ class TradeRecorder:
             self._cache_date = today
         self._cache.append(trade)
 
-        # 持久化到文件（按日）
-        self._append_to_daily_file(trade)
-
         return trade
+
+    def _code_name(self, code: str) -> str:
+        """查询ETF名称（失败返回空串，不影响记录）"""
+        try:
+            from state_center import get_code_map
+            return get_code_map().get(code, {}).get("name", "") or ""
+        except Exception:
+            return ""
+
+
 
     # ── 查询 ──
 

@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ETF量化 · 绩效仪表盘 {{ start }} ~ {{ end }}</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8;
+    --green: #10b981; --red: #ef4444; --blue: #3b82f6; --amber: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; gap: 16px; }
+  .cols-2 { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { .cols-2 { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 12px; color: var(--blue); }
+  .chart { width: 100%; min-height: 300px; }
+
+  /* 持仓卡片 */
+  .pos-card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; margin-bottom: 12px; overflow: hidden;
+  }
+  .pos-head {
+    display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline;
+    padding: 14px 16px; cursor: pointer; user-select: none;
+  }
+  .pos-head:hover { background: #243447; }
+  .pos-head .code { font-size: 16px; font-weight: 700; color: var(--blue); }
+  .pos-head .name { font-size: 14px; }
+  .pos-head .metric { font-size: 13px; color: var(--muted); }
+  .pos-head .metric b { color: var(--text); font-weight: 600; }
+  .pos-head .pnl-pos { color: var(--green); font-weight: 700; }
+  .pos-head .pnl-neg { color: var(--red); font-weight: 700; }
+  .pos-body { display: none; padding: 0 16px 16px; border-top: 1px solid var(--border); }
+  .pos-card.open .pos-body { display: block; }
+  .pos-card.open .pos-head .arrow { transform: rotate(90deg); }
+  .arrow { transition: transform .15s; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; }
+  th:hover { color: var(--text); }
+  td:first-child, th:first-child { text-align: left; }
+  tr:hover td { background: #243447; }
+  .num-pos { color: var(--green); }
+  .num-neg { color: var(--red); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 9px; font-size: 11px; }
+  .tag-buy { background: #064e3b; color: #34d399; }
+  .tag-sell { background: #7f1d1d; color: #f87171; }
+  .tag-t0 { background: #78350f; color: #fbbf24; }
+  .tag-grid { background: #1e3a8a; color: #93c5fd; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .toolbar input, .toolbar select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px;
+  }
+  .section-title {
+    font-size: 16px; margin: 24px 0 12px; padding-left: 10px;
+    border-left: 3px solid var(--blue);
+  }
+  .empty { color: var(--muted); padding: 20px; text-align: center; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>ETF量化交易 · 绩效仪表盘</h1>
+<div class="sub">区间 {{ start }} ~ {{ end }} · 生成于 {{ generated_at }} · MySQL quant 库</div>
+
+<!-- ═══ 持仓卡片 ═══ -->
+<div class="section-title">持仓明细（点击展开买入追溯）</div>
+{% if positions %}
+  {% for p in positions %}
+  <div class="pos-card" id="pos-{{ p.code }}">
+    <div class="pos-head" onclick="toggleCard('{{ p.code }}')">
+      <span class="arrow">▶</span>
+      <span class="code">{{ p.code }}</span>
+      <span class="name">{{ p.name }}</span>
+      <span class="metric">持仓 <b>{{ '{:,}'.format(p.position.shares) }}</b> 股</span>
+      <span class="metric">均价 <b>{{ p.position.avg_cost }}</b></span>
+      <span class="metric">建仓均价 <b>{{ p.position.entry_avg_cost }}</b></span>
+      <span class="metric">首次买入 <b>{{ p.position.first_buy_date or '-' }}</b></span>
+      {% if p.summary.total_pnl >= 0 %}
+      <span class="pnl-pos">累计盈亏 +{{ '%.2f'|format(p.summary.total_pnl) }}</span>
+      {% else %}
+      <span class="pnl-neg">累计盈亏 {{ '%.2f'|format(p.summary.total_pnl) }}</span>
+      {% endif %}
+    </div>
+    <div class="pos-body">
+      <p style="font-size:12.5px;color:var(--muted);margin:12px 0 8px;">
+        累计买入 {{ '{:,}'.format(p.summary.total_bought) }} 股 / {{ '%.2f'|format(p.summary.total_cost) }} 元
+        · 加权成本 {{ p.summary.weighted_avg_cost }}
+        · 累计卖出 {{ '{:,}'.format(p.summary.total_sold) }} 股
+        · 阶梯止盈 {{ '2%' if p.position.reached_2pct else '-' }} /
+        {{ '4%' if p.position.reached_4pct else '-' }} /
+        {{ '6%' if p.position.reached_6pct else '-' }}
+      </p>
+      <table>
+        <thead><tr>
+          <th>日期</th><th>方向</th><th>股数</th><th>价格</th><th>金额</th>
+          <th>信号来源</th><th>分类</th><th>盈亏</th><th>持仓天数</th><th>合同编号</th>
+        </tr></thead>
+        <tbody>
+        {% for b in p.buys %}
+          <tr>
+            <td>{{ b.trade_date }}</td>
+            <td><span class="tag tag-buy">买入</span></td>
+            <td>{{ '{:,}'.format(b.shares) }}</td>
+            <td>{{ b.price }}</td>
+            <td>{{ '%.2f'|format(b.amount or 0) }}</td>
+            <td>{{ b.signal_source or '-' }}</td>
+            <td><span class="tag tag-{{ b.trade_category }}">{{ b.trade_category }}</span></td>
+            <td>-</td><td>-</td>
+            <td>{{ b.contract_no or '-' }}</td>
+          </tr>
+        {% endfor %}
+        {% for s in p.sells %}
+          <tr>
+            <td>{{ s.trade_date }}</td>
+            <td><span class="tag tag-sell">卖出</span></td>
+            <td>{{ '{:,}'.format(s.shares) }}</td>
+            <td>{{ s.price }}</td>
+            <td>{{ '%.2f'|format(s.amount or 0) }}</td>
+            <td>{{ s.signal_source or '-' }}</td>
+            <td><span class="tag tag-{{ s.trade_category }}">{{ s.trade_category }}</span></td>
+            <td class="{{ 'num-pos' if (s.pnl or 0) >= 0 else 'num-neg' }}">
+              {{ '+%.2f'|format(s.pnl or 0) if (s.pnl or 0) >= 0 else '%.2f'|format(s.pnl or 0) }}</td>
+            <td>{{ s.hold_days if s.hold_days is not none else '-' }}</td>
+            <td>{{ s.contract_no or '-' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="panel"><div class="empty">暂无活跃持仓（position_state 表为空，先跑 sync 或 migrate）</div></div>
+{% endif %}
+
+<!-- ═══ 图表 ═══ -->
+<div class="section-title">绩效图表</div>
+<div class="grid cols-2">
+  <div class="panel"><h2>资金曲线</h2><div id="chart-equity" class="chart"></div></div>
+  <div class="panel"><h2>每日盈亏</h2><div id="chart-daily" class="chart"></div></div>
+  <div class="panel"><h2>分ETF盈亏贡献</h2><div id="chart-code" class="chart"></div></div>
+  <div class="panel"><h2>交易分类占比（按笔数）</h2><div id="chart-cat" class="chart"></div></div>
+</div>
+
+<!-- ═══ 信号来源胜率表 ═══ -->
+<div class="section-title">信号来源胜率（卖出交易）</div>
+<div class="panel">
+  {% if by_signal %}
+  <table id="tbl-signal">
+    <thead><tr>
+      <th>信号来源</th><th>卖出笔数</th><th>盈利</th><th>亏损</th><th>胜率</th>
+      <th>总盈亏</th><th>平均盈亏</th>
+    </tr></thead>
+    <tbody>
+    {% for r in by_signal %}
+    <tr>
+      <td>{{ r.signal_source }}</td>
+      <td>{{ r.sell_count }}</td>
+      <td>{{ r.win_count }}</td>
+      <td>{{ r.loss_count }}</td>
+      <td>{{ '%.1f'|format(r.win_rate * 100) }}%</td>
+      <td class="{{ 'num-pos' if r.total_pnl >= 0 else 'num-neg' }}">{{ '%.2f'|format(r.total_pnl) }}</td>
+      <td class="{{ 'num-pos' if r.avg_pnl >= 0 else 'num-neg' }}">{{ '%.2f'|format(r.avg_pnl) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">区间内无带 signal_source 的卖出记录</div>{% endif %}
+</div>
+
+<!-- ═══ 做T/普通/网格对比 ═══ -->
+<div class="section-title">做T / 普通 / 网格 / 卖底仓 对比</div>
+<div class="panel">
+  {% if t0_categories %}
+  <table id="tbl-t0">
+    <thead><tr>
+      <th>分类</th><th>总笔数</th><th>买入笔数</th><th>卖出笔数</th>
+      <th>买入金额</th><th>卖出金额</th><th>已实现盈亏</th><th>做T配对盈亏</th><th>胜率</th>
+    </tr></thead>
+    <tbody>
+    {% for c in t0_categories %}
+    <tr>
+      <td><span class="tag tag-{{ c.category }}">{{ c.category }}</span></td>
+      <td>{{ c.trades }}</td><td>{{ c.buy_count }}</td><td>{{ c.sell_count }}</td>
+      <td>{{ '%.2f'|format(c.buy_amount) }}</td>
+      <td>{{ '%.2f'|format(c.sell_amount) }}</td>
+      <td class="{{ 'num-pos' if c.pnl >= 0 else 'num-neg' }}">{{ '%.2f'|format(c.pnl) }}</td>
+      <td class="{{ 'num-pos' if c.pair_pnl >= 0 else 'num-neg' }}">{{ '%.2f'|format(c.pair_pnl) }}</td>
+      <td>{{ '%.1f'|format(c.win_rate * 100) }}%</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">区间内无交易</div>{% endif %}
+</div>
+
+<!-- ═══ 分ETF统计 ═══ -->
+<div class="section-title">分ETF统计</div>
+<div class="panel">
+  {% if by_code %}
+  <table id="tbl-code">
+    <thead><tr>
+      <th data-k="code">代码</th><th>名称</th><th data-k="trades">总笔数</th>
+      <th data-k="buys">买入</th><th data-k="sells">卖出</th>
+      <th data-k="total_buy_amount">买入金额</th><th data-k="total_sell_amount">卖出金额</th>
+      <th data-k="pnl">盈亏</th><th data-k="win_rate">胜率</th>
+    </tr></thead>
+    <tbody>
+    {% for r in by_code %}
+    <tr>
+      <td>{{ r.code }}</td><td>{{ r.name }}</td>
+      <td>{{ r.trades }}</td><td>{{ r.buys }}</td><td>{{ r.sells }}</td>
+      <td>{{ '%.2f'|format(r.total_buy_amount) }}</td>
+      <td>{{ '%.2f'|format(r.total_sell_amount) }}</td>
+      <td class="{{ 'num-pos' if r.pnl >= 0 else 'num-neg' }}">{{ '%.2f'|format(r.pnl) }}</td>
+      <td>{{ '%.1f'|format(r.win_rate * 100) }}%</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<div class="empty">区间内无交易</div>{% endif %}
+</div>
+
+<!-- ═══ 交易明细表 ═══ -->
+<div class="section-title">交易明细（可搜索 / 排序 / 筛选日期）</div>
+<div class="panel">
+  <div class="toolbar">
+    <input id="f-search" type="text" placeholder="搜索代码/名称/信号/合同编号…" oninput="filterTrades()">
+    <input id="f-date" type="date" onchange="filterTrades()">
+    <select id="f-dir" onchange="filterTrades()">
+      <option value="">全部方向</option>
+      <option value="buy">买入</option>
+      <option value="sell">卖出</option>
+    </select>
+  </div>
+  <div style="max-height: 480px; overflow: auto;">
+  <table id="tbl-trades">
+    <thead><tr>
+      <th data-k="trade_date">日期</th><th data-k="trade_time">时间</th>
+      <th data-k="code">代码</th><th data-k="name">名称</th>
+      <th data-k="direction">方向</th><th data-k="shares">股数</th>
+      <th data-k="price">价格</th><th data-k="amount">金额</th>
+      <th data-k="pnl">盈亏</th><th data-k="signal_source">信号来源</th>
+      <th data-k="trade_category">分类</th><th data-k="contract_no">合同编号</th>
+    </tr></thead>
+    <tbody>
+    {% for t in trades %}
+    <tr data-date="{{ t.trade_date }}" data-dir="{{ t.direction }}"
+        data-search="{{ t.code }} {{ t.name }} {{ t.signal_source }} {{ t.contract_no }} {{ t.reason }}">
+      <td>{{ t.trade_date }}</td>
+      <td>{{ t.trade_time or '-' }}</td>
+      <td>{{ t.code }}</td>
+      <td>{{ t.name }}</td>
+      <td><span class="tag tag-{{ 'buy' if t.direction == 'buy' else 'sell' }}">{{ '买入' if t.direction == 'buy' else '卖出' }}</span></td>
+      <td>{{ '{:,}'.format(t.shares) }}</td>
+      <td>{{ t.price }}</td>
+      <td>{{ '%.2f'|format(t.amount or 0) }}</td>
+      <td class="{{ 'num-pos' if (t.pnl or 0) >= 0 else 'num-neg' }}">
+        {% if t.direction == 'sell' %}{{ '%.2f'|format(t.pnl or 0) }}{% else %}-{% endif %}</td>
+      <td>{{ t.signal_source or '-' }}</td>
+      <td><span class="tag tag-{{ t.trade_category }}">{{ t.trade_category }}</span></td>
+      <td>{{ t.contract_no or '-' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+// ── 持仓卡片展开/收起 ──
+function toggleCard(code) {
+  document.getElementById('pos-' + code).classList.toggle('open');
+}
+
+// ── 图表数据 ──
+const curve = {{ curve_json }};
+const darkLayout = {
+  paper_bgcolor: '#1e293b', plot_bgcolor: '#1e293b',
+  font: { color: '#e2e8f0', size: 11 },
+  margin: { t: 20, r: 20, b: 36, l: 56 },
+  xaxis: { gridcolor: '#334155' }, yaxis: { gridcolor: '#334155' },
+};
+
+// 资金曲线
+if (curve.dates.length) {
+  Plotly.newPlot('chart-equity', [{
+    x: curve.dates, y: curve.total_assets, mode: 'lines',
+    line: { color: '#3b82f6', width: 2 }, fill: 'tozeroyy',
+    fillcolor: 'rgba(59,130,246,0.12)', name: '总资产',
+  }], { ...darkLayout, yaxis: { ...darkLayout.yaxis, title: '总资产(元)' } },
+  { responsive: true });
+}
+
+// 每日盈亏柱状图（红绿）
+if (curve.dates.length) {
+  const pnls = curve.daily_pnls;
+  Plotly.newPlot('chart-daily', [{
+    x: curve.dates, y: pnls, type: 'bar',
+    marker: { color: pnls.map(p => p >= 0 ? '#10b981' : '#ef4444') },
+  }], { ...darkLayout, yaxis: { ...darkLayout.yaxis, title: '当日盈亏(元)' } },
+  { responsive: true });
+}
+
+// 分ETF盈亏贡献饼图
+const byCode = {{ by_code | tojson }};
+if (byCode.length) {
+  Plotly.newPlot('chart-code', [{
+    type: 'pie', hole: 0.55,
+    labels: byCode.map(r => r.code + (r.name ? ' ' + r.name : '')),
+    values: byCode.map(r => Math.abs(r.pnl) || 0.01),
+    marker: { colors: byCode.map(r => r.pnl >= 0 ? '#10b981' : '#ef4444') },
+    text: byCode.map(r => (r.pnl >= 0 ? '+' : '') + r.pnl.toFixed(0)),
+    textinfo: 'label+text',
+  }], { ...darkLayout, showlegend: true, legend: { font: { size: 10 } } },
+  { responsive: true });
+}
+
+// 交易分类占比饼图
+const t0Cats = {{ t0_categories | tojson }};
+if (t0Cats.length) {
+  Plotly.newPlot('chart-cat', [{
+    type: 'pie', hole: 0.55,
+    labels: t0Cats.map(c => ({ normal: '普通', t0: '做T', grid: '网格', sell_core: '卖底仓' }[c.category] || c.category)),
+    values: t0Cats.map(c => c.trades),
+    text: t0Cats.map(c => (c.pnl >= 0 ? '+' : '') + c.pnl.toFixed(0) + '元'),
+    textinfo: 'label+percent',
+  }], { ...darkLayout, showlegend: true, legend: { font: { size: 10 } } },
+  { responsive: true });
+}
+
+// ── 交易明细表: 搜索 + 日期 + 方向筛选 ──
+function filterTrades() {
+  const q = document.getElementById('f-search').value.trim().toLowerCase();
+  const d = document.getElementById('f-date').value;
+  const dir = document.getElementById('f-dir').value;
+  document.querySelectorAll('#tbl-trades tbody tr').forEach(tr => {
+    const okQ = !q || (tr.dataset.search || '').toLowerCase().includes(q);
+    const okD = !d || tr.dataset.date === d;
+    const okDir = !dir || tr.dataset.dir === dir;
+    tr.style.display = (okQ && okD && okDir) ? '' : 'none';
+  });
+}
+
+// ── 表头点击排序（数值列） ──
+document.querySelectorAll('table th[data-k]').forEach(th => {
+  th.onclick = () => {
+    const tbody = th.closest('table').querySelector('tbody');
+    const idx = Array.from(th.parentNode.children).indexOf(th);
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const asc = th.dataset.asc !== 'true';
+    th.dataset.asc = asc;
+    rows.sort((a, b) => {
+      const va = a.children[idx] ? a.children[idx].textContent.trim() : '';
+      const vb = b.children[idx] ? b.children[idx].textContent.trim() : '';
+      const na = parseFloat(va.replace(/[+,%\s]/g, ''));
+      const nb = parseFloat(vb.replace(/[+,%\s]/g, ''));
+      if (!isNaN(na) && !isNaN(nb)) return asc ? na - nb : nb - na;
+      return asc ? va.localeCompare(vb, 'zh') : vb.localeCompare(va, 'zh');
+    });
+    rows.forEach(r => tbody.appendChild(r));
+  };
+});
+</script>
+</body>
+</html>
