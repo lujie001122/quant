@@ -159,7 +159,7 @@ profit_protect:
 
 # 绩效分析管理端数据库（MySQL 8.0 + SQLAlchemy 2.0）
 database:
-  url: "mysql+pymysql://root:lujie001122@127.0.0.1:3306/quant?charset=utf8mb4"
+  url: "mysql+pymysql://root:lujie001122@110.40.168.227:3306/quant?charset=utf8mb4"
   echo: false
   pool_size: 10
   max_overflow: 20
