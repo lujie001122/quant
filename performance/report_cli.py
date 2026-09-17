@@ -24,14 +24,15 @@ performance/report_cli.py — 绩效分析 CLI 入口
   # 资金曲线
   python3 performance/report_cli.py equity --start=2026-09-01 --end=2026-09-17
 
-  # HTML 仪表盘
-  python3 performance/report_cli.py dashboard --start=2026-09-01 --end=2026-09-17 --output=report.html
-
   # 对账
   python3 performance/report_cli.py reconcile --date=2026-09-17
 
   # 数据迁移 (JSON → MySQL)
   python3 performance/report_cli.py migrate
+
+实时 Web 管理端（代替旧 dashboard 命令）:
+  uvicorn performance.webapp:app --host 127.0.0.1 --port 8791 --reload
+  浏览器打开 http://127.0.0.1:8791
 """
 
 import argparse
@@ -302,21 +303,6 @@ def cmd_equity(args):
 
 
 # ══════════════════════════════════════════════
-# dashboard — HTML 仪表盘
-# ══════════════════════════════════════════════
-
-def cmd_dashboard(args):
-    from performance.report_html import build_report
-    out = build_report(args.start, args.end, args.output)
-    # macOS 直接打开
-    try:
-        import subprocess
-        subprocess.run(['open', out], check=False)
-    except Exception:
-        pass
-
-
-# ══════════════════════════════════════════════
 # reconcile / migrate / init-db
 # ══════════════════════════════════════════════
 
@@ -376,12 +362,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument('--start', required=True, help='YYYY-MM-DD')
     sp.add_argument('--end', required=True, help='YYYY-MM-DD')
     sp.set_defaults(func=cmd_equity)
-
-    sp = sub.add_parser('dashboard', help='生成HTML仪表盘')
-    sp.add_argument('--start', required=True, help='YYYY-MM-DD')
-    sp.add_argument('--end', required=True, help='YYYY-MM-DD')
-    sp.add_argument('--output', default=None, help='输出路径, 默认 report.html')
-    sp.set_defaults(func=cmd_dashboard)
 
     sp = sub.add_parser('reconcile', help='对账（本地 vs 同花顺）')
     sp.add_argument('--date', default=date.today().isoformat(), help='YYYY-MM-DD')
