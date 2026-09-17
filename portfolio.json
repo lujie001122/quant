@@ -68,16 +68,16 @@
       "daily_trade_log": {
         "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 1
+          "t0_count": 3
         }
       },
       "trend_profit_trigger_date": "2026-09-14",
       "ma5_sell_trigger_date": "2026-09-14",
       "confirm_batch_count": 2,
       "confirm_batch_date": "2026-09-14",
-      "shares": 106600,
-      "avg_cost": 0.657,
-      "current_price": 0.655,
+      "shares": 76800,
+      "avg_cost": 0.645,
+      "current_price": 0.693,
       "entry_avg_cost": 0.668,
       "base_price": 0.657,
       "reached_3pct": false,
@@ -90,19 +90,19 @@
       "stop_level": 1,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.4607999999999999,
+      "trailing_stop_price": 1.4625599999999999,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_grid_trigger_date": null,
       "last_reset_date": null,
-      "peak_price": 1.66,
+      "peak_price": 1.662,
       "breakeven_activated": false,
       "below_ma20_count": 2,
       "below_ma20_date": "2026-09-14",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 53.03,
+      "prev_rsi": 53.22,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -110,16 +110,16 @@
       "daily_trade_log": {
         "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 3
         }
       },
       "trend_profit_trigger_date": null,
       "ma5_sell_trigger_date": "2026-09-14",
       "confirm_batch_count": 0,
       "confirm_batch_date": null,
-      "shares": 15600,
-      "avg_cost": 1.633,
-      "current_price": 1.627,
+      "shares": 5600,
+      "avg_cost": 1.588,
+      "current_price": 1.66,
       "entry_avg_cost": 1.658,
       "base_price": 1.658,
       "reached_3pct": false,
@@ -144,7 +144,7 @@
       "below_ma20_date": "2026-09-14",
       "add_count": 0,
       "ma5_touch_count": 2,
-      "prev_rsi": 51.88,
+      "prev_rsi": 50.81,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -152,7 +152,7 @@
       "daily_trade_log": {
         "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 3
         }
       },
       "trend_profit_trigger_date": null,
@@ -186,7 +186,7 @@
       "below_ma20_date": "2026-09-14",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 39.57,
+      "prev_rsi": 40.4,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -194,16 +194,16 @@
       "daily_trade_log": {
         "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 3
         }
       },
       "trend_profit_trigger_date": null,
       "ma5_sell_trigger_date": null,
       "confirm_batch_count": 0,
       "confirm_batch_date": null,
-      "shares": 32100,
-      "avg_cost": 1.806,
-      "current_price": 1.733,
+      "shares": 25700,
+      "avg_cost": 1.828,
+      "current_price": 1.706,
       "entry_avg_cost": 1.835,
       "base_price": 1.835,
       "reached_3pct": false,
@@ -228,7 +228,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 61.98,
+      "prev_rsi": 61.32,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 5,
@@ -270,7 +270,7 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 72.06,
+      "prev_rsi": 66.81,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -278,18 +278,18 @@
       "daily_trade_log": {
         "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 2,
+          "t0_count": 3,
           "trend_profit_count": 0,
-          "ma5_sell_count": 0
+          "ma5_sell_count": 1
         }
       },
       "trend_profit_trigger_date": null,
-      "ma5_sell_trigger_date": null,
+      "ma5_sell_trigger_date": "2026-09-17",
       "confirm_batch_count": 2,
       "confirm_batch_date": "2026-09-14",
-      "shares": 29900,
-      "avg_cost": 1.694,
-      "current_price": 1.77,
+      "shares": 0,
+      "avg_cost": 0.0,
+      "current_price": 0.0,
       "entry_avg_cost": 1.781,
       "base_price": 1.771,
       "reached_3pct": false,
@@ -300,61 +300,61 @@
   "positions": {
     "159532": {
       "name": "中证2000ETF",
-      "shares": 15600,
-      "avg_cost": 1.633,
-      "current_price": 1.627,
-      "market_value": 25382.76,
-      "pnl": -88.51,
-      "pnl_pct": -0.35,
+      "shares": 5600,
+      "avg_cost": 1.588,
+      "current_price": 1.66,
+      "market_value": 9296.0,
+      "pnl": 403.92,
+      "pnl_pct": 4.54,
       "base_price": 1.658
     },
     "159981": {
       "name": "能源化工ETF",
-      "shares": 29900,
-      "avg_cost": 1.694,
-      "current_price": 1.77,
-      "market_value": 52923.0,
-      "pnl": 2271.83,
-      "pnl_pct": 4.49,
+      "shares": 0,
+      "avg_cost": 1.691,
+      "current_price": 1.793,
+      "market_value": 53610.7,
+      "pnl": 3064.35,
+      "pnl_pct": 6.06,
       "base_price": 1.771
     },
     "512400": {
       "name": "有色ETF",
-      "shares": 32100,
-      "avg_cost": 1.806,
-      "current_price": 1.733,
-      "market_value": 55629.3,
-      "pnl": -2353.56,
-      "pnl_pct": -4.06,
+      "shares": 25700,
+      "avg_cost": 1.828,
+      "current_price": 1.706,
+      "market_value": 43844.2,
+      "pnl": -3133.96,
+      "pnl_pct": -6.67,
       "base_price": 1.835
     },
     "513780": {
       "name": "港股创新药ETF",
       "shares": 0,
       "avg_cost": 1.768,
-      "current_price": 1.641,
-      "market_value": 5415.3,
-      "pnl": -418.87,
-      "pnl_pct": -7.18,
+      "current_price": 1.661,
+      "market_value": 5481.3,
+      "pnl": -352.87,
+      "pnl_pct": -6.05,
       "base_price": 1.824
     },
     "515880": {
       "name": "通信ETF",
-      "shares": 0,
-      "avg_cost": 0.657,
-      "current_price": 0.655,
-      "market_value": 69823.0,
-      "pnl": -228.69,
-      "pnl_pct": -0.33,
+      "shares": 76800,
+      "avg_cost": 0.645,
+      "current_price": 0.693,
+      "market_value": 53222.4,
+      "pnl": 3683.66,
+      "pnl_pct": 7.44,
       "base_price": 0.657
     }
   },
   "account": {
-    "total_asset": 212205.09,
-    "cash": 4586.39,
-    "market_value": 207618.7
+    "total_asset": 158678.65,
+    "cash": 52788.05,
+    "market_value": 105890.6
   },
-  "last_updated": "2026-09-17 11:11",
+  "last_updated": "2026-09-17 14:05",
   "_today_open": {
     "date": "2026-09-10",
     "asset": 157975.15000000002

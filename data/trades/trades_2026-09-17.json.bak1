@@ -26,33 +26,5 @@
     "pnl": 0.0,
     "tag": "t0",
     "account": "main"
-  },
-  {
-    "timestamp": "2026-09-17T13:42:11.001545",
-    "date": "2026-09-17",
-    "time": "13:42:11",
-    "code": "513780",
-    "direction": "buy",
-    "shares": 5000,
-    "price": 1.658,
-    "amount": 8290.0,
-    "fee": 0.0,
-    "pnl": 0.0,
-    "tag": "t0",
-    "account": "main"
-  },
-  {
-    "timestamp": "2026-09-17T14:01:08.618586",
-    "date": "2026-09-17",
-    "time": "14:01:08",
-    "code": "159981",
-    "direction": "sell",
-    "shares": 5000,
-    "price": 1.777,
-    "amount": 8885.0,
-    "fee": 0.0,
-    "pnl": 0.0,
-    "tag": "signal",
-    "account": "main"
   }
 ]

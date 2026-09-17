@@ -718,18 +718,6 @@ class SignalExecutor:
         for code, sig in signals.items():
             trade_type = sig.get("trade_type")
             action = sig.get("action", "")
-            # 兜底：从 t0_signal 字段推导 trade_type 和 action
-            t0_sig = sig.get("t0_signal", "")
-            if t0_sig and t0_sig not in ("无", "无(非交易时段)", "无(集合竞价时段)"):
-                if "买入" in t0_sig or "卖出" in t0_sig:
-                    if trade_type is None or trade_type == "buy":
-                        trade_type = "t0"
-                        if "买入" in t0_sig:
-                            action = "买入"
-                        elif "卖出" in t0_sig:
-                            action = "卖出"
-                        sig["trade_type"] = trade_type
-                        sig["action"] = action
             if not trade_type:
                 continue
             # 模式过滤
