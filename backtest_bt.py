@@ -575,9 +575,9 @@ class ETFStrategy(bt.Strategy):
             trail_mult = 1 - trail_pct
             trail_label = f"{trail_pct*100:.0f}%"
         elif self.p.trail_mode == "e1":
-            if atr_pct > 5: trail_mult = 0.90; trail_label = "10%"
-            elif atr_pct >= 3: trail_mult = 0.93; trail_label = "7%"
-            else: trail_mult = 0.95; trail_label = "5%"
+            if atr_pct > 5: trail_mult = 0.93; trail_label = "7%"
+            elif atr_pct >= 3: trail_mult = 0.95; trail_label = "5%"
+            else: trail_mult = 0.97; trail_label = "3%"
         else:  # e2
             if atr_pct > 5: trail_mult = 0.88; trail_label = "12%"
             elif atr_pct >= 3: trail_mult = 0.92; trail_label = "8%"

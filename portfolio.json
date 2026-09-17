@@ -18,13 +18,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 43.93,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 52.44,
+      "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
-      "empty_days": 4,
-      "empty_days_date": "2026-09-15",
+      "empty_days": 5,
+      "empty_days_date": "2026-09-17",
       "daily_trade_log": {
-        "2026-09-15": {
+        "2026-09-17": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -37,35 +37,38 @@
       "avg_cost": 0.0,
       "current_price": 0.0,
       "entry_avg_cost": 0.0,
-      "base_price": null
+      "base_price": null,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     },
     "515880": {
       "build_phase": 2,
       "build_first_price": 0.668,
-      "stop_level": 2,
+      "stop_level": 0,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 0.58784,
+      "trailing_stop_price": 0.60896,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_grid_trigger_date": null,
       "last_reset_date": null,
-      "peak_price": 0.668,
+      "peak_price": 0.692,
       "breakeven_activated": false,
-      "below_ma20_count": 2,
-      "below_ma20_date": "2026-09-15",
+      "below_ma20_count": 0,
+      "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 47.95,
-      "prev_macd_status": "红柱缩短",
+      "prev_rsi": 55.41,
+      "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-15": {
+        "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 3
+          "t0_count": 1
         }
       },
       "trend_profit_trigger_date": "2026-09-14",
@@ -76,7 +79,10 @@
       "avg_cost": 0.657,
       "current_price": 0.655,
       "entry_avg_cost": 0.668,
-      "base_price": 0.657
+      "base_price": 0.657,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     },
     "159532": {
       "build_phase": 1,
@@ -84,27 +90,27 @@
       "stop_level": 1,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.45024,
+      "trailing_stop_price": 1.4607999999999999,
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": null,
       "last_grid_trigger_date": null,
       "last_reset_date": null,
-      "peak_price": 1.648,
+      "peak_price": 1.66,
       "breakeven_activated": false,
       "below_ma20_count": 2,
       "below_ma20_date": "2026-09-14",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 47.05,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 53.03,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-15": {
+        "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 3
+          "t0_count": 0
         }
       },
       "trend_profit_trigger_date": null,
@@ -115,7 +121,10 @@
       "avg_cost": 1.633,
       "current_price": 1.627,
       "entry_avg_cost": 1.658,
-      "base_price": 1.658
+      "base_price": 1.658,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     },
     "513780": {
       "build_phase": 1,
@@ -135,17 +144,15 @@
       "below_ma20_date": "2026-09-14",
       "add_count": 0,
       "ma5_touch_count": 2,
-      "prev_rsi": 48.86,
+      "prev_rsi": 51.88,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-15": {
+        "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 3,
-          "trend_profit_count": 0,
-          "ma5_sell_count": 0
+          "t0_count": 0
         }
       },
       "trend_profit_trigger_date": null,
@@ -156,7 +163,10 @@
       "avg_cost": 0.0,
       "current_price": 0.0,
       "entry_avg_cost": 1.824,
-      "base_price": 1.824
+      "base_price": 1.824,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     },
     "512400": {
       "build_phase": 1,
@@ -167,8 +177,8 @@
       "trailing_stop_price": 0.0,
       "cooldown_until": null,
       "grid_frozen": false,
-      "last_grid_trigger": "触及第2档买入",
-      "last_grid_trigger_date": "2026-09-15",
+      "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
       "peak_price": 1.828,
       "breakeven_activated": false,
@@ -176,17 +186,15 @@
       "below_ma20_date": "2026-09-14",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 41.29,
+      "prev_rsi": 39.57,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-15": {
-          "buy_count": 1,
-          "t0_count": 3,
-          "trend_profit_count": 0,
-          "ma5_sell_count": 0
+        "2026-09-17": {
+          "buy_count": 0,
+          "t0_count": 0
         }
       },
       "trend_profit_trigger_date": null,
@@ -197,7 +205,10 @@
       "avg_cost": 1.806,
       "current_price": 1.733,
       "entry_avg_cost": 1.835,
-      "base_price": 1.835
+      "base_price": 1.835,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     },
     "159985": {
       "build_phase": 0,
@@ -217,13 +228,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 53.5,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 61.98,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 4,
-      "empty_days_date": "2026-09-15",
+      "empty_days": 5,
+      "empty_days_date": "2026-09-17",
       "daily_trade_log": {
-        "2026-09-15": {
+        "2026-09-17": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -236,7 +247,10 @@
       "avg_cost": 0.0,
       "current_price": 0.0,
       "entry_avg_cost": 0.0,
-      "base_price": null
+      "base_price": null,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     },
     "159981": {
       "build_phase": 2,
@@ -244,27 +258,27 @@
       "stop_level": 0,
       "reached_8pct": true,
       "reached_15pct": true,
-      "trailing_stop_price": 1.5708,
+      "trailing_stop_price": 1.5813599999999999,
       "cooldown_until": null,
       "grid_frozen": false,
-      "last_grid_trigger": "触及第2档卖出",
-      "last_grid_trigger_date": "2026-09-15",
+      "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
-      "peak_price": 1.785,
+      "peak_price": 1.797,
       "breakeven_activated": false,
       "below_ma20_count": 0,
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 72.81,
+      "prev_rsi": 72.06,
       "prev_macd_status": "红柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-09-15": {
+        "2026-09-17": {
           "buy_count": 0,
-          "t0_count": 3,
+          "t0_count": 2,
           "trend_profit_count": 0,
           "ma5_sell_count": 0
         }
@@ -277,7 +291,10 @@
       "avg_cost": 1.694,
       "current_price": 1.77,
       "entry_avg_cost": 1.781,
-      "base_price": 1.771
+      "base_price": 1.771,
+      "reached_3pct": false,
+      "reached_5pct": false,
+      "reached_8pct_ladder": false
     }
   },
   "positions": {
@@ -323,7 +340,7 @@
     },
     "515880": {
       "name": "通信ETF",
-      "shares": 106600,
+      "shares": 0,
       "avg_cost": 0.657,
       "current_price": 0.655,
       "market_value": 69823.0,
@@ -333,11 +350,11 @@
     }
   },
   "account": {
-    "total_asset": 208255.59,
+    "total_asset": 212205.09,
     "cash": 4586.39,
-    "market_value": 203669.2
+    "market_value": 207618.7
   },
-  "last_updated": "2026-09-15 14:11",
+  "last_updated": "2026-09-17 11:11",
   "_today_open": {
     "date": "2026-09-10",
     "asset": 157975.15000000002
