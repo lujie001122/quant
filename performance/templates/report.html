@@ -280,7 +280,11 @@
       <td><span class="tag tag-{{ 'buy' if t.direction == 'buy' else 'sell' }}">{{ '买入' if t.direction == 'buy' else '卖出' }}</span></td>
       <td>{{ '{:,}'.format(t.shares) }}</td>
       <td>{{ t.price }}</td>
+      <td>{{ prices.get(t.code, '-') }}</td>
       <td>{{ '%.2f'|format(t.amount or 0) }}</td>
+      <td class="{{ 'num-pos' if (prices.get(t.code, 0)|float - t.price) * t.shares >= 0 else 'num-neg' }}">
+        {% set fp = ((prices.get(t.code, 0)|float - t.price) * t.shares) if prices.get(t.code, 0) else 0 %}
+        {{ '%.2f'|format(fp) if prices.get(t.code, 0) else '-' }}</td>
       <td class="{{ 'num-pos' if (t.pnl or 0) >= 0 else 'num-neg' }}">
         {% if t.direction == 'sell' %}{{ '%.2f'|format(t.pnl or 0) }}{% else %}-{% endif %}</td>
       <td>{{ t.signal_source or '-' }}</td>
