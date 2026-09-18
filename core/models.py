@@ -53,7 +53,7 @@ class Base(DeclarativeBase):
 
 
 # 交易分类枚举: normal=普通信号交易 / t0=做T / grid=网格 / sell_core=卖底仓
-TRADE_CATEGORY = ('normal', 't0', 'grid', 'sell_core')
+TRADE_CATEGORY = ('normal', 't0', 'grid', 'sell_core', 'entry')
 # 买卖方向（同花顺中文）
 DIRECTION_CN = ('买入', '卖出')
 # 本地买卖方向（英文）
