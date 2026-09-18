@@ -162,13 +162,65 @@ def index(request: Request):
 
 @app.get('/api/positions', summary='当前所有持仓列表')
 def api_positions():
-    """活跃持仓 + 每个持仓的成本追溯摘要"""
+    """活跃持仓 + 实时行情 + 浮动盈亏"""
     result = []
-    for p in PositionStateRepo.list_active():
-        trace = az.position_cost_trace(p.code)
-        trace['position']['name'] = p.name or trace['name']
-        result.append(trace)
-    return {'count': len(result), 'positions': result}
+    positions = PositionStateRepo.list_active()
+    
+    # 获取实时行情
+    codes = [p.code for p in positions]
+    prices = _fetch_current_prices(codes)
+    
+    for p in positions:
+        cur_price = prices.get(p.code, 0)
+        avg = float(p.avg_cost) if p.avg_cost else 0
+        floating_pnl = round((cur_price - avg) * p.shares, 2) if cur_price > 0 and avg > 0 else 0
+        floating_pnl_pct = round((cur_price - avg) / avg * 100, 2) if cur_price > 0 and avg > 0 else 0
+        
+        result.append({
+            'code': p.code,
+            'name': p.name or '',
+            'position': {
+                'shares': p.shares,
+                'avg_cost': avg,
+                'entry_avg_cost': float(p.entry_avg_cost) if p.entry_avg_cost else 0,
+                'current_price': cur_price,
+                'floating_pnl': floating_pnl,
+                'floating_pnl_pct': floating_pnl_pct,
+                'peak_price': float(p.peak_price) if p.peak_price else 0,
+                'trailing_stop_price': float(p.trailing_stop_price) if p.trailing_stop_price else 0,
+                'first_buy_date': str(p.first_buy_date) if p.first_buy_date else '',
+                'build_phase': p.build_phase,
+            },
+        })
+    return {'count': len(result), 'positions': result, 'ts': datetime.now().strftime('%H:%M:%S')}
+
+
+def _fetch_current_prices(codes: list) -> dict:
+    """从新浪接口获取实时行情"""
+    if not codes:
+        return {}
+    import urllib.request
+    result = {}
+    try:
+        sid_map = {f"sh{c}" if c.startswith('5') else f"sz{c}": c for c in codes}
+        url = "https://hq.sinajs.cn/list=" + ",".join(sid_map.keys())
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Referer': 'https://finance.sina.com.cn',
+        })
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            text = resp.read().decode('gbk')
+            for line in text.strip().split('\n'):
+                if '=' not in line:
+                    continue
+                sid = line.split('=')[0].strip().split('_')[-1]  # 提取sid
+                if sid in sid_map:
+                    parts = line.split('=')[1].strip('"').split(',')
+                    if len(parts) >= 4 and parts[3]:
+                        result[sid_map[sid]] = float(parts[3])
+        return result
+    except Exception:
+        return {}
 
 
 @app.get('/api/position/{code}', summary='持仓成本追溯')
