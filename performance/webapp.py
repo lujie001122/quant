@@ -106,13 +106,36 @@ def index(request: Request):
     start, end = _default_range()
     s, e = date.fromisoformat(start), date.fromisoformat(end)
 
-    # 持仓卡片（position_cost_trace 全量，与 report_html.build_report 一致）
+    # 持仓卡片（直接读取 position_state + 实时行情，不依赖trades表）
     positions = []
-    for p in PositionStateRepo.list_active():
-        trace = az.position_cost_trace(p.code)
-        if trace['position']:
-            trace['position']['name'] = p.name or trace['name']
-        positions.append(trace)
+    active_positions = PositionStateRepo.list_active()
+    codes = [p.code for p in active_positions]
+    prices = _fetch_current_prices(codes)
+    for p in active_positions:
+        cur_price = prices.get(p.code, 0)
+        avg = float(p.avg_cost) if p.avg_cost else 0
+        floating_pnl = round((cur_price - avg) * p.shares, 2) if cur_price > 0 and avg > 0 else 0
+        positions.append({
+            'code': p.code,
+            'name': p.name or '',
+            'position': {
+                'shares': p.shares,
+                'avg_cost': avg,
+                'entry_avg_cost': float(p.entry_avg_cost) if p.entry_avg_cost else 0,
+                'current_price': cur_price,
+                'floating_pnl': floating_pnl,
+                'peak_price': float(p.peak_price) if p.peak_price else 0,
+                'trailing_stop_price': float(p.trailing_stop_price) if p.trailing_stop_price else 0,
+                'first_buy_date': str(p.first_buy_date) if p.first_buy_date else '',
+                'build_phase': p.build_phase,
+                'reached_2pct': p.reached_2pct,
+                'reached_4pct': p.reached_4pct,
+                'reached_6pct': p.reached_6pct,
+            },
+            'buys': [],
+            'sells': [],
+            'summary': {'total_bought': p.shares, 'total_sold': 0, 'total_pnl': floating_pnl, 'total_cost': round(avg * p.shares, 2), 'weighted_avg_cost': avg, 'total_fee': 0, 'buy_count': 0, 'sell_count': 0},
+        })
 
     curve = az.equity_curve(start, end)
     by_code = TradeRepo.stats_by_code(s, e)
@@ -146,6 +169,7 @@ def index(request: Request):
         start=start,
         end=end,
         positions=positions,
+        prices=prices,
         curve_json=Markup(json.dumps(curve, ensure_ascii=False)),
         by_code=by_code,
         by_signal=by_signal,

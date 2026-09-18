@@ -92,6 +92,11 @@
       <span class="metric">均价 <b>{{ p.position.avg_cost }}</b></span>
       <span class="metric">建仓均价 <b>{{ p.position.entry_avg_cost }}</b></span>
       <span class="metric">首次买入 <b>{{ p.position.first_buy_date or '-' }}</b></span>
+      <span class="metric">现价 <b>{{ p.position.get('current_price', 0) or '-' }}</b></span>
+      {% set fp = p.position.get('floating_pnl', 0) or 0 %}
+      {% if fp != 0 %}
+      <span class="metric">浮动盈亏 <b class="{{ 'pnl-pos' if fp >= 0 else 'pnl-neg' }}">{{ '%.2f'|format(fp) }}</b></span>
+      {% endif %}
       {% if p.summary.total_pnl >= 0 %}
       <span class="pnl-pos">累计盈亏 +{{ '%.2f'|format(p.summary.total_pnl) }}</span>
       {% else %}
@@ -109,20 +114,24 @@
       </p>
       <table>
         <thead><tr>
-          <th>日期</th><th>方向</th><th>股数</th><th>价格</th><th>金额</th>
-          <th>信号来源</th><th>分类</th><th>盈亏</th><th>持仓天数</th><th>合同编号</th>
+          <th>日期</th><th>方向</th><th>股数</th><th>买入价</th><th>现价</th><th>金额</th>
+          <th>信号来源</th><th>分类</th><th>单笔盈亏</th><th>持仓天数</th><th>合同编号</th>
         </tr></thead>
         <tbody>
         {% for b in p.buys %}
+          {% set bcur = p.position.get('current_price', 0) or 0 %}
+          {% set bpnl = ((bcur - b.price) * b.shares) if bcur > 0 and b.price > 0 else 0 %}
           <tr>
             <td>{{ b.trade_date }}</td>
             <td><span class="tag tag-buy">买入</span></td>
             <td>{{ '{:,}'.format(b.shares) }}</td>
             <td>{{ b.price }}</td>
+            <td>{{ '%.3f'|format(bcur) if bcur > 0 else '-' }}</td>
             <td>{{ '%.2f'|format(b.amount or 0) }}</td>
             <td>{{ b.signal_source or '-' }}</td>
             <td><span class="tag tag-{{ b.trade_category }}">{{ b.trade_category }}</span></td>
-            <td>-</td><td>-</td>
+            <td class="{{ 'num-pos' if bpnl >= 0 else 'num-neg' }}">{{ '%.2f'|format(bpnl) if bcur > 0 else '-' }}</td>
+            <td>-</td>
             <td>{{ b.contract_no or '-' }}</td>
           </tr>
         {% endfor %}
