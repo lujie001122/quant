@@ -221,7 +221,7 @@ def sync_deals() -> dict:
 
     result = {'total': 0, 'inserted': 0, 'failed': 0, 'contracts_updated': 0}
     try:
-        resp = _call_evolving('getDeal', 'today')
+        resp = _call_evolving('getClosedDeals', 'today')
         rows = []
         if isinstance(resp, dict) and resp.get('status'):
             rows = resp.get('data', []) or []
