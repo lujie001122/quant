@@ -89,36 +89,40 @@ def sync():
     code_map = get_code_map()
 
     if isinstance(h, dict) and h.get('status'):
-        for row in h.get('data', []):
-            if not row or len(row) < 12:
-                continue
-            code = row[0]
-            try:
-                shares_val = int(row[6])
-            except (ValueError, TypeError):
-                shares_val = 0
-            try:
-                cost = float(row[10])
-            except (ValueError, TypeError):
-                cost = 0.0
-            if shares_val > 0:
-                cur_price = float(row[2])
-                name = code_map.get(code, {}).get('name') or row[1]
-                # 从 _signal_state 读取 base_price，回退到 avg_cost
-                signal_state = pf.get('_signal_state', {}).get(code, {})
-                base_price = signal_state.get('base_price') or cost
-                pf['positions'][code] = {
-                    'name': name,
-                    'shares': shares_val,
-                    'avg_cost': cost,
-                    'current_price': cur_price,
-                    'market_value': float(row[11]),
-                    'pnl': float(row[3]),  # 仅展示用
-                    'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,  # 仅展示用
-                    'base_price': base_price,
-                }
-            elif code in pf['positions']:
-                del pf['positions'][code]
+        data = h.get('data', [])
+        if not data:
+            print("  ⚠️ sync: getHoldingShares 返回空数据，跳过持仓同步")
+        else:
+            for row in data:
+                if not row or len(row) < 12:
+                    continue
+                code = row[0]
+                try:
+                    shares_val = int(row[6])
+                except (ValueError, TypeError):
+                    shares_val = 0
+                try:
+                    cost = float(row[10])
+                except (ValueError, TypeError):
+                    cost = 0.0
+                if shares_val > 0:
+                    cur_price = float(row[2])
+                    name = code_map.get(code, {}).get('name') or row[1]
+                    # 从 _signal_state 读取 base_price，回退到 avg_cost
+                    signal_state = pf.get('_signal_state', {}).get(code, {})
+                    base_price = signal_state.get('base_price') or cost
+                    pf['positions'][code] = {
+                        'name': name,
+                        'shares': shares_val,
+                        'avg_cost': cost,
+                        'current_price': cur_price,
+                        'market_value': float(row[11]),
+                        'pnl': float(row[3]),  # 仅展示用
+                        'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,  # 仅展示用
+                        'base_price': base_price,
+                    }
+                elif code in pf['positions']:
+                    del pf['positions'][code]
 
     if isinstance(acct, dict) and acct.get('status'):
         d = acct['data']

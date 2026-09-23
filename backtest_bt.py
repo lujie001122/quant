@@ -448,14 +448,11 @@ class ETFStrategy(bt.Strategy):
         return self.getposition(data).size > 0
 
     def _buy(self, data, pct, reason):
-        """按每只ETF资金基数买入，与实盘一致：使用 fund_per_etf 而非 TOTAL_FUND"""
+        """按比例追加买入（pct是本次追加比例，非目标总持仓比例）"""
         name = data._name
         target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * POSITION_CAP)
         price = data.close[0]
-        target_shares = max(int(target_value / price / 100) * 100, MIN_SHARES)
-        current = self._get_shares(data)
-        need = target_shares - current
-        if need < MIN_SHARES: return False  # 低于最小交易股数
+        need = max(int(target_value / price / 100) * 100, MIN_SHARES)  # BUGFIX: 追加模式，不计已有持仓
         # 资金约束
         cost = need * price * (1 + SLIPPAGE_PCT) + FEE
         if cost > self.broker.getcash():

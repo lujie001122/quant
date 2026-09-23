@@ -354,7 +354,9 @@ class RealBroker(BaseBroker):
             method = getattr(e, method_name)
             return method(*args)
         except Exception as ex:
+            import traceback
             print(f"  ⚠️ EvolvingSim.{method_name} 异常: {ex}")
+            traceback.print_exc()
             return None
         finally:
             time.sleep(2)
@@ -389,14 +391,14 @@ class RealBroker(BaseBroker):
                 result = self._call_evolving("sell", order.code, order.shares, order.price)
             elif order.action == "t0_buy":
                 result = self._call_evolving("buy", order.code, order.shares, order.price)
-                # 配对卖出挂单
-                if order.pair_price > 0:
+                # 配对卖出挂单 — 主单失败时不执行配对单（防止裸卖空）
+                if result is not None and order.pair_price > 0:
                     time.sleep(1)
                     self._call_evolving("sell", order.code, order.shares, order.pair_price)
             elif order.action == "t0_sell":
                 result = self._call_evolving("sell", order.code, order.shares, order.price)
-                # 配对买入挂单
-                if order.pair_price > 0:
+                # 配对买入挂单 — 主单失败时不执行配对单
+                if result is not None and order.pair_price > 0:
                     time.sleep(1)
                     self._call_evolving("buy", order.code, order.shares, order.pair_price)
             else:

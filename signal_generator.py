@@ -407,13 +407,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
                     break
                 elif sig_type in ("sell_active_10pct", "sell_active_15pct", "sell_active_20pct"):
-                    # 阶梯止盈: 卖活动仓10%/15%/20%
+                    # 阶梯止盈: 卖活动仓10%/15%/20% — 无break让三级全部执行
                     sell_pct_map = {"sell_active_10pct": "10%", "sell_active_15pct": "15%", "sell_active_20pct": "20%"}
                     action = "卖出"
                     position_ratio = f"{sell_pct_map.get(sig_type, '10%')}(活动仓)"
                     reason = sig_name
                     trade_type = "sell"
-                    break
+                    # BUGFIX: 删除break，同日三级止盈(10%/15%/20%)全部执行
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）
         if action == "持有":
