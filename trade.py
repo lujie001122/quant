@@ -77,6 +77,8 @@ def _validate_shares(shares):
 
 def sync():
     """同步持仓到 portfolio.json"""
+    import time
+    time.sleep(15)  # 等待同花顺API就绪
     h = _call_evolving('getHoldingShares')
     acct = _call_evolving('getAccountInfo')
 
