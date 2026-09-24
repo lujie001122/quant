@@ -109,7 +109,11 @@ def sync():
                     cost = 0.0
                 if shares_val > 0:
                     cur_price = float(row[2])
-                    name = code_map.get(code, {}).get('name') or row[1]
+                    name = row[1]
+                    # 优先从 etf_pool 取完整名称（API返回的名称经常截断）
+                    pool_name = code_map.get(code, {}).get('name')
+                    if pool_name:
+                        name = pool_name
                     # 从 _signal_state 读取 base_price，回退到 avg_cost
                     signal_state = pf.get('_signal_state', {}).get(code, {})
                     base_price = signal_state.get('base_price') or cost
