@@ -741,14 +741,14 @@ class ETFStrategy(bt.Strategy):
                         if ps["pyramid_count"] == 0 and float_profit > 0.05:
                             # 加仓金额 = 首次建仓金额 × 0.5
                             # 首次建仓金额 = fund_per_etf * 0.50, 所以加仓 pct = 0.25
-                            add_pct = 0.25
+                            add_pct = 0.30
                             add_value = self.p.fund_per_etf * add_pct
                             if current_value + add_value <= max_value:
                                 if self._buy(d, add_pct, f"集中金字塔加仓1 浮盈{float_profit*100:.1f}%"):
                                     ps["pyramid_count"] = 1
                                     ps["bought_today"] = True
                         elif ps["pyramid_count"] == 1 and float_profit > 0.10:
-                            add_pct = 0.25
+                            add_pct = 0.40
                             add_value = self.p.fund_per_etf * add_pct
                             if current_value + add_value <= max_value:
                                 if self._buy(d, add_pct, f"集中金字塔加仓2 浮盈{float_profit*100:.1f}%"):
