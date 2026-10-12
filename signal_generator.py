@@ -85,6 +85,43 @@ def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=Tru
 # ============================================================
 
 # ============================================================
+# 轮动TOP3保护
+# ============================================================
+
+# 轮动建议文件(由 rotation.py 每周一生成, 集中金字塔TOP3模式写 all_picks)
+ROTATION_ADVICE_PATH = "/tmp/rotation_advice.json"
+
+# 日内减仓信号类型(轮动TOP3标的禁止触发):
+#   破MA5卖活动仓5% / 趋势止盈(原版+增强) / 阶梯止盈卖活动仓 / 分级止损减仓30%
+# 注意: 清仓类(liquidate_*)、轮动清仓(跌出TOP3)不受此集合限制,仍正常执行
+INTRADAY_REDUCE_SIG_TYPES = frozenset({
+    "trend_profit_sell",
+    "trend_profit_sell_enhanced",
+    "sell_active_5pct",
+    "sell_active_10pct",
+    "sell_active_15pct",
+    "sell_active_20pct",
+    "reduce_30pct_all",
+})
+
+
+def load_rotation_top3_codes():
+    """读取轮动TOP3标的代码集合(rotation_advice.json 的 all_picks / picks)。
+
+    返回:
+      set : 轮动TOP3标的代码集合
+      None: 文件不存在或读取失败 → 不拦截, 按原有逻辑执行
+    """
+    try:
+        with open(ROTATION_ADVICE_PATH, encoding="utf-8") as _f:
+            _data = json.load(_f)
+        _picks = _data.get("all_picks") or _data.get("picks") or []
+        return set(_picks)
+    except Exception:
+        return None
+
+
+# ============================================================
 # 综合信号生成
 # ============================================================
 
@@ -296,6 +333,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         if _DEBUG:
             print(f"[Kelly] 计算跳过: {_ke}")
 
+    # 轮动TOP3标的(集中金字塔TOP3): 禁止日内减仓 / 调入标的直接建仓
+    rotation_top3_codes = load_rotation_top3_codes()
+
     # 信号生成
     signals_output = {}
     for code, cfg in ETFS.items():
@@ -375,8 +415,15 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # - 做T与主策略信号冲突时，主策略信号优先
         # ═══════════════════════════════════════════════════════
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
+        top3_protected = False
         if stop_actions:
             for sig_name, sig_type in stop_actions:
+                # TOP3保护: 轮动TOP3标的禁止日内减仓(破MA5卖活动仓/趋势止盈/阶梯止盈/分级减仓)
+                # 清仓类信号(liquidate_*)与轮动清仓(跌出TOP3)不受影响,仍正常执行
+                if rotation_top3_codes is not None and code in rotation_top3_codes \
+                        and sig_type in INTRADAY_REDUCE_SIG_TYPES:
+                    top3_protected = True
+                    continue
                 if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct", "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
                     action = "清仓"
                     position_ratio = "100%"
@@ -484,6 +531,20 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         reason = grid_signal + "(活动仓为0,不卖底仓)"
 
         # 无信号: 建仓/补仓/持有逻辑（统一入口，action仍为"持有"时进入）
+        # ── 轮动调入TOP3直接建仓: 跳过"冷静期/非多头排列"等建仓过滤, 直接买入30% ──
+        # 已持仓的TOP3标的(has_position=True)不在此列, 维持原有止损止盈逻辑
+        _top3_rotation_buy = (
+            action == "持有"
+            and rotation_top3_codes is not None
+            and code in rotation_top3_codes
+            and not pos.has_position
+        )
+        if _top3_rotation_buy:
+            pos._enter_position(today_str, price, "30%(轮动调入)")
+            action = "买入"
+            position_ratio = "30%"
+            trade_type = "buy"
+            reason = "轮动调入TOP3,直接建仓"
         if action == "持有":
             entry_result = evaluate_entry(
                 pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak
@@ -518,6 +579,10 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     action = "持有(冷静期)"
                     reason = "连续清仓后进入冷静期,暂停建仓"
 
+        # TOP3保护: 日内减仓信号被跳过时标注原因(仅当最终无其他交易信号时)
+        if top3_protected and action == "持有" and trade_type is None:
+            reason = "TOP3保护,不日内减仓"
+
         # 附加标注
         vol_label = ""
         if t.get("vol_ratio_5min") is not None:
@@ -550,7 +615,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             position_ratio = "0%"
 
         # ── 非监控池标的：只允许卖出/清仓，禁止买入 ──
-        if pool_codes and code not in pool_codes:
+        # 轮动调入TOP3直接建仓不受监控池限制(轮动TOP3本身就是最新调入池)
+        if pool_codes and code not in pool_codes and not _top3_rotation_buy:
             if trade_type in ("buy",) or (trade_type == "t0" and "买入" in action):
                 action = "持有(非监控池)"
                 position_ratio = "0%"
