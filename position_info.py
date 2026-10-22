@@ -110,6 +110,9 @@ class PositionInfo:
         self.reached_3pct = False
         self.reached_5pct = False
         self.reached_8pct_ladder = False
+        # strategy_v2: 网格整体止损追踪
+        self.grid_stop_level = 0          # 0=未触发, 1=已减半, 2=已清仓
+        self.grid_stop_date = None        # 最近触发日期（同日去重）
 
     @property
     def entry_cost(self):
@@ -253,6 +256,9 @@ class PositionInfo:
         self.reached_3pct = False
         self.reached_5pct = False
         self.reached_8pct_ladder = False
+        # strategy_v2: 网格整体止损重置
+        self.grid_stop_level = 0
+        self.grid_stop_date = None
         try:
             from datetime import datetime as _dt, timedelta as _td
             dt = _dt.strptime(date_str, "%Y-%m-%d")
@@ -327,6 +333,9 @@ class PositionInfo:
             "reached_3pct": self.reached_3pct,
             "reached_5pct": self.reached_5pct,
             "reached_8pct_ladder": self.reached_8pct_ladder,
+            # strategy_v2: 网格整体止损
+            "grid_stop_level": getattr(self, 'grid_stop_level', 0),
+            "grid_stop_date": getattr(self, 'grid_stop_date', None),
         }
 
     def from_dict(self, data):
@@ -364,3 +373,6 @@ class PositionInfo:
         self.reached_3pct = data.get("reached_3pct", False)
         self.reached_5pct = data.get("reached_5pct", False)
         self.reached_8pct_ladder = data.get("reached_8pct_ladder", False)
+        # strategy_v2: 网格整体止损
+        self.grid_stop_level = data.get("grid_stop_level", 0)
+        self.grid_stop_date = data.get("grid_stop_date", None)

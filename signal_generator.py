@@ -46,6 +46,7 @@ from strategies.rsi_macd import (
 )
 from strategies.grid import (
     evaluate_grid_signals, check_grid_reset, compute_grid_table,
+    check_grid_overall_stop, is_v2_enabled,
 )
 from strategies.rsi_macd import RSIMACDStrategy
 from strategies.t0 import T0Strategy
@@ -369,6 +370,10 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # P0: 分级减仓 =====
         stop_actions = evaluate_stop(pos, t, price, today_str)
+        # strategy_v2: 网格整体止损（-8%减半 / -12%清仓），与现有止损去重
+        _grid_overall = check_grid_overall_stop(pos, price, today_str)
+        if _grid_overall:
+            stop_actions = list(stop_actions) + _grid_overall
         stop_signal = resolve_stop_signal(pos, stop_actions)
 
         # Level 2: 做T弹性条件（基于5分钟分时数据）
@@ -383,7 +388,21 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             pos.prev_macd_status = t["macd_status"]
 
         # Level 3: 网格触达(仅用于已持仓标的的网格加仓，不触发建仓)
-        grid_signal, grid_weight = evaluate_grid_signals(price, base, spacing, pos.grid_frozen)
+        # strategy_v2: 传入 MA20 及其斜率供趋势过滤使用
+        _ma20_val = t.get("ma20")
+        _ma20_slope_down = False
+        if _ma20_val and is_v2_enabled():
+            # 用日线K线最近5日MA20斜率判断下行
+            _kl = all_klines.get(code, [])
+            if len(_kl) >= 6:
+                _closes_tail = [k["close"] for k in _kl[-6:]]
+                from market_data import calc_ma as _calc_ma
+                _ma20_prev = _calc_ma(_closes_tail[:-1], min(20, len(_closes_tail)-1))
+                _ma20_slope_down = (_ma20_prev is not None and _ma20_val < _ma20_prev)
+        grid_signal, grid_weight = evaluate_grid_signals(
+            price, base, spacing, pos.grid_frozen,
+            ma20=_ma20_val, ma20_slope_down=_ma20_slope_down
+        )
         if grid_signal != "无" and "买入" in grid_signal and not pos.can_buy_today(today_str, atr_pct):
             grid_signal += "(今日已买入,等明日)"
 
@@ -424,7 +443,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         and sig_type in INTRADAY_REDUCE_SIG_TYPES:
                     top3_protected = True
                     continue
-                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct", "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
+                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct",
+                                "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop",
+                                "grid_overall_clear"):
                     action = "清仓"
                     position_ratio = "100%"
                     reason = sig_name
@@ -437,6 +458,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     reason = sig_name
                     trade_type = "reduce"
                     # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
+                    break
+                elif sig_type == "grid_overall_half":
+                    # strategy_v2: 网格整体止损 -8% 减半仓
+                    action = "减仓"
+                    position_ratio = "减50%总仓"
+                    reason = sig_name
+                    trade_type = "reduce_half"
                     break
                 elif sig_type == "trend_profit_sell":
                     action = "卖出"
@@ -523,7 +551,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         # 更新base_price到当前价，使网格上移，防止同一档位重复触发
                         pos.base_price = round(price, 3)
                         action = "卖出"
-                        position_ratio = "5%(活动仓)"
+                        # strategy_v2: 网格卖出比例由 grid_weight 决定(10/15/20%)
+                        if is_v2_enabled() and grid_weight and grid_weight > 0:
+                            position_ratio = f"{int(grid_weight*100)}%(活动仓)"
+                        else:
+                            position_ratio = "5%(活动仓)"
                         reason = grid_signal
                         trade_type = "sell"
                     else:

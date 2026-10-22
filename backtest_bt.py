@@ -54,7 +54,10 @@ with open(_CONFIG_PATH) as f:
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
 from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS, MIN_SHARES
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
-# 网格策略已删除(集中模式仓位已满，网格几乎不触发)
+from strategies.grid import (
+    evaluate_grid_signals, check_grid_reset, compute_grid_table,
+    check_grid_overall_stop, is_v2_enabled,
+)
 from risk_manager import check_stop_loss as _rm_check_stop_loss, resolve_stop_signal as _rm_resolve_stop
 
 _rsi_macd_strategy = RSIMACDStrategy()
@@ -559,7 +562,11 @@ class ETFStrategy(bt.Strategy):
         """移动止盈参数计算 → (trail_pct, trail_mult, trail_label, trail_activation, trail_lockin)"""
         trail_pct = self.p.trail_pct
         if self.p.trail_mode == "e1":
-            trail_activation = CONF["profit_take"]["e1_activation"]
+            # strategy_v2: e1_activation 使用 v2 值（0.05）
+            if is_v2_enabled():
+                trail_activation = CONF.get("strategy_v2", {}).get("e1_activation_v2", 0.05)
+            else:
+                trail_activation = CONF["profit_take"]["e1_activation"]
             trail_lockin = CONF["profit_take"]["e1_lockin"]
         elif self.p.trail_mode == "e2":
             trail_activation = CONF["profit_take"]["e2_activation"]
@@ -1478,9 +1485,12 @@ class ETFStrategy(bt.Strategy):
 
                 # 更新移动止盈线 (backtrader用avg而非entry_cost计算盈利比例)
                 trail_pct_val = self.p.trail_pct
-                # P0修复: e1模式激活线5%/锁仓线12%, e2模式10%/18%
+                # P0修复: e1模式激活线/锁仓线; strategy_v2: e1_activation用v2值(0.05)
                 if self.p.trail_mode == "e1":
-                    trail_activation = CONF["profit_take"]["e1_activation"]
+                    if is_v2_enabled():
+                        trail_activation = CONF.get("strategy_v2", {}).get("e1_activation_v2", 0.05)
+                    else:
+                        trail_activation = CONF["profit_take"]["e1_activation"]
                     trail_lockin = CONF["profit_take"]["e1_lockin"]
                 elif self.p.trail_mode == "e2":
                     trail_activation = CONF["profit_take"]["e2_activation"]
@@ -1499,6 +1509,10 @@ class ETFStrategy(bt.Strategy):
                 # ── 调用实盘 risk_manager.check_stop_loss ──
                 pos, t = self._build_pos_and_tech(d, name, date_str)
                 stop_actions = check_stop_loss(pos, t, price, date_str, enhanced_trend=self.p.enhanced_trend)
+                # strategy_v2: 网格整体止损（-8%减半 / -12%清仓）
+                _grid_stop = check_grid_overall_stop(pos, price, date_str)
+                if _grid_stop:
+                    stop_actions = list(stop_actions) + _grid_stop
                 self._sync_pos_to_ps(name, pos, date_str)
                 liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
                 if liquidated:
@@ -1879,10 +1893,16 @@ class ETFStrategy(bt.Strategy):
         # 优先级: 清仓 > 减仓 > 卖活动仓
         for sig_name, sig_type in stop_actions:
             if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct",
-                            "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
+                            "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop",
+                            "grid_overall_clear"):
                 self._close(d, sig_name)
                 self._full_liquidate_state(ps, date_str)
                 return True
+            elif sig_type == "grid_overall_half":
+                # strategy_v2: 网格整体止损 -8% 减半仓
+                if self._sell(d, 50, sig_name):
+                    ps["peak_price"] = price
+                return False
             elif sig_type in ("reduce_30pct_all",):
                 if self._sell(d, 30, sig_name):
                     ps["peak_price"] = price

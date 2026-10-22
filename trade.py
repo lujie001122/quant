@@ -75,6 +75,49 @@ def _validate_shares(shares):
 
 # ─── sync ──────────────────────────────────────────────────────────────
 
+def _validate_account_data(acct_data, pf_prev):
+    """校验 getAccountInfo 返回的账户数据一致性。
+
+    校验规则:
+      1. 总资产 <= 0 → 拒绝
+      2. 总资产与 (现金 + 市值) 偏差 > 2% → 拒绝
+      3. 总资产比上次落盘值低 50% 以上 → 拒绝
+
+    返回:
+      (ok: bool, reason: str)
+    """
+    try:
+        total = float(acct_data['总资产'])
+        cash  = float(acct_data['可用金额'])
+        mv    = float(acct_data['总市值'])
+    except (KeyError, TypeError, ValueError) as e:
+        return False, f"账户字段解析失败: {e}"
+
+    # 规则1: 总资产不能 <= 0
+    if total <= 0:
+        return False, f"总资产={total:.0f} 异常(≤0),拒绝写盘"
+
+    # 规则2: 总资产与 (现金+市值) 偏差 > 2%
+    computed = cash + mv
+    if computed > 0:
+        deviation = abs(total - computed) / computed
+        if deviation > 0.02:
+            return False, (
+                f"总资产{total:.0f} 与现金{cash:.0f}+市值{mv:.0f}={computed:.0f} "
+                f"偏差{deviation*100:.1f}%>2%,拒绝写盘"
+            )
+
+    # 规则3: 总资产比上次落盘值低 50% 以上
+    prev_total = pf_prev.get('account', {}).get('total_asset', 0)
+    if prev_total > 0 and total < prev_total * 0.50:
+        return False, (
+            f"总资产{total:.0f} 比上次落盘值{prev_total:.0f} 低"
+            f"{(1 - total/prev_total)*100:.0f}%,超过50%阈值,拒绝写盘"
+        )
+
+    return True, "ok"
+
+
 def sync():
     """同步持仓到 portfolio.json"""
     import time
@@ -87,6 +130,17 @@ def sync():
             pf = json.load(f)
     else:
         pf = {'positions': {}, 'account': {}}
+
+    # ── 账户数据一致性校验 ──────────────────────────────────
+    if isinstance(acct, dict) and acct.get('status'):
+        ok, reason = _validate_account_data(acct['data'], pf)
+        if not ok:
+            print(f"  🚨 sync 账户校验失败: {reason}")
+            print("  ⚠️  portfolio.json 保持原值，未写盘")
+            return
+    else:
+        print("  ⚠️ sync: getAccountInfo 无有效返回，跳过本次 sync")
+        return
 
     code_map = get_code_map()
 
@@ -130,6 +184,7 @@ def sync():
                 elif code in pf['positions']:
                     del pf['positions'][code]
 
+    # 写入账户数据（已通过一致性校验）
     if isinstance(acct, dict) and acct.get('status'):
         d = acct['data']
         pf['account'] = {

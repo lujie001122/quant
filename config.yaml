@@ -157,6 +157,44 @@ profit_protect:
   activate_pct: 0.05
   stop_margin: 0.005
 
+# ────────────────────────────────────────────────────────────────
+# strategy_v2 开关（默认关闭 = 与现网行为完全一致）
+# 打开后生效: 趋势过滤网格买入 / 停止基准下移重置 / 递减权重 /
+#             整体止损(-8%减半/-12%清仓) / 网格卖出10/15/20% /
+#             止盈激活5% / tier1止损6%
+# ────────────────────────────────────────────────────────────────
+strategy_v2:
+  enabled: false
+
+  # 网格权重（递减，合计=1.0）
+  inverted_weights_v2:
+  - 0.25
+  - 0.20
+  - 0.20
+  - 0.20
+  - 0.15
+
+  # 趋势过滤：价格 < MA20 且 MA20 斜率为负时禁止网格买入
+  grid_trend_filter: true
+
+  # 网格整体止损
+  grid_overall_stop_loss:
+    enabled: false
+    half_pct: 0.08     # 浮亏 -8% → 减半持仓
+    clear_pct: 0.12    # 浮亏 -12% → 清仓
+
+  # 网格卖出档位：活动仓比例（3档，对应 sell_level 1/2/3）
+  grid_sell_ratios:
+  - 0.10
+  - 0.15
+  - 0.20
+
+  # 止盈激活（v2 下调高止盈触发点）
+  e1_activation_v2: 0.05
+
+  # tier1 止损（v2 下收紧到 6%）
+  tier1_pct_v2: 0.06
+
 # 绩效分析管理端数据库（MySQL 8.0 + SQLAlchemy 2.0）
 database:
   url: "mysql+pymysql://root:lujie001122@127.0.0.1:3307/quant?charset=utf8mb4"
