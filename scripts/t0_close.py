@@ -3,13 +3,14 @@
 T0尾盘平仓脚本 — 每个交易日 14:50 执行
 
 逻辑：
-  1. 扫描 orders/*.json，找当天 action=t0_buy/t0_sell 且 status=pending 的单
-  2. 先单笔撤单（revokeType='contractNo'），失败则全撤（revokeType='allBuyAndSell'）
-  3. 撤单后按对手价市价平掉暴露的腿：
-       t0_buy(pending买单)→卖出(卖一价×0.995)
-       t0_sell(pending卖单)→买回(买一价×1.005)
-  4. 数量须100整数倍且≥5000股，不足则跳过告警
-  5. 幂等：重复运行检查持仓/挂单后跳过已平仓的
+  1. 扫描 orders/，按 code+日期+序号 配对 t0_buy_X / t0_sell_X
+  2. 只处理"一条腿 filled、另一条腿 pending"的配对
+     - 买入腿已成交 → 撤配对卖单 → 卖出同数量（平多头）
+     - 卖出腿已成交 → 撤配对买单 → 买回同数量（补仓位）
+  3. 两条腿都 pending 或都 filled → 跳过
+  4. 撤单优先 contractNo，失败退化 allBuyAndSell
+  5. 数量须 ≥5000 股、100 整数倍，不满足则跳过告警
+  6. 幂等：查 getHoldingShares / getEntrust，避免重复平仓
 
 用法:
   python3 scripts/t0_close.py [--dry-run]
@@ -17,6 +18,7 @@ T0尾盘平仓脚本 — 每个交易日 14:50 执行
 
 import sys
 import os
+import re
 import json
 import time
 import logging
@@ -122,34 +124,71 @@ def get_close_price(code: str, direction: str) -> float:
         return round(p * 1.005, 3)
 
 
-# ── 扫描未完成 T0 订单 ──────────────────────────────────────────────────
+# ── 扫描并配对当天 T0 订单 ─────────────────────────────────────────────
 def _today() -> str:
     return datetime.now().strftime('%Y-%m-%d')
 
 
-def scan_pending_t0() -> list:
-    """返回当天所有 status=pending 的 t0_buy/t0_sell 订单列表，每项含文件路径。"""
-    today = _today()
-    results = []
+def _today_compact() -> str:
+    return datetime.now().strftime('%Y%m%d')
+
+
+def scan_t0_pairs() -> list:
+    """
+    扫描 orders/ 目录，按 code+序号 配对当天的 t0_buy_X / t0_sell_X。
+    文件名格式：{YYYYMMDD}_{code}_t0_{buy|sell}_{X}.json
+
+    返回列表，每项为 dict：
+      {
+        'code':       str,
+        'pair_id':    str,   # "{code}_{X}"
+        'buy_order':  dict,  # t0_buy 文件内容（含 _file）
+        'sell_order': dict,  # t0_sell 文件内容（含 _file）
+      }
+    仅返回两条腿都存在的完整配对。
+    """
+    today = _today_compact()
+    # 文件名正则: YYYYMMDD_code_t0_{buy|sell}_X.json
+    pat = re.compile(
+        r'^(\d{8})_(\d+)_t0_(buy|sell)_(\d+)\.json$'
+    )
+
+    # key: (code, X) -> {'buy': order, 'sell': order}
+    pairs: dict = {}
+
     for fname in os.listdir(ORDERS_DIR):
-        if not fname.endswith('.json'):
+        m = pat.match(fname)
+        if not m:
             continue
+        date_str, code, side, x = m.group(1), m.group(2), m.group(3), m.group(4)
+        if date_str != today:
+            continue
+
         fpath = os.path.join(ORDERS_DIR, fname)
         try:
             with open(fpath) as f:
                 order = json.load(f)
         except Exception:
             continue
-        if order.get('status') != 'pending':
-            continue
-        if order.get('action') not in ('t0_buy', 't0_sell'):
-            continue
-        created = order.get('created_at', '')
-        if not created.startswith(today):
-            continue
         order['_file'] = fpath
-        results.append(order)
-    return results
+
+        key = (code, x)
+        if key not in pairs:
+            pairs[key] = {}
+        pairs[key][side] = order
+
+    result = []
+    for (code, x), legs in pairs.items():
+        if 'buy' not in legs or 'sell' not in legs:
+            log.warning(f"[{code}#{x}] 配对不完整，跳过（只有 {list(legs.keys())}）")
+            continue
+        result.append({
+            'code':       code,
+            'pair_id':    f"{code}_{x}",
+            'buy_order':  legs['buy'],
+            'sell_order': legs['sell'],
+        })
+    return result
 
 
 # ── 持仓检查 ─────────────────────────────────────────────────────────────
@@ -243,100 +282,113 @@ def place_order(action: str, code: str, shares: int, price: float) -> bool:
 def main():
     log.info(f"=== T0尾盘平仓开始 {'[DRY-RUN]' if DRY_RUN else ''} ===")
 
-    pending_orders = scan_pending_t0()
-    if not pending_orders:
-        print("无未完成T0")
-        log.info("无未完成T0，直接退出")
+    pairs = scan_t0_pairs()
+    if not pairs:
+        log.info("无当天T0配对，直接退出")
         return
 
-    log.info(f"找到 {len(pending_orders)} 笔未完成T0: "
-             + ", ".join(f"{o['code']}({o['action']}×{o['shares']})" for o in pending_orders))
+    log.info(f"找到 {len(pairs)} 组T0配对: " + ", ".join(p['pair_id'] for p in pairs))
 
-    for order in pending_orders:
-        code     = order['code']
-        action   = order['action']   # t0_buy / t0_sell
-        shares   = int(order['shares'])
-        price    = float(order['price'])
-        contract = order.get('contract', 'pending')
+    for pair in pairs:
+        code       = pair['code']
+        pair_id    = pair['pair_id']
+        buy_order  = pair['buy_order']
+        sell_order = pair['sell_order']
 
-        log.info(f"--- 处理 {code} {action} {shares}股 @{price} contract={contract} ---")
+        buy_status  = buy_order.get('status', '')
+        sell_status = sell_order.get('status', '')
 
-        # ── 幂等检查 ────────────────────────────────────────────────────
-        if action == 't0_buy':
-            # t0_buy 挂单未成交：说明买入已成交，卖出还没挂/没成
-            # 检查该代码是否还有挂卖单（若已被撤或无挂单，就需要卖出平仓）
-            pending_sells = [r for r in get_pending_entrust(code)
-                             if '卖' in str(r[4] if len(r) > 4 else '')]
-            if pending_sells:
-                log.info(f"  [{code}] 已有挂卖单 {len(pending_sells)} 笔，跳过（幂等）")
-                continue
-            # 检查持仓，若持仓不足则可能已被平
-            held = get_holding_shares(code)
-            if held == 0:
-                log.info(f"  [{code}] 持仓为0，已平仓，跳过（幂等）")
-                continue
-            if held < 0:
-                log.warning(f"  [{code}] 持仓查询失败，保守跳过")
-                continue
+        log.info(f"--- 配对 {pair_id}: buy={buy_status} sell={sell_status} ---")
 
-        elif action == 't0_sell':
-            # t0_sell 挂单未成交：卖出挂单未成，买回腿也未完成
-            # 检查是否还有挂买单（全撤后此挂单应已不存在）
-            pending_buys = [r for r in get_pending_entrust(code)
-                            if '买' in str(r[4] if len(r) > 4 else '')]
-            if pending_buys:
-                log.info(f"  [{code}] 已有挂买单 {len(pending_buys)} 笔，跳过（幂等）")
-                continue
+        # ── 判断哪条腿成交、哪条腿挂单 ──────────────────────────────────
+        if buy_status == 'filled' and sell_status == 'pending':
+            # 买入腿已成交，配对卖单未成 → 撤卖单 → 卖出平多头
+            filled_order  = buy_order
+            pending_order = sell_order
+            close_action  = 'sell'
+        elif sell_status == 'filled' and buy_status == 'pending':
+            # 卖出腿已成交，配对买单未成 → 撤买单 → 买回补仓
+            filled_order  = sell_order
+            pending_order = buy_order
+            close_action  = 'buy'
+        elif buy_status == 'filled' and sell_status == 'filled':
+            log.info(f"  [{pair_id}] 两腿均已成交，跳过")
+            continue
+        else:
+            # 两腿都 pending，或状态不明
+            log.info(f"  [{pair_id}] 两腿均未成交（buy={buy_status} sell={sell_status}），跳过")
+            continue
 
-        # ── 数量校验 ─────────────────────────────────────────────────────
+        shares   = int(filled_order['shares'])
+        price    = float(filled_order['price'])
+        contract = pending_order.get('contract', 'pending')  # 撤的是 pending 腿的合同号
+
+        log.info(f"  [{pair_id}] 已成交腿={filled_order['action']} {shares}股 @{price}，"
+                 f"需撤 {pending_order['action']} contractNo={contract}，平仓方向={close_action}")
+
+        # ── 幂等检查（仅实盘；dry-run 纯由订单文件判定，保证可重复）────────
+        if not DRY_RUN:
+            if close_action == 'sell':
+                # 已有挂卖单说明上次已处理
+                pending_sells = [r for r in get_pending_entrust(code)
+                                 if '卖' in str(r[4] if len(r) > 4 else '')]
+                if pending_sells:
+                    log.info(f"  [{code}] 已有挂卖单 {len(pending_sells)} 笔，跳过（幂等）")
+                    continue
+                held = get_holding_shares(code)
+                if held == 0:
+                    log.info(f"  [{code}] 持仓为0，已平仓，跳过（幂等）")
+                    continue
+                if held < 0:
+                    log.warning(f"  [{code}] 持仓查询失败，保守跳过")
+                    continue
+            else:  # buy
+                pending_buys = [r for r in get_pending_entrust(code)
+                                if '买' in str(r[4] if len(r) > 4 else '')]
+                if pending_buys:
+                    log.info(f"  [{code}] 已有挂买单 {len(pending_buys)} 笔，跳过（幂等）")
+                    continue
+
+        # ── 数量校验 ──────────────────────────────────────────────────────
         min_shares = 5000
         if shares < min_shares:
             msg = f"[{code}] 数量 {shares} < {min_shares}，跳过（告警）"
             log.warning(msg)
-            _log_record(code, action, shares, price, '数量不足跳过', False, contract)
+            _log_record(code, close_action, shares, price, '数量不足跳过', False, contract)
             continue
         if shares % 100 != 0:
-            # 向下取整到100的倍数
             shares = (shares // 100) * 100
             if shares < min_shares:
                 log.warning(f"[{code}] 修正后数量 {shares} < {min_shares}，跳过")
-                _log_record(code, action, shares, price, '数量不足跳过', False, contract)
+                _log_record(code, close_action, shares, price, '数量不足跳过', False, contract)
                 continue
             log.info(f"  [{code}] 数量修正为 {shares}（100的整数倍）")
 
-        # ── 撤单 ─────────────────────────────────────────────────────────
+        # ── 撤单（撤 pending 腿）─────────────────────────────────────────
         if DRY_RUN:
-            log.info(f"  [DRY-RUN] 将撤单 contractNo={contract}")
+            log.info(f"  [DRY-RUN] 将撤单 {pending_order['action']} contractNo={contract}")
             revoke_ok = True
         else:
             revoke_ok = revoke_order(contract)
 
         if not revoke_ok:
             log.error(f"  [{code}] 撤单失败，跳过平仓")
-            _log_record(code, action, shares, price, '撤单失败跳过', False, contract)
+            _log_record(code, close_action, shares, price, '撤单失败跳过', False, contract)
             continue
 
-        # ── 取对手价 ─────────────────────────────────────────────────────
-        if action == 't0_buy':
-            # 买单已成交，需要卖出平掉多头
-            close_action = 'sell'
-            close_price  = get_close_price(code, 'sell')
-        else:
-            # 卖单（t0_sell）未成交，需要买回
-            close_action = 'buy'
-            close_price  = get_close_price(code, 'buy')
-
+        # ── 取对手价 ──────────────────────────────────────────────────────
+        close_price = get_close_price(code, close_action)
         if close_price <= 0:
             log.error(f"  [{code}] 行情获取失败，跳过平仓")
-            _log_record(code, action, shares, price, '行情失败跳过', False, contract)
+            _log_record(code, close_action, shares, price, '行情失败跳过', False, contract)
             continue
 
-        log.info(f"  [{code}] 平仓: {close_action} {shares}股 @{close_price}（原价 {price}）原因=T0尾盘平仓")
+        log.info(f"  [{code}] 平仓: {close_action} {shares}股 @{close_price}（原成交价 {price}）原因=T0尾盘平仓")
 
-        # ── 下单 ─────────────────────────────────────────────────────────
+        # ── 下单 ──────────────────────────────────────────────────────────
         ok = place_order(close_action, code, shares, close_price)
 
-        _log_record(code, action, shares, close_price, 'T0尾盘平仓', ok, contract)
+        _log_record(code, close_action, shares, close_price, 'T0尾盘平仓', ok, contract)
         if ok:
             log.info(f"  [{code}] 平仓下单{'成功（dry-run）' if DRY_RUN else '成功'}")
         else:
