@@ -46,6 +46,7 @@ from strategies.rsi_macd import (
 )
 from strategies.grid import (
     evaluate_grid_signals, check_grid_reset, compute_grid_table,
+    check_grid_overall_stop, is_v2_enabled,
 )
 from strategies.rsi_macd import RSIMACDStrategy
 from strategies.t0 import T0Strategy
@@ -297,6 +298,39 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     # P2: 市场环境过滤(检查防御标的是否也弱势)
     defense_weak = check_defense(DEFENSE_CODE, all_tech, realtime)
 
+    # ── 大盘择时: 防守期禁止新建仓 ──
+    _regime_is_defense = False
+    try:
+        import yaml as _yaml
+        _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+        with open(_cfg_path) as _cf:
+            _conf = _yaml.safe_load(_cf)
+        _regime_cfg = _conf.get("regime_filter", {})
+        _regime_enabled = _regime_cfg.get("enabled", False)
+        if _regime_enabled:
+            _market_code = _regime_cfg.get("market_code", "510300")
+            _ma_period = int(_regime_cfg.get("ma_period", 200))
+            _confirm_days = int(_regime_cfg.get("confirm_days", 2))
+            _needed = _ma_period + _confirm_days + 5
+            import datetime as _dt
+            _end_str = _dt.date.today().strftime("%Y%m%d")
+            _start_str = (_dt.date.today() - _dt.timedelta(days=int(_needed * 1.8))).strftime("%Y%m%d")
+            _mklines = fetch_klines_daily(_market_code, start=_start_str, end=_end_str)
+            if _mklines and len(_mklines) >= _ma_period:
+                _closes = [k["close"] for k in _mklines]
+                _ma_val = sum(_closes[-_ma_period:]) / _ma_period
+                _cur = _closes[-1]
+                _prev = _closes[-2] if len(_closes) >= 2 else _cur
+                if not hasattr(generate_signals, "_regime_state"):
+                    generate_signals._regime_state = "attack"
+                if _cur < _ma_val and _prev < _ma_val:
+                    generate_signals._regime_state = "defense"
+                elif _cur > _ma_val and _prev > _ma_val:
+                    generate_signals._regime_state = "attack"
+                _regime_is_defense = (generate_signals._regime_state == "defense")
+    except Exception:
+        pass  # 获取失败默认不限制
+
     # ── 仓位管理器: 动态资金分配（替代固定 cfg["fund"]） ──
     _pm = get_position_manager()
     active_codes = [code for code in ETFS if code in realtime and realtime[code].get("price", 0) > 0]
@@ -336,6 +370,36 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     # 轮动TOP3标的(集中金字塔TOP3): 禁止日内减仓 / 调入标的直接建仓
     rotation_top3_codes = load_rotation_top3_codes()
 
+    # ── 入场门控: 沪深300ETF 10日动量 ──
+    _entry_gate_allowed = True  # 默认放行（取不到数据时也放行）
+    try:
+        import yaml as _ygcfg
+        _cfg_path_eg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+        with open(_cfg_path_eg) as _cf_eg:
+            _conf_eg = _ygcfg.safe_load(_cf_eg)
+        _eg = _conf_eg.get("entry_gate", {})
+        if _eg.get("enabled", False):
+            _eg_code = _eg.get("index_code", "510300")
+            _eg_days = int(_eg.get("momentum_days", 10))
+            import datetime as _dt_eg
+            _eg_end = _dt_eg.date.today().strftime("%Y%m%d")
+            _eg_start = (_dt_eg.date.today() - _dt_eg.timedelta(days=int(_eg_days * 2.5))).strftime("%Y%m%d")
+            _eg_klines = fetch_klines_daily(_eg_code, start=_eg_start, end=_eg_end)
+            if _eg_klines and len(_eg_klines) > _eg_days:
+                _eg_cur = _eg_klines[-1]["close"]
+                _eg_prev = _eg_klines[-1 - _eg_days]["close"]
+                _eg_mom = (_eg_cur - _eg_prev) / _eg_prev * 100
+                if _eg_mom >= 0:
+                    _entry_gate_allowed = True
+                    print(f"[ENTRY_GATE] {_eg_code} 十日动量 +{_eg_mom:.2f}% → 允许建仓")
+                else:
+                    _entry_gate_allowed = False
+                    print(f"[ENTRY_GATE] {_eg_code} 十日动量 {_eg_mom:.2f}% → 今日禁止新建仓（存量管理不受影响）")
+            else:
+                print(f"[ENTRY_GATE] {_eg_code} K线数据不足(需>{_eg_days}条,实得{len(_eg_klines) if _eg_klines else 0}条),放行")
+    except Exception as _eg_err:
+        print(f"[ENTRY_GATE] 获取 510300 数据失败: {_eg_err}，放行所有买入信号")
+
     # 信号生成
     signals_output = {}
     for code, cfg in ETFS.items():
@@ -369,6 +433,10 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # P0: 分级减仓 =====
         stop_actions = evaluate_stop(pos, t, price, today_str)
+        # strategy_v2: 网格整体止损（-8%减半 / -12%清仓），与现有止损去重
+        _grid_overall = check_grid_overall_stop(pos, price, today_str)
+        if _grid_overall:
+            stop_actions = list(stop_actions) + _grid_overall
         stop_signal = resolve_stop_signal(pos, stop_actions)
 
         # Level 2: 做T弹性条件（基于5分钟分时数据）
@@ -383,7 +451,21 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             pos.prev_macd_status = t["macd_status"]
 
         # Level 3: 网格触达(仅用于已持仓标的的网格加仓，不触发建仓)
-        grid_signal, grid_weight = evaluate_grid_signals(price, base, spacing, pos.grid_frozen)
+        # strategy_v2: 传入 MA20 及其斜率供趋势过滤使用
+        _ma20_val = t.get("ma20")
+        _ma20_slope_down = False
+        if _ma20_val and is_v2_enabled():
+            # 用日线K线最近5日MA20斜率判断下行
+            _kl = all_klines.get(code, [])
+            if len(_kl) >= 6:
+                _closes_tail = [k["close"] for k in _kl[-6:]]
+                from market_data import calc_ma as _calc_ma
+                _ma20_prev = _calc_ma(_closes_tail[:-1], min(20, len(_closes_tail)-1))
+                _ma20_slope_down = (_ma20_prev is not None and _ma20_val < _ma20_prev)
+        grid_signal, grid_weight = evaluate_grid_signals(
+            price, base, spacing, pos.grid_frozen,
+            ma20=_ma20_val, ma20_slope_down=_ma20_slope_down
+        )
         if grid_signal != "无" and "买入" in grid_signal and not pos.can_buy_today(today_str, atr_pct):
             grid_signal += "(今日已买入,等明日)"
 
@@ -424,7 +506,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         and sig_type in INTRADAY_REDUCE_SIG_TYPES:
                     top3_protected = True
                     continue
-                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct", "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop"):
+                if sig_type in ("liquidate_trend", "liquidate_trailing", "liquidate_60pct",
+                                "avg_stop_20pct", "hard_stop_25pct", "breakeven_stop",
+                                "grid_overall_clear"):
                     action = "清仓"
                     position_ratio = "100%"
                     reason = sig_name
@@ -437,6 +521,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     reason = sig_name
                     trade_type = "reduce"
                     # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
+                    break
+                elif sig_type == "grid_overall_half":
+                    # strategy_v2: 网格整体止损 -8% 减半仓
+                    action = "减仓"
+                    position_ratio = "减50%总仓"
+                    reason = sig_name
+                    trade_type = "reduce_half"
                     break
                 elif sig_type == "trend_profit_sell":
                     action = "卖出"
@@ -523,7 +614,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         # 更新base_price到当前价，使网格上移，防止同一档位重复触发
                         pos.base_price = round(price, 3)
                         action = "卖出"
-                        position_ratio = "5%(活动仓)"
+                        # strategy_v2: 网格卖出比例由 grid_weight 决定(10/15/20%)
+                        if is_v2_enabled() and grid_weight and grid_weight > 0:
+                            position_ratio = f"{int(grid_weight*100)}%(活动仓)"
+                        else:
+                            position_ratio = "5%(活动仓)"
                         reason = grid_signal
                         trade_type = "sell"
                     else:
@@ -538,6 +633,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             and rotation_top3_codes is not None
             and code in rotation_top3_codes
             and not pos.has_position
+            and not _regime_is_defense  # 大盘择时: 防守期禁止新建仓
+            and _entry_gate_allowed     # 入场门控: 510300十日动量为负时禁止新建仓
         )
         if _top3_rotation_buy:
             pos._enter_position(today_str, price, "30%(轮动调入)")
@@ -545,7 +642,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             position_ratio = "30%"
             trade_type = "buy"
             reason = "轮动调入TOP3,直接建仓"
-        if action == "持有":
+        if action == "持有" and not (_regime_is_defense and not pos.has_position):
+            # 大盘择时: 防守期跳过新建仓 evaluate_entry (has_position=True 的补仓信号照常评估)
             entry_result = evaluate_entry(
                 pos, t, price, realtime, positions, all_klines, code, today_str, atr_pct, defense_weak
             )
@@ -557,10 +655,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     reason = entry_reason
                     trade_type = entry_trade_type
                 else:
-                    action = entry_action
-                    position_ratio = entry_ratio
-                    reason = entry_reason
-                    trade_type = entry_trade_type
+                    # 入场门控: 510300 十日动量为负时禁止新建仓/加仓
+                    if not _entry_gate_allowed:
+                        action = "持有(入场门控)"
+                        position_ratio = "0%"
+                        reason = "入场门控: 510300十日动量为负,禁止新建仓/加仓"
+                        trade_type = None
+                    else:
+                        action = entry_action
+                        position_ratio = entry_ratio
+                        reason = entry_reason
+                        trade_type = entry_trade_type
             else:
                 # evaluate_entry returned None → 有持仓但不是建仓阶段
                 if pos.has_position:

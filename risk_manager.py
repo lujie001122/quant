@@ -39,6 +39,12 @@ try:
 except Exception:
     _daily_loss = 0.20
 
+# strategy_v2: 止盈激活与 tier1 止损参数
+_v2_cfg = _cfg.get('strategy_v2', {})
+_V2_ENABLED = bool(_v2_cfg.get('enabled', False))
+_V2_E1_ACTIVATION = float(_v2_cfg.get('e1_activation_v2', 0.05))
+_V2_TIER1_PCT = float(_v2_cfg.get('tier1_pct_v2', 0.06))
+
 
 class RiskManager:
     """风险管理器 — 统一处理止损、仓位上限、日亏损限额、连续亏损熔断"""
@@ -191,8 +197,10 @@ class RiskManager:
         # ── 浮盈止损上移: 浮盈>5%→保本线, >10%→成本+5% ──
         if pos.entry_cost > 0:
             pos_ratio = pos.shares * price / TOTAL_FUND if price > 0 else 0
+            # strategy_v2: tier1 止损收紧到 tier1_pct_v2（0.06）
+            _tier1_pct = _V2_TIER1_PCT if _V2_ENABLED else _cfg.get("stop_loss", {}).get("tier1_pct", 0.15)
             if pos_ratio > _cfg.get("stop_loss", {}).get("tier1_ratio", 0.80):
-                stop_pct = _cfg.get("stop_loss", {}).get("tier1_pct", 0.15)
+                stop_pct = _tier1_pct
             elif pos_ratio >= _cfg.get("stop_loss", {}).get("tier2_ratio", 0.50):
                 stop_pct = _cfg.get("stop_loss", {}).get("tier2_pct", 0.20)
             else:

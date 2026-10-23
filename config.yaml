@@ -116,7 +116,7 @@ stop_loss:
   rsi_low_confirm: 35
   tier1_pct: 0.07
   tier1_ratio: 0.8
-  tier2_pct: 0.10
+  tier2_pct: 0.1
   tier2_ratio: 0.5
   tier3_pct: 0.12
 t0:
@@ -141,25 +141,48 @@ trend:
 trend_profit:
   cooldown_days: 2
   max_daily: 2
-
-# 阶梯止盈(仅极高利润轻仓)
 ladder_profit:
   enabled: false
-  level1_pct: 0.30
+  level1_pct: 0.3
   level1_sell: 0.05
   level2_pct: 0.45
   level2_sell: 0.05
   level3_pct: 0.55
   level3_sell: 0.05
-
-# 盈利保护
 profit_protect:
   activate_pct: 0.05
   stop_margin: 0.005
-
-# 绩效分析管理端数据库（MySQL 8.0 + SQLAlchemy 2.0）
+strategy_v2:
+  enabled: false
+  inverted_weights_v2:
+  - 0.25
+  - 0.2
+  - 0.2
+  - 0.2
+  - 0.15
+  grid_trend_filter: true
+  grid_overall_stop_loss:
+    enabled: false
+    half_pct: 0.08
+    clear_pct: 0.12
+  grid_sell_ratios:
+  - 0.1
+  - 0.15
+  - 0.2
+  e1_activation_v2: 0.05
+  tier1_pct_v2: 0.06
+regime_filter:
+  enabled: false
+  market_code: '510300'
+  ma_period: 200
+  confirm_days: 2
+  defense_max_pct: 0.5
+entry_gate:
+  enabled: true
+  index_code: '510300'
+  momentum_days: 10
 database:
-  url: "mysql+pymysql://root:lujie001122@127.0.0.1:3307/quant?charset=utf8mb4"
+  url: mysql+pymysql://root:lujie001122@127.0.0.1:3307/quant?charset=utf8mb4
   echo: false
   pool_size: 10
   max_overflow: 20
