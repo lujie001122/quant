@@ -1,0 +1,187 @@
+2026-10-22 14:58:21 === T0尾盘平仓开始 [DRY-RUN] ===
+2026-10-22 14:58:21 找到 3 笔未完成T0: 513780(t0_sell×9100), 513780(t0_sell×9100), 513300(t0_buy×5000)
+2026-10-22 14:58:21 --- 处理 513780 t0_sell 9100股 @1.553 contract=pending ---
+2026-10-22 14:58:25   [DRY-RUN] 将撤单 contractNo=pending
+2026-10-22 14:58:25   [513780] 平仓: buy 9100股 @1.537（原价 1.553）原因=T0尾盘平仓
+2026-10-22 14:58:25   下单: /Users/lujie/Documents/code/quant/.venv/bin/python /Users/lujie/Documents/code/quant/trade.py buy 513780 9100 1.537
+2026-10-22 14:58:25   [DRY-RUN] 跳过真实下单
+2026-10-22 14:58:25 [LOG] 2026-10-22 14:58:25 | code=513780 | action=t0_sell | shares=9100 | price=1.537 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 14:58:25   [513780] 平仓下单成功（dry-run）
+2026-10-22 14:58:25 --- 处理 513780 t0_sell 9100股 @1.553 contract=pending ---
+2026-10-22 14:58:28   [DRY-RUN] 将撤单 contractNo=pending
+2026-10-22 14:58:28   [513780] 平仓: buy 9100股 @1.537（原价 1.553）原因=T0尾盘平仓
+2026-10-22 14:58:28   下单: /Users/lujie/Documents/code/quant/.venv/bin/python /Users/lujie/Documents/code/quant/trade.py buy 513780 9100 1.537
+2026-10-22 14:58:28   [DRY-RUN] 跳过真实下单
+2026-10-22 14:58:28 [LOG] 2026-10-22 14:58:28 | code=513780 | action=t0_sell | shares=9100 | price=1.537 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 14:58:28   [513780] 平仓下单成功（dry-run）
+2026-10-22 14:58:28 --- 处理 513300 t0_buy 5000股 @2.74 contract=pending ---
+2026-10-22 14:58:34   [DRY-RUN] 将撤单 contractNo=pending
+2026-10-22 14:58:34   [513300] 平仓: sell 5000股 @2.728（原价 2.74）原因=T0尾盘平仓
+2026-10-22 14:58:34   下单: /Users/lujie/Documents/code/quant/.venv/bin/python /Users/lujie/Documents/code/quant/trade.py sell 513300 5000 2.728
+2026-10-22 14:58:34   [DRY-RUN] 跳过真实下单
+2026-10-22 14:58:34 [LOG] 2026-10-22 14:58:34 | code=513300 | action=t0_buy | shares=5000 | price=2.728 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 14:58:34   [513300] 平仓下单成功（dry-run）
+2026-10-22 14:58:34 === T0尾盘平仓结束 ===
+2026-10-22 15:02:16 === T0尾盘平仓开始 [DRY-RUN] ===
+2026-10-22 15:02:16 找到 4 组T0配对: 159981_1, 513780_1, 513300_1, 513780_2
+2026-10-22 15:02:16 --- 配对 159981_1: buy=filled sell=filled ---
+2026-10-22 15:02:16   [159981_1] 两腿均已成交，跳过
+2026-10-22 15:02:16 --- 配对 513780_1: buy=filled sell=pending ---
+2026-10-22 15:02:16   [513780_1] 已成交腿=t0_buy 9100股 @1.537，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-22 15:02:16 [513780] getEntrust 失败: No module named 'evolving'
+2026-10-22 15:02:16 [513780] getHoldingShares 失败: No module named 'evolving'
+2026-10-22 15:02:16   [513780] 持仓查询失败，保守跳过
+2026-10-22 15:02:16 --- 配对 513300_1: buy=pending sell=filled ---
+2026-10-22 15:02:16   [513300_1] 已成交腿=t0_sell 5000股 @2.77，需撤 t0_buy contractNo=pending，平仓方向=buy
+2026-10-22 15:02:16 [513300] getEntrust 失败: No module named 'evolving'
+2026-10-22 15:02:16   [DRY-RUN] 将撤单 t0_buy contractNo=pending
+2026-10-22 15:02:16   [513300] 平仓: buy 5000股 @2.755（原成交价 2.77）原因=T0尾盘平仓
+2026-10-22 15:02:16   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py buy 513300 5000 2.755
+2026-10-22 15:02:16   [DRY-RUN] 跳过真实下单
+2026-10-22 15:02:16 [LOG] 2026-10-22 15:02:16 | code=513300 | action=buy | shares=5000 | price=2.755 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:02:16   [513300] 平仓下单成功（dry-run）
+2026-10-22 15:02:16 --- 配对 513780_2: buy=filled sell=pending ---
+2026-10-22 15:02:16   [513780_2] 已成交腿=t0_buy 9100股 @1.537，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-22 15:02:16 [513780] getEntrust 失败: No module named 'evolving'
+2026-10-22 15:02:16 [513780] getHoldingShares 失败: No module named 'evolving'
+2026-10-22 15:02:16   [513780] 持仓查询失败，保守跳过
+2026-10-22 15:02:16 === T0尾盘平仓结束 ===
+2026-10-22 15:03:06 === T0尾盘平仓开始 [DRY-RUN] ===
+2026-10-22 15:03:06 找到 4 组T0配对: 159981_1, 513780_1, 513300_1, 513780_2
+2026-10-22 15:03:06 --- 配对 159981_1: buy=filled sell=filled ---
+2026-10-22 15:03:06   [159981_1] 两腿均已成交，跳过
+2026-10-22 15:03:06 --- 配对 513780_1: buy=filled sell=pending ---
+2026-10-22 15:03:06   [513780_1] 已成交腿=t0_buy 9100股 @1.537，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-22 15:03:06   [DRY-RUN] 将撤单 t0_sell contractNo=pending
+2026-10-22 15:03:06   [513780] 平仓: sell 9100股 @1.523（原成交价 1.537）原因=T0尾盘平仓
+2026-10-22 15:03:06   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py sell 513780 9100 1.523
+2026-10-22 15:03:06   [DRY-RUN] 跳过真实下单
+2026-10-22 15:03:06 [LOG] 2026-10-22 15:03:06 | code=513780 | action=sell | shares=9100 | price=1.523 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:03:06   [513780] 平仓下单成功（dry-run）
+2026-10-22 15:03:06 --- 配对 513300_1: buy=pending sell=filled ---
+2026-10-22 15:03:06   [513300_1] 已成交腿=t0_sell 5000股 @2.77，需撤 t0_buy contractNo=pending，平仓方向=buy
+2026-10-22 15:03:06   [DRY-RUN] 将撤单 t0_buy contractNo=pending
+2026-10-22 15:03:06   [513300] 平仓: buy 5000股 @2.755（原成交价 2.77）原因=T0尾盘平仓
+2026-10-22 15:03:06   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py buy 513300 5000 2.755
+2026-10-22 15:03:06   [DRY-RUN] 跳过真实下单
+2026-10-22 15:03:06 [LOG] 2026-10-22 15:03:06 | code=513300 | action=buy | shares=5000 | price=2.755 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:03:06   [513300] 平仓下单成功（dry-run）
+2026-10-22 15:03:06 --- 配对 513780_2: buy=filled sell=pending ---
+2026-10-22 15:03:06   [513780_2] 已成交腿=t0_buy 9100股 @1.537，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-22 15:03:06   [DRY-RUN] 将撤单 t0_sell contractNo=pending
+2026-10-22 15:03:06   [513780] 平仓: sell 9100股 @1.523（原成交价 1.537）原因=T0尾盘平仓
+2026-10-22 15:03:06   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py sell 513780 9100 1.523
+2026-10-22 15:03:06   [DRY-RUN] 跳过真实下单
+2026-10-22 15:03:06 [LOG] 2026-10-22 15:03:06 | code=513780 | action=sell | shares=9100 | price=1.523 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:03:06   [513780] 平仓下单成功（dry-run）
+2026-10-22 15:03:06 === T0尾盘平仓结束 ===
+2026-10-22 15:06:27 === T0尾盘平仓开始 [DRY-RUN] ===
+2026-10-22 15:06:27 找到 4 组T0配对: 159981_1, 513780_1, 513300_1, 513780_2
+2026-10-22 15:06:27 --- 配对 159981_1: buy=filled sell=filled ---
+2026-10-22 15:06:27   [159981_1] 两腿均已成交，跳过
+2026-10-22 15:06:27 --- 配对 513780_1: buy=filled sell=pending ---
+2026-10-22 15:06:27   [513780_1] 已成交腿=t0_buy 9100股 @1.537，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-22 15:06:27   [DRY-RUN] 将撤单 t0_sell contractNo=pending
+2026-10-22 15:06:27   [513780] 平仓: sell 9100股 @1.523（原成交价 1.537）原因=T0尾盘平仓
+2026-10-22 15:06:27   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py sell 513780 9100 1.523
+2026-10-22 15:06:27   [DRY-RUN] 跳过真实下单
+2026-10-22 15:06:27 [LOG] 2026-10-22 15:06:27 | code=513780 | action=sell | shares=9100 | price=1.523 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:06:27   [513780] 平仓下单成功（dry-run）
+2026-10-22 15:06:27 --- 配对 513300_1: buy=pending sell=filled ---
+2026-10-22 15:06:27   [513300_1] 已成交腿=t0_sell 5000股 @2.77，需撤 t0_buy contractNo=pending，平仓方向=buy
+2026-10-22 15:06:27   [DRY-RUN] 将撤单 t0_buy contractNo=pending
+2026-10-22 15:06:28   [513300] 平仓: buy 5000股 @2.755（原成交价 2.77）原因=T0尾盘平仓
+2026-10-22 15:06:28   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py buy 513300 5000 2.755
+2026-10-22 15:06:28   [DRY-RUN] 跳过真实下单
+2026-10-22 15:06:28 [LOG] 2026-10-22 15:06:28 | code=513300 | action=buy | shares=5000 | price=2.755 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:06:28   [513300] 平仓下单成功（dry-run）
+2026-10-22 15:06:28 --- 配对 513780_2: buy=filled sell=pending ---
+2026-10-22 15:06:28   [513780_2] 已成交腿=t0_buy 9100股 @1.537，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-22 15:06:28   [DRY-RUN] 将撤单 t0_sell contractNo=pending
+2026-10-22 15:06:28   [513780] 平仓: sell 9100股 @1.523（原成交价 1.537）原因=T0尾盘平仓
+2026-10-22 15:06:28   下单: /Library/Developer/CommandLineTools/usr/bin/python3 /Users/lujie/Documents/code/quant/trade.py sell 513780 9100 1.523
+2026-10-22 15:06:28   [DRY-RUN] 跳过真实下单
+2026-10-22 15:06:28 [LOG] 2026-10-22 15:06:28 | code=513780 | action=sell | shares=9100 | price=1.523 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-22 15:06:28   [513780] 平仓下单成功（dry-run）
+2026-10-22 15:06:28 === T0尾盘平仓结束 ===
+2026-10-23 14:50:02 === T0尾盘平仓开始  ===
+2026-10-23 14:50:02 找到 1 组T0配对: 513300_1
+2026-10-23 14:50:02 --- 配对 513300_1: buy=pending sell=pending ---
+2026-10-23 14:50:02   [513300_1] 两腿均未成交（buy=pending sell=pending），跳过
+2026-10-23 14:50:02 === T0尾盘平仓结束 ===
+2026-10-23 15:16:46 === T0平仓 --verify 模式（只读，不下单）===
+2026-10-23 15:16:46 找到 1 组T0配对: 513300_1
+2026-10-23 15:16:46 
+2026-10-23 15:16:46 ============================================================
+2026-10-23 15:16:46 配对: 513300_1  (2026-10-23 10:43:21)
+2026-10-23 15:16:46   买入: 5000 股 @2.675
+2026-10-23 15:16:46   卖出: 5000 股 @2.705
+2026-10-23 15:16:51   [513300] getEntrust 异常: EvolvingSim.getEntrust() got an unexpected keyword argument 'assetType'
+2026-10-23 15:16:51   [源1 文件状态]  buy=pending sell=pending
+2026-10-23 15:16:51   [源2 真实持仓]  real=6200 baseline=0 excess=6200 → buy_filled=True sell_filled=False
+2026-10-23 15:16:51   [源3 当日委托]  getEntrust 返回 None
+2026-10-23 15:16:51   接口可用: True
+2026-10-23 15:16:51   综合判定: buy_filled=True  sell_filled=False
+2026-10-23 15:16:51   ★ 需要平仓（卖出 5000 股）
+2026-10-23 15:16:51 
+2026-10-23 15:16:51 === verify 完成 ===
+2026-10-23 15:17:58 === T0平仓 --verify 模式（只读，不下单）===
+2026-10-23 15:17:58 找到 1 组T0配对: 513300_1
+2026-10-23 15:17:58 
+2026-10-23 15:17:58 ============================================================
+2026-10-23 15:17:58 配对: 513300_1  (2026-10-23 10:43:21)
+2026-10-23 15:17:58   买入: 5000 股 @2.675
+2026-10-23 15:17:58   卖出: 5000 股 @2.705
+2026-10-23 15:18:04   [513300] getEntrust 异常: EvolvingSim.getEntrust() takes from 1 to 3 positional arguments but 4 were given
+2026-10-23 15:18:04   [源1 文件状态]  buy=pending sell=pending
+2026-10-23 15:18:04   [源2 真实持仓]  real=6200 baseline=0 excess=6200 → buy_filled=True sell_filled=False
+2026-10-23 15:18:04   [源3 当日委托]  getEntrust 返回 None
+2026-10-23 15:18:04   接口可用: True
+2026-10-23 15:18:04   综合判定: buy_filled=True  sell_filled=False
+2026-10-23 15:18:04   ★ 需要平仓（卖出 5000 股）
+2026-10-23 15:18:04 
+2026-10-23 15:18:04 === verify 完成 ===
+2026-10-23 15:19:19 === T0平仓 --verify 模式（只读，不下单）===
+2026-10-23 15:19:19 找到 1 组T0配对: 513300_1
+2026-10-23 15:19:19 
+2026-10-23 15:19:19 ============================================================
+2026-10-23 15:19:19 配对: 513300_1  (2026-10-23 10:43:21)
+2026-10-23 15:19:19   买入: 5000 股 @2.675
+2026-10-23 15:19:19   卖出: 5000 股 @2.705
+2026-10-23 15:19:27   [源1 文件状态]  buy=pending sell=pending
+2026-10-23 15:19:27   [源2 真实持仓]  real=6200 baseline=0 excess=6200 → buy_filled=True sell_filled=False
+2026-10-23 15:19:27   [源3 当日委托]  共2条 → buy_filled=True sell_filled=False
+2026-10-23 15:19:27   接口可用: True
+2026-10-23 15:19:27   综合判定: buy_filled=True  sell_filled=False
+2026-10-23 15:19:27   ★ 需要平仓（卖出 5000 股）
+2026-10-23 15:19:27 
+2026-10-23 15:19:27 === verify 完成 ===
+2026-10-23 15:19:53 === T0尾盘平仓开始 [DRY-RUN] ===
+2026-10-23 15:19:53 找到 1 组T0配对: 513300_1
+2026-10-23 15:19:53 --- 配对 513300_1 ---
+2026-10-23 15:20:01   [源1 文件状态]  buy=pending sell=pending
+2026-10-23 15:20:01   [源2 真实持仓]  real=6200 baseline=0 excess=6200 → buy_filled=True sell_filled=False
+2026-10-23 15:20:01   [源3 当日委托]  共2条 → buy_filled=True sell_filled=False
+2026-10-23 15:20:01   [513300_1] 已成交腿=t0_buy 5000股 @2.675，需撤 t0_sell contractNo=pending，平仓方向=sell
+2026-10-23 15:20:01   [DRY-RUN] 将撤单 t0_sell contractNo=pending
+2026-10-23 15:20:01   [513300] 平仓: sell 5000股 @2.678（原成交价 2.675）原因=T0尾盘平仓
+2026-10-23 15:20:01   下单: /Users/lujie/Documents/code/quant/.venv/bin/python3 /Users/lujie/Documents/code/quant/trade.py sell 513300 5000 2.678
+2026-10-23 15:20:01   [DRY-RUN] 跳过真实下单
+2026-10-23 15:20:01 [LOG] 2026-10-23 15:20:01 | code=513300 | action=sell | shares=5000 | price=2.678 | reason=T0尾盘平仓 | status=成交 | contract=pending
+2026-10-23 15:20:01   [513300] 平仓下单成功（dry-run）
+2026-10-23 15:20:01 === T0尾盘平仓结束 ===
+2026-10-23 15:20:34 === T0平仓 --verify 模式（只读，不下单）===
+2026-10-23 15:20:34 找到 1 组T0配对: 513300_1
+2026-10-23 15:20:34 
+2026-10-23 15:20:34 ============================================================
+2026-10-23 15:20:34 配对: 513300_1  (2026-10-23 10:43:21)
+2026-10-23 15:20:34   买入: 5000 股 @2.675
+2026-10-23 15:20:34   卖出: 5000 股 @2.705
+2026-10-23 15:20:43   [源1 文件状态]  buy=pending sell=pending
+2026-10-23 15:20:43   [源2 真实持仓]  real=6200 baseline=0 excess=6200 → buy_filled=True sell_filled=False
+2026-10-23 15:20:43   [源3 当日委托]  共2条 → buy_filled=True sell_filled=False
+2026-10-23 15:20:43   接口可用: True
+2026-10-23 15:20:43   综合判定: buy_filled=True  sell_filled=False
+2026-10-23 15:20:43   ★ 需要平仓（卖出 5000 股）
+2026-10-23 15:20:43 
+2026-10-23 15:20:43 === verify 完成 ===
