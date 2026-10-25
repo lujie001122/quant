@@ -123,6 +123,8 @@ t0:
   ma20_slope_buy_cap: -0.005
   ma20_slope_sell_cap: 0.003
   min_spread: 150
+  min_spread_abs: 120
+  min_spread_pct: 0.0035
   pair_atr_multiplier: 1.1
   pair_ratio: 0.3
   rsi_buy_max: 50

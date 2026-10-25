@@ -630,6 +630,132 @@ class SignalExecutor:
         """延迟导入避免循环依赖"""
         self._imports_loaded = False
 
+    def _run_t0_chase_cycle(self):
+        """T0 单腿追价周期入口（每次 execute_signals mode='t0' 调用一次）。
+        调用点: executor.py execute_signals mode='t0' 分支开始处（见下方 # ═══ T0 单腿追价 ═══）
+        """
+        from datetime import datetime as _dt
+        from strategies.t0 import (
+            load_chase_holder, save_chase_holder,
+            detect_single_leg, T0Strategy
+        )
+        from state_center import load_today_orders
+        import sys as _sys_exe
+
+        now = _dt.now()
+        holder = load_chase_holder()
+        if not holder.t0_chase_state:
+            return  # 无追价记录，跳过
+
+        print(f"[T0-CHASE] 开始单腿检测，当前追价记录: {len(holder.t0_chase_state)} 条")
+
+        # 单腿状态检测（更新 filled_leg / pending_action / pending_contract）
+        detect_single_leg(holder, now)
+
+        # 过滤出已确认为单腿的记录
+        pending_entries = {
+            pid: st for pid, st in holder.t0_chase_state.items()
+            if st.get('pending_action') is not None
+        }
+        if not pending_entries:
+            save_chase_holder(holder)
+            return
+
+        # 组装 quote_fn / cancel_fn / place_fn / t0_close_fn
+        def _quote_fn(code):
+            try:
+                from market_data import fetch_realtime_quotes
+                q = fetch_realtime_quotes([code])
+                r = q.get(code, {})
+                return {'bid1': r.get('bid1', 0), 'ask1': r.get('ask1', 0)}
+            except Exception:
+                return None
+
+        def _cancel_fn(contract):
+            if not contract or contract == 'pending':
+                return False
+            try:
+                from evolving.evolving import EvolvingSim
+                import time as _time
+                e = EvolvingSim()
+                res = e.revokeEntrust(revokeType='single', contractNo=contract)
+                _time.sleep(1)
+                return res is not None
+            except Exception as ex:
+                print(f"  ⚠️ cancel_fn 撤单异常 contract={contract}: {ex}")
+                return False
+
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _trade_py = os.path.join(_script_dir, 'trade.py')
+        import subprocess as _sp
+
+        def _place_fn(action, code, shares, price):
+            subcmd = 'buy' if action == '买入' else 'sell'
+            cmd = [_sys_exe.executable, _trade_py, subcmd, code, str(shares), f'{price:.3f}']
+            try:
+                proc = _sp.run(cmd, capture_output=True, text=True, timeout=60,
+                               cwd=_script_dir)
+                return proc.returncode == 0
+            except Exception as ex:
+                print(f"  ⚠️ place_fn 下单异常: {ex}")
+                return False
+
+        def _t0_close_fn():
+            import subprocess as _sp2
+            close_py = os.path.join(_script_dir, 'scripts', 't0_close.py')
+            try:
+                _sp2.run([_sys_exe.executable, close_py], timeout=120, cwd=_script_dir)
+            except Exception as ex:
+                print(f"  ⚠️ t0_close_fn 异常: {ex}")
+
+        strategy = T0Strategy()
+        actions = strategy.check_t0_pair_chase(
+            holder, now, _quote_fn, _cancel_fn, _place_fn, _t0_close_fn
+        )
+        if actions:
+            print(f"[T0-CHASE] 本周期执行: {actions}")
+        save_chase_holder(holder)
+
+    def _record_t0_pair_after_execute(self, code: str, action: str, shares: int):
+        """T0 配对单下发成功后，读取 orders/*.json 里真实合同号，写入追价状态（写入点①）。
+        调用点: executor.py execute_signals t0 下单成功后（见下方 # ═══ T0 追价记录 ═══）
+        """
+        from strategies.t0 import load_chase_holder, save_chase_holder, record_t0_pair_state
+        from state_center import load_today_orders
+        from datetime import datetime as _dt
+
+        today_orders = load_today_orders()
+        today_str = _dt.now().strftime('%Y%m%d')
+
+        # 找到这笔 t0_buy / t0_sell 的两条 order 文件
+        main_action_dir = '买入' if 'buy' in action else '卖出'
+        pair_action_dir = '卖出' if main_action_dir == '买入' else '买入'
+
+        main_contract = 'pending'
+        pair_contract = 'pending'
+        for fname, ord_data in sorted(today_orders.items(), reverse=True):
+            if ord_data.get('code') != code:
+                continue
+            d = ord_data.get('direction', '')
+            c = ord_data.get('contract', 'pending')
+            if d == main_action_dir and main_contract == 'pending':
+                main_contract = c
+            elif d == pair_action_dir and pair_contract == 'pending':
+                pair_contract = c
+            if main_contract != 'pending' and pair_contract != 'pending':
+                break
+
+        pair_id = f"{today_str}_{code}_{action}"
+        holder = load_chase_holder()
+        record_t0_pair_state(
+            holder, pair_id, code,
+            main_action_dir, pair_action_dir, shares,
+            main_contract, pair_contract
+        )
+        save_chase_holder(holder)
+        print(f"[T0-CHASE] 记录配对单 {pair_id}: "
+              f"主腿={main_action_dir}({main_contract}) 配对腿={pair_action_dir}({pair_contract})")
+
     def _ensure_imports(self):
         """加载 signal_generator 依赖"""
         if self._imports_loaded:
@@ -731,6 +857,10 @@ class SignalExecutor:
                 if trade_type not in T0_TYPES:
                     continue
             actionable.append((code, sig))
+
+        # ═══ T0 单腿追价检测（每周期入口处调用）═══
+        if mode == 't0':
+            self._run_t0_chase_cycle()
 
         if not actionable:
             print("[EXECUTE] 无交易信号，跳过执行")
@@ -995,6 +1125,13 @@ class SignalExecutor:
                                     save_portfolio(pf)
                             except Exception:
                                 pass
+
+                        # ═══ T0 追价状态记录（写入点①）═══
+                        if trade_type == "t0":
+                            try:
+                                self._record_t0_pair_after_execute(code, action, shares)
+                            except Exception as _chase_err:
+                                print(f"  [T0-CHASE] 记录追价状态失败: {_chase_err}")
 
                         # ═══ O4: 清仓成交确认后重置持仓状态 ═══
                         if trade_type == "liquidate":

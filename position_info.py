@@ -113,6 +113,10 @@ class PositionInfo:
         # strategy_v2: 网格整体止损追踪
         self.grid_stop_level = 0          # 0=未触发, 1=已减半, 2=已清仓
         self.grid_stop_date = None        # 最近触发日期（同日去重）
+        # T0单腿追价状态（不影响仓位/止损/止盈逻辑）
+        # 结构: {pair_id: {filled_leg, pending_action, pending_shares, pending_price,
+        #                  chase_count, last_chase_time, code}}
+        self.t0_chase_state: dict = {}
 
     @property
     def entry_cost(self):

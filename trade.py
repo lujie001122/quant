@@ -59,6 +59,45 @@ def _call_evolving(method_name, *args, e=None):
             time.sleep(2)
 
 
+def _fetch_contract(e, code, direction, price):
+    """下单后从 getEntrust 捞真实合同号。
+    getEntrust row: [0]日期 [1]时间 [2]代码 [3]名称 [4]操作 [5]备注 [6]委托量
+                    [7]撤销量 [8]委托价 [9]成交价 [10]合同编号
+    找不到返回 'pending'。
+    """
+    try:
+        time.sleep(2)
+        ent = e.getEntrust('today', False)
+    except Exception as ex:
+        print(f"  ⚠️ _fetch_contract getEntrust 异常: {ex}")
+        return 'pending'
+    if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+        return 'pending'
+    # 从最新委托倒序查找，匹配 code + 方向 + 价格
+    rows = ent['data']
+    for row in reversed(rows):
+        if not row or len(row) < 11:
+            continue
+        if str(row[2]) != code:
+            continue
+        row_op = str(row[4])
+        if direction == '买入' and '买' not in row_op:
+            continue
+        if direction == '卖出' and '卖' not in row_op:
+            continue
+        try:
+            row_price = float(row[8])
+        except (ValueError, TypeError):
+            continue
+        if abs(row_price - price) < 0.002:
+            contract = str(row[10]).strip()
+            if contract and contract != '0':
+                print(f"  📋 {code} {direction} 合同号={contract}")
+                return contract
+    print(f"  ⚠️ {code} {direction} @{price} 未在getEntrust中找到合同号，contract=pending")
+    return 'pending'
+
+
 # ─── 数量校验 ──────────────────────────────────────────────────────────
 
 def _validate_shares(shares):
@@ -291,12 +330,17 @@ def _unified_trade(action, code, shares, price, pair_price=None):
             pass
 
     # Bug6: 双重写订单修复 — 统一由 state_center.write_order 管理
-    write_order(code, action, shares, price, 'pending')
+    # 下单后捞真实合同号（用于追价撤单）
+    direction_main = '买入' if 'buy' in action else '卖出'
+    contract_main = _fetch_contract(e, code, direction_main, price)
+    write_order(code, action, shares, price, contract_main)
 
     if is_t0 and pair_price is not None:
         time.sleep(5)
         _call_evolving(pair_method, code, shares, pair_price, e=e)
-        write_order(code, pair_action, shares, pair_price, 'pending')
+        direction_pair = '卖出' if 'buy' in action else '买入'
+        contract_pair = _fetch_contract(e, code, direction_pair, pair_price)
+        write_order(code, pair_action, shares, pair_price, contract_pair)
 
     return True
 
