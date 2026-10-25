@@ -188,6 +188,7 @@ def sync():
         if not data:
             print("  ⚠️ sync: getHoldingShares 返回空数据，跳过持仓同步")
         else:
+            sold_volumes = None  # 懒加载: 当日各代码卖出委托量 {code: vol}
             for row in data:
                 if not row or len(row) < 12:
                     continue
@@ -220,8 +221,40 @@ def sync():
                         'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,  # 仅展示用
                         'base_price': base_price,
                     }
+                    pf.get('_zero_share_count', {}).pop(code, None)
                 elif code in pf['positions']:
-                    del pf['positions'][code]
+                    # shares_val==0: 可能是同花顺数据异常(真实持仓被抹掉)，也可能是真清仓
+                    # 用 getEntrust('today') 交叉核对: 当日卖出量>=原持仓才算真清仓，否则保留原持仓
+                    # 另引入连续0股计数，连续3次则判定已清仓（处理隔日清仓场景）
+                    if sold_volumes is None:
+                        sold_volumes = {}
+                        try:
+                            ent = _call_evolving('getEntrust', 'today', False)
+                            if isinstance(ent, dict) and ent.get('status'):
+                                for er in ent.get('data', []) or []:
+                                    if er and len(er) > 6 and str(er[4]).strip() == '卖出':
+                                        try:
+                                            ec = str(er[2]).strip()
+                                            sold_volumes[ec] = sold_volumes.get(ec, 0) + int(er[6])
+                                        except (ValueError, TypeError):
+                                            pass
+                        except Exception as _ex:
+                            print(f"  ⚠️ sync: getEntrust 异常: {_ex}")
+                    old = pf['positions'][code].get('shares', 0)
+                    zero_counts = pf.setdefault('_zero_share_count', {})
+                    if old > 0 and sold_volumes.get(code, 0) >= old:
+                        # 当日委托证明已清仓，立即删除
+                        del pf['positions'][code]
+                        zero_counts.pop(code, None)
+                    else:
+                        n = zero_counts.get(code, 0) + 1
+                        zero_counts[code] = n
+                        if n >= 3:
+                            del pf['positions'][code]
+                            zero_counts.pop(code, None)
+                            print(f"[SYNC] {code} 连续3次返回0股，判定已清仓，删除持仓")
+                        else:
+                            print(f"[SYNC] {code} 返回0股，第 {n} 次，保留原持仓 {old}股")
 
     # 写入账户数据（已通过一致性校验）
     if isinstance(acct, dict) and acct.get('status'):

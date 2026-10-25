@@ -1104,7 +1104,30 @@ class SignalExecutor:
                             print(stdout.strip())
                         if stderr_out:
                             print(f"  [stderr] {stderr_out.strip()}")
-                        print(f"  ✅ {code} {direction} {shares}股@{price:.3f} → 持仓{before_shares}→{after_shares}股")
+
+                        # ═══ B4+: 成交后直接查询真实持仓更新 portfolio.json，禁止写0 ═══
+                        # stdout 中的"持仓从X→Y股"仅用于日志显示，不再作为写状态的来源
+                        try:
+                            _real_pos = self.get_positions()
+                            _real_shares = _real_pos.get(code, {}).get("shares", None)
+                            if _real_shares is not None and _real_shares > 0:
+                                # 查到真实持仓(>0): 用真实股数更新
+                                after_shares = _real_shares
+                            elif _real_shares == 0 and trade_type == "liquidate":
+                                # 清仓确认: 真实持仓为0，允许写0
+                                after_shares = 0
+                            else:
+                                # 查不到(None) 或 返回0且非清仓: 保持原值，绝不允许写0
+                                after_shares = before_shares
+                                if _real_shares is None:
+                                    print(f"  ⚠️ [{code}] 查询真实持仓查无此标的，保持原shares {before_shares}股不动")
+                                else:
+                                    print(f"  ⚠️ [{code}] 查询真实持仓返回0但非清仓，保持原shares {before_shares}股不动，请人工核查")
+                        except Exception as _pos_ex:
+                            print(f"  ⚠️ [{code}] 查询真实持仓失败: {_pos_ex}，保持原shares {before_shares}股")
+                            after_shares = before_shares
+
+                        print(f"  ✅ {code} {direction} {shares}股@{price:.3f} → 持仓{before_shares}→{after_shares}股(实查)")
                         success_count += 1
                         success = True
 

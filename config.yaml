@@ -144,7 +144,7 @@ trend_profit:
   cooldown_days: 2
   max_daily: 2
 ladder_profit:
-  enabled: false
+  enabled: true
   level1_pct: 0.3
   level1_sell: 0.05
   level2_pct: 0.45

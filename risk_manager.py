@@ -173,7 +173,7 @@ class RiskManager:
 
             # 阶梯止盈: 三级检查，只卖活动仓
             ladder_cfg = _cfg.get("ladder_profit", {})
-            if ladder_cfg:
+            if ladder_cfg.get('enabled', False):
                 l1_pct = ladder_cfg.get("level1_pct", 0.03)
                 l1_sell = ladder_cfg.get("level1_sell", 0.10)
                 l2_pct = ladder_cfg.get("level2_pct", 0.05)

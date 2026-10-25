@@ -639,23 +639,31 @@ def revoke_all(e=None, orders=None):
     except Exception as ex:
         print(f"  ⚠️ revokeEntrust 异常: {ex}")
 
-    # 标记本地 pending 订单为 revoked
+    # 标记本地 pending 订单为 revoked（仅在撤单成功时执行）
     if orders is None:
         orders = load_today_orders()
     marked = 0
-    for fname, order in orders.items():
-        if order.get('status') == 'pending':
-            order_path = os.path.join(_ORDERS_DIR, fname)
-            try:
-                order['status'] = 'revoked'
-                order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                with open(order_path, 'w') as f:
-                    json.dump(order, f, ensure_ascii=False, indent=2)
-                marked += 1
-            except (IOError, json.JSONDecodeError) as ex:
-                print(f"  ⚠️ 标记 revoked 失败 {fname}: {ex}")
-    if marked:
-        print(f"  ✅ 标记 {marked} 笔 pending 订单为 revoked")
+    if not revoke_ok:
+        # 撤单接口返回失败: 本地状态保持 pending 不变
+        for fname, order in orders.items():
+            if order.get('status') == 'pending':
+                code = order.get('code', fname)
+                contract = order.get('contract', '-')
+                print(f"[REVOKE] 撤单失败，本地状态保持 pending: {code} {contract}")
+    else:
+        for fname, order in orders.items():
+            if order.get('status') == 'pending':
+                order_path = os.path.join(_ORDERS_DIR, fname)
+                try:
+                    order['status'] = 'revoked'
+                    order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    with open(order_path, 'w') as f:
+                        json.dump(order, f, ensure_ascii=False, indent=2)
+                    marked += 1
+                except (IOError, json.JSONDecodeError) as ex:
+                    print(f"  ⚠️ 标记 revoked 失败 {fname}: {ex}")
+        if marked:
+            print(f"  ✅ 标记 {marked} 笔 pending 订单为 revoked")
 
     # 清理 intent 文件
     cleanup_intent_force()

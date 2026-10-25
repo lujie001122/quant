@@ -498,6 +498,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # ═══════════════════════════════════════════════════════
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         top3_protected = False
+        ladder_tiers = []  # 累计阶梯止盈触发的档位 [(pct, sig_name), ...]
         if stop_actions:
             for sig_name, sig_type in stop_actions:
                 # TOP3保护: 轮动TOP3标的禁止日内减仓(破MA5卖活动仓/趋势止盈/阶梯止盈/分级减仓)
@@ -545,13 +546,22 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
                     break
                 elif sig_type in ("sell_active_10pct", "sell_active_15pct", "sell_active_20pct"):
-                    # 阶梯止盈: 卖活动仓10%/15%/20% — 无break让三级全部执行
-                    sell_pct_map = {"sell_active_10pct": "10%", "sell_active_15pct": "15%", "sell_active_20pct": "20%"}
-                    action = "卖出"
-                    position_ratio = f"{sell_pct_map.get(sig_type, '10%')}(活动仓)"
-                    reason = sig_name
-                    trade_type = "sell"
-                    # BUGFIX: 删除break，同日三级止盈(10%/15%/20%)全部执行
+                    # 阶梯止盈: 累计比例一次下单，避免循环覆盖只留最后一档
+                    try:
+                        _pct = int(sig_type.replace("sell_active_", "").replace("pct", ""))
+                    except ValueError:
+                        _pct = 10
+                    ladder_tiers.append((_pct, sig_name))
+                    # 不在此处设置 action/position_ratio，循环结束后统一累计下单
+            # 阶梯止盈累计: 多档触发时比例相加一次下单(10→25→45)，单档与原行为一致
+            if ladder_tiers and action == "持有":
+                _total = sum(t[0] for t in ladder_tiers)
+                _tier_str = "/".join(f"{t[0]}%" for t in ladder_tiers)
+                action = "卖出"
+                position_ratio = f"{_total}%(活动仓)"
+                reason = "+".join(t[1] for t in ladder_tiers)
+                trade_type = "sell"
+                print(f"[阶梯止盈] 触发档位={_tier_str} 累计比例={_total}%")
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）
         if action == "持有":
