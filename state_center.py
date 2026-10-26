@@ -553,9 +553,17 @@ def write_order(code, action, shares, price, contract, status='pending'):
 
 def sync_entrust_to_orders(e=None, orders=None):
     """通过 EvolvingSim.getEntrust 同步同花顺委托状态到本地 orders/ 文件。
-    将 pending 的订单根据同花顺实际状态更新为 filled/revoked。
+    将 pending/pending_confirm 的订单根据同花顺实际状态更新。
     e: 可选复用的 EvolvingSim 实例，None 则自建
     orders: 可选预加载的今日订单 {filename: order_dict}，None 则自加载
+
+    逻辑:
+    1. 按 contract 以及 (code, direction, shares, price) 双索引建立委托查找表
+    2. 遍历本地 pending/pending_confirm 订单：
+       a. contract 有效且在委托索引里 → 按真实状态写
+       b. contract='pending'/缺失 → 用 (code, direction, shares, price) 反查最近一笔未占用委托
+       c. 两条都找不到 → 写 'cancelled'（委托已不存在，撤单成功或过期）
+    3. 只有确认仍然"未成交"且合同号有效的，才保留 pending
     """
     from evolving.evolving import EvolvingSim
     own_e = e is None
@@ -572,47 +580,130 @@ def sync_entrust_to_orders(e=None, orders=None):
         print(f"[sync_entrust] ⚠️ getEntrust 返回异常，跳过同步")
         return
 
-    # 构建同花顺委托索引: {code: {direction: status}}
-    ths_map = {}
+    def _ths_to_status(ths_status):
+        """将同花顺状态文字映射为本地状态字符串，None 表示仍挂单中"""
+        if ths_status in ('已成交', '全部成交'):
+            return 'filled'
+        if ths_status in ('部分成交',):
+            return 'partial'
+        if ths_status in ('已撤单', '已撤销', '废单'):
+            return 'cancelled'
+        # '已报', '未成交', '待成交' 等 → 仍挂单中，不改
+        return None
+
+    # 构建双索引
+    # contract_index: {contract_str: row}
+    # fuzzy_index: {(code, direction, shares, price): [row, ...]}  同 key 可有多行
+    contract_index = {}
+    fuzzy_index = {}
     for row in ent['data']:
         if not row or len(row) <= 10:
             continue
-        code = row[2]
-        direction = row[4]
-        status = row[5]
-        if code not in ths_map:
-            ths_map[code] = {}
-        ths_map[code][direction] = status
+        r_code = str(row[2]).strip()
+        r_dir = str(row[4]).strip()
+        r_status = str(row[5]).strip()
+        r_contract = str(row[10]).strip() if len(row) > 10 else ''
+        try:
+            r_shares = int(row[6])
+        except (ValueError, IndexError):
+            r_shares = 0
+        try:
+            r_price = round(float(row[8]), 4)
+        except (ValueError, IndexError):
+            r_price = 0.0
 
-    # 遍历本地 pending 订单，同步同花顺状态
+        if r_contract:
+            contract_index[r_contract] = {
+                'code': r_code, 'direction': r_dir, 'status': r_status,
+                'shares': r_shares, 'price': r_price, 'contract': r_contract,
+            }
+        fkey = (r_code, r_dir, r_shares, r_price)
+        fuzzy_index.setdefault(fkey, []).append({
+            'code': r_code, 'direction': r_dir, 'status': r_status,
+            'shares': r_shares, 'price': r_price, 'contract': r_contract,
+        })
+
+    # 已被本轮反查"占用"的 fuzzy 行索引，防止两笔相同委托各自匹配同一行
+    _fuzzy_used = {}  # fkey -> 已占用数量
+
     if orders is None:
         orders = load_today_orders()
     updated = 0
 
     for fname, order in orders.items():
-        if order.get('status') != 'pending':
+        if order.get('status') not in ('pending', 'pending_confirm'):
             continue
         code = order.get('code', '')
         direction = order.get('direction', '')
-        if code not in ths_map or direction not in ths_map[code]:
-            continue
-        ths_status = ths_map[code][direction]
+        contract = str(order.get('contract', '')).strip()
+        try:
+            o_shares = int(order.get('shares', 0))
+        except (ValueError, TypeError):
+            o_shares = 0
+        try:
+            o_price = round(float(order.get('price', 0)), 4)
+        except (ValueError, TypeError):
+            o_price = 0.0
 
-        new_status = None
-        if ths_status in ('已成交', '全部成交', '部分成交'):
-            new_status = 'filled'
-        elif ths_status in ('已撤单', '已撤销', '废单'):
-            new_status = 'revoked'
+        matched_row = None
+        match_via = ''
 
-        if new_status:
-            order_path = os.path.join(_ORDERS_DIR, fname)
+        # ── 路径 a: contract 有效，直接查合同号索引 ──
+        if contract and contract != 'pending':
+            if contract in contract_index:
+                matched_row = contract_index[contract]
+                match_via = f'contract={contract}'
+
+        # ── 路径 b: contract 无效或未找到，用四元组模糊反查 ──
+        if matched_row is None:
+            fkey = (code, direction, o_shares, o_price)
+            candidates = fuzzy_index.get(fkey, [])
+            used_count = _fuzzy_used.get(fkey, 0)
+            if used_count < len(candidates):
+                matched_row = candidates[used_count]
+                _fuzzy_used[fkey] = used_count + 1
+                match_via = f'fuzzy({code},{direction},{o_shares},{o_price})'
+
+        order_path = os.path.join(_ORDERS_DIR, fname)
+
+        if matched_row is not None:
+            new_status = _ths_to_status(matched_row['status'])
+            # 路径 b 找到时顺便补合同号
+            if contract in ('', 'pending') and matched_row.get('contract'):
+                order['contract'] = matched_row['contract']
+            if new_status is None:
+                # 仍挂单中，保留 pending（合同号已补全）
+                if order.get('contract') != orders.get(fname, {}).get('contract'):
+                    # 只写回合同号更新
+                    try:
+                        order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        with open(order_path, 'w') as f:
+                            json.dump(order, f, ensure_ascii=False, indent=2)
+                        print(f"[sync_entrust] {code} {direction} 补合同号→{order['contract']} (同花顺:{matched_row['status']})")
+                        updated += 1
+                    except (IOError, json.JSONDecodeError) as ex:
+                        print(f"[sync_entrust] ⚠️ 更新 {fname} 失败: {ex}")
+            else:
+                try:
+                    order['status'] = new_status
+                    order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    with open(order_path, 'w') as f:
+                        json.dump(order, f, ensure_ascii=False, indent=2)
+                    updated += 1
+                    print(f"[sync_entrust] {code} {direction} pending→{new_status} "
+                          f"(同花顺:{matched_row['status']}, via {match_via})")
+                except (IOError, json.JSONDecodeError) as ex:
+                    print(f"[sync_entrust] ⚠️ 更新 {fname} 失败: {ex}")
+        else:
+            # ── 路径 c: 委托已不存在 → 写 cancelled ──
             try:
-                order['status'] = new_status
+                order['status'] = 'cancelled'
                 order['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 with open(order_path, 'w') as f:
                     json.dump(order, f, ensure_ascii=False, indent=2)
                 updated += 1
-                print(f"[sync_entrust] {code} {direction} pending→{new_status} (同花顺:{ths_status})")
+                print(f"[sync_entrust] {code} {direction} pending→cancelled "
+                      f"(委托不存在, contract={contract})")
             except (IOError, json.JSONDecodeError) as ex:
                 print(f"[sync_entrust] ⚠️ 更新 {fname} 失败: {ex}")
 
@@ -694,8 +785,11 @@ def check_pending_orders(mode=None, sync_entrust=True):
         action = order.get('action', '')
         order_mode = 't0' if 't0_' in action else 'buy_sell'
 
-        # filled_codes 不受 mode 过滤，全部收集（去重用）
-        if status in ('filled', 'pending', 'failed'):
+        # filled_codes 只阻塞"仍在途"或"已成交"的信号：
+        #   pending/partial/failed → 阻塞（挂单中或部分成交，不能重复下）
+        #   filled                 → 阻塞（已成交，不重复交易）
+        #   cancelled/revoked      → 不阻塞（已撤/已取消，可以重新下单）
+        if status in ('filled', 'pending', 'pending_confirm', 'partial', 'failed'):
             filled_codes.add((code, order_mode, direction))
 
         # pending_map 受 mode 过滤
