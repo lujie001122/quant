@@ -1073,8 +1073,20 @@ class SignalExecutor:
             success = False
             final_error = None
             final_error_type = None
-            before_shares = 0
-            after_shares = 0
+            # before_shares 必须从 portfolio.json 读当前值，绝不允许用 0 兜底
+            try:
+                from state_center import load_portfolio as _lp_bs
+                _pf_bs = _lp_bs()
+                before_shares = _pf_bs.get("positions", {}).get(code, {}).get("shares", None)
+                if before_shares is None:
+                    print(f"  ⚠️ [{code}] portfolio.json 中无此标的持仓记录，before_shares 无法确定，跳过此笔")
+                    fail_count += 1
+                    continue
+            except Exception as _bs_ex:
+                print(f"  ⚠️ [{code}] 读取 portfolio.json 失败: {_bs_ex}，跳过此笔")
+                fail_count += 1
+                continue
+            after_shares = before_shares  # 默认保持原值，只有实查确认才更新
 
             os.system("open -a 同花顺")
             os.system("cliclick c:960,50")
@@ -1105,11 +1117,11 @@ class SignalExecutor:
                         if stderr_out:
                             print(f"  [stderr] {stderr_out.strip()}")
 
-                        # ═══ B4+: 成交后直接查询真实持仓更新 portfolio.json，禁止写0 ═══
-                        # stdout 中的"持仓从X→Y股"仅用于日志显示，不再作为写状态的来源
+                        # ═══ B4+: 成交后按实查持仓更新 portfolio.json，禁止写0 ═══
+                        # 用 SignalExecutor 内部已有的 _get_position_shares（state_center.get_position_shares）
+                        # 取代不存在的 self.get_positions()；stdout 的"持仓从X→Y股"仅用于日志显示
                         try:
-                            _real_pos = self.get_positions()
-                            _real_shares = _real_pos.get(code, {}).get("shares", None)
+                            _real_shares = self._get_position_shares(code)
                             if _real_shares is not None and _real_shares > 0:
                                 # 查到真实持仓(>0): 用真实股数更新
                                 after_shares = _real_shares
@@ -1117,14 +1129,14 @@ class SignalExecutor:
                                 # 清仓确认: 真实持仓为0，允许写0
                                 after_shares = 0
                             else:
-                                # 查不到(None) 或 返回0且非清仓: 保持原值，绝不允许写0
+                                # 查不到 或 返回0且非清仓: 保持原值，绝不允许写0
                                 after_shares = before_shares
                                 if _real_shares is None:
                                     print(f"  ⚠️ [{code}] 查询真实持仓查无此标的，保持原shares {before_shares}股不动")
                                 else:
                                     print(f"  ⚠️ [{code}] 查询真实持仓返回0但非清仓，保持原shares {before_shares}股不动，请人工核查")
                         except Exception as _pos_ex:
-                            print(f"  ⚠️ [{code}] 查询真实持仓失败: {_pos_ex}，保持原shares {before_shares}股")
+                            print(f"  ⚠️ [{code}] 查询真实持仓失败: {_pos_ex}，保持原shares {before_shares}股不动")
                             after_shares = before_shares
 
                         print(f"  ✅ {code} {direction} {shares}股@{price:.3f} → 持仓{before_shares}→{after_shares}股(实查)")
@@ -1143,9 +1155,12 @@ class SignalExecutor:
                                 from state_center import load_portfolio, save_portfolio
                                 pf = load_portfolio()
                                 pos_data = pf.get("positions", {}).get(code, {})
-                                if pos_data and after_shares >= 0:
+                                if pos_data and after_shares > 0:
                                     pf["positions"][code]["shares"] = after_shares
                                     save_portfolio(pf)
+                                elif pos_data and after_shares == 0:
+                                    # sell/reduce/t0 不允许写0，保持原值并告警
+                                    print(f"  ⚠️ [{code}] B4写入拒绝: after_shares=0且非清仓，portfolio.json保持原值")
                             except Exception:
                                 pass
 
