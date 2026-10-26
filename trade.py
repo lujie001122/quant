@@ -59,12 +59,30 @@ def _call_evolving(method_name, *args, e=None):
             time.sleep(2)
 
 
-def _fetch_contract(e, code, direction, price):
+def _fetch_contract(e, code, direction, price, shares):
     """下单后从 getEntrust 捞真实合同号。
     getEntrust row: [0]日期 [1]时间 [2]代码 [3]名称 [4]操作 [5]备注 [6]委托量
                     [7]撤销量 [8]委托价 [9]成交价 [10]合同编号
+    匹配条件: code + 方向 + 价格 + 委托量，跳过已被 orders/*.json 占用的合同号，
+    按委托时间倒序取第一笔符合条件的。
     找不到返回 'pending'。
     """
+    # 读取已被占用的合同号
+    used_contracts = set()
+    orders_dir = os.path.join(SCRIPT_DIR, 'orders')
+    if os.path.isdir(orders_dir):
+        for fname in os.listdir(orders_dir):
+            if not fname.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join(orders_dir, fname)) as _f:
+                    _od = json.load(_f)
+                _c = str(_od.get('contract', '')).strip()
+                if _c and _c not in ('0', 'pending', ''):
+                    used_contracts.add(_c)
+            except Exception:
+                pass
+
     try:
         time.sleep(2)
         ent = e.getEntrust('today', False)
@@ -73,11 +91,19 @@ def _fetch_contract(e, code, direction, price):
         return 'pending'
     if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
         return 'pending'
-    # 从最新委托倒序查找，匹配 code + 方向 + 价格
+
+    # 按 row[1](委托时间) 倒序排列后逐条匹配
     rows = ent['data']
-    for row in reversed(rows):
-        if not row or len(row) < 11:
-            continue
+    try:
+        sorted_rows = sorted(
+            [r for r in rows if r and len(r) >= 11],
+            key=lambda r: str(r[1]),
+            reverse=True,
+        )
+    except Exception:
+        sorted_rows = list(reversed([r for r in rows if r and len(r) >= 11]))
+
+    for row in sorted_rows:
         if str(row[2]) != code:
             continue
         row_op = str(row[4])
@@ -89,12 +115,25 @@ def _fetch_contract(e, code, direction, price):
             row_price = float(row[8])
         except (ValueError, TypeError):
             continue
-        if abs(row_price - price) < 0.002:
-            contract = str(row[10]).strip()
-            if contract and contract != '0':
-                print(f"  📋 {code} {direction} 合同号={contract}")
-                return contract
-    print(f"  ⚠️ {code} {direction} @{price} 未在getEntrust中找到合同号，contract=pending")
+        if abs(row_price - price) >= 0.002:
+            continue
+        # 新增：委托量匹配
+        try:
+            row_shares = int(row[6])
+        except (ValueError, TypeError):
+            continue
+        if row_shares != shares:
+            continue
+        contract = str(row[10]).strip()
+        if not contract or contract == '0':
+            continue
+        # 跳过已被其他订单占用的合同号
+        if contract in used_contracts:
+            print(f"  ⏭️ {code} {direction} 合同号={contract} 已被占用，继续查找")
+            continue
+        print(f"  📋 {code} {direction} {shares}股 合同号={contract}")
+        return contract
+    print(f"  ⚠️ {code} {direction} @{price} {shares}股 未在getEntrust中找到合同号，contract=pending")
     return 'pending'
 
 
@@ -365,14 +404,14 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     # Bug6: 双重写订单修复 — 统一由 state_center.write_order 管理
     # 下单后捞真实合同号（用于追价撤单）
     direction_main = '买入' if 'buy' in action else '卖出'
-    contract_main = _fetch_contract(e, code, direction_main, price)
+    contract_main = _fetch_contract(e, code, direction_main, price, shares)
     write_order(code, action, shares, price, contract_main)
 
     if is_t0 and pair_price is not None:
         time.sleep(5)
         _call_evolving(pair_method, code, shares, pair_price, e=e)
         direction_pair = '卖出' if 'buy' in action else '买入'
-        contract_pair = _fetch_contract(e, code, direction_pair, pair_price)
+        contract_pair = _fetch_contract(e, code, direction_pair, pair_price, shares)
         write_order(code, pair_action, shares, pair_price, contract_pair)
 
     return True
