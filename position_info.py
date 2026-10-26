@@ -69,7 +69,7 @@ MAX_DAILY_LOSS_PCT = _config.get('max_daily_loss_pct', 0.12)
 
 TREND_PROFIT_MAX_DAILY = _config.get('trend_profit_max_daily', 5)
 TREND_PROFIT_COOLDOWN_DAYS = _config.get('trend_profit_cooldown_days', 1)
-MIN_SHARES = _config.get('trade', {}).get('min_shares', 5000)  # 最小交易股数(对齐实盘)
+MIN_SHARES = _config.get('min_shares', 5000)  # 最小交易股数(对齐实盘)
 
 
 class PositionInfo:

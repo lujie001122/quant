@@ -146,11 +146,11 @@ trend_profit:
 ladder_profit:
   enabled: true
   level1_pct: 0.3
-  level1_sell: 0.05
+  level1_sell: 0.10
   level2_pct: 0.45
-  level2_sell: 0.05
+  level2_sell: 0.15
   level3_pct: 0.55
-  level3_sell: 0.05
+  level3_sell: 0.20
 profit_protect:
   activate_pct: 0.05
   stop_margin: 0.005

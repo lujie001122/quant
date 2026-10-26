@@ -667,7 +667,12 @@ def main():
                  f"需撤 {pending_order['action']} contractNo={contract}，平仓方向={close_action}")
 
         # ── 数量校验 ──────────────────────────────────────────────────
-        min_shares = 5000
+        try:
+            import yaml as _yaml
+            with open(os.path.join(ROOT_DIR, 'config.yaml')) as _f:
+                min_shares = int(_yaml.safe_load(_f).get('min_shares', 100))
+        except Exception:
+            min_shares = 100
         if shares < min_shares:
             log.warning(f"[{code}] 数量 {shares} < {min_shares}，跳过（告警）")
             _log_record(code, close_action, shares, price, '数量不足跳过', False, contract)
