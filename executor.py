@@ -716,6 +716,206 @@ class SignalExecutor:
             print(f"[T0-CHASE] 本周期执行: {actions}")
         save_chase_holder(holder)
 
+    # ═══════════════════════════════════════════════════════
+    # 【二】普通卖出追价（复用 T0 追价框架与状态文件思路）
+    # ═══════════════════════════════════════════════════════
+    _SELL_CHASE_FILE = "/tmp/dsh_sell_chase_state.json"
+    _SELL_CHASE_INTERVAL = 600      # 10 分钟
+    _SELL_CHASE_MAX = 3             # 最多追 3 次
+    _SELL_CHASE_DEADLINE = "14:45"  # 收盘前未成交则告警不再追
+
+    def _load_sell_chase_state(self):
+        """读取普通卖出追价状态文件"""
+        import json as _json
+        try:
+            with open(self._SELL_CHASE_FILE, encoding="utf-8") as _f:
+                return _json.load(_f)
+        except Exception:
+            return {}
+
+    def _save_sell_chase_state(self, state):
+        """写入普通卖出追价状态文件"""
+        import json as _json
+        try:
+            with open(self._SELL_CHASE_FILE, "w", encoding="utf-8") as _f:
+                _json.dump(state, _f, ensure_ascii=False, indent=2)
+        except Exception as ex:
+            print(f"[SELL-CHASE] 写入状态失败: {ex}")
+
+    @staticmethod
+    def _is_continuous_auction(now):
+        """判断当前是否在连续竞价时段（9:30-11:30, 13:00-14:57）"""
+        hm = now.strftime("%H%M")
+        return ("0930" <= hm < "1130") or ("1300" <= hm < "1457")
+
+    def _run_sell_chase_cycle(self):
+        """普通卖出追价周期入口（每次 execute_signals mode='buy_sell' 调用一次）。
+        复用现有 T0 追价的框架和状态文件思路：
+        - 间隔 10 分钟检查一次，最多追 3 次
+        - 每次按当时对手价（卖单用买一价）重挂
+        - 撤旧单前确认旧单状态，撤单失败不重复下单
+        - 收盘前 14:45 未成交则告警，不再追
+        - 只在连续竞价时段工作
+        """
+        from datetime import datetime as _dt
+        import time as _time
+
+        now = _dt.now()
+        # 只在连续竞价时段工作
+        if not self._is_continuous_auction(now):
+            return
+
+        state = self._load_sell_chase_state()
+        if not state:
+            return
+
+        today_str = now.strftime("%Y-%m-%d")
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _trade_py = os.path.join(_script_dir, 'trade.py')
+        import subprocess as _sp
+        import sys as _sys_sc
+
+        deadline_hm = int(self._SELL_CHASE_DEADLINE.replace(":", ""))
+        now_hm = int(now.strftime("%H%M"))
+
+        changed = False
+        for key, st in list(state.items()):
+            # 清理非今日记录
+            if st.get("date") != today_str:
+                del state[key]
+                changed = True
+                continue
+
+            contract = st.get("contract", "pending")
+            chase_count = st.get("chase_count", 0)
+            next_ts = st.get("next_ts", 0)
+
+            # 未到间隔时间，跳过
+            if _time.time() < next_ts:
+                continue
+
+            # 收盘前未成交告警
+            if now_hm >= deadline_hm:
+                print(f"[SELL-CHASE] ⚠️ {key} 截至{self._SELL_CHASE_DEADLINE}未成交，告警不再追价")
+                try:
+                    from core.alert_manager import get_alert_manager as _gam
+                    _gam().warning("卖出追价未成交",
+                                   f"{key} 收盘前未成交，已停止追价",
+                                   dedup_key=f"sell_chase_unfilled:{key}")
+                except Exception:
+                    pass
+                del state[key]
+                changed = True
+                continue
+
+            # 已达最大追价次数
+            if chase_count >= self._SELL_CHASE_MAX:
+                print(f"[SELL-CHASE] {key} 已达最大追价次数{self._SELL_CHASE_MAX}，停止追价")
+                del state[key]
+                changed = True
+                continue
+
+            # 取对手价（卖单用买一价）
+            code = st.get("code", "")
+            shares = st.get("shares", 0)
+            if not code or shares < 100:
+                del state[key]
+                changed = True
+                continue
+
+            try:
+                from market_data import fetch_realtime_quotes
+                _q = fetch_realtime_quotes([code])
+                _r = _q.get(code, {})
+                bid1 = _r.get("bid1", 0)
+            except Exception as ex:
+                print(f"[SELL-CHASE] {key} 获取对手价失败: {ex}")
+                continue
+
+            if not bid1 or bid1 <= 0:
+                print(f"[SELL-CHASE] {key} 买一价无效(bid1={bid1})，跳过本次")
+                continue
+
+            # 撤旧单前确认旧单状态（沿用现有 revoke 语义）
+            if contract and contract != "pending":
+                try:
+                    from evolving.evolving import EvolvingSim
+                    _e = EvolvingSim()
+                    _chk = _e.getEntrust(contractNo=contract)
+                    # 已成交则无需追价
+                    if _chk and str(_chk.get("status", "")).endswith("deal"):
+                        print(f"[SELL-CHASE] {key} 旧单{contract}已成交，清除追价记录")
+                        del state[key]
+                        changed = True
+                        continue
+                    # 撤单失败不重复下单
+                    _revoke = _e.revokeEntrust(revokeType='single', contractNo=contract)
+                    if _revoke is None:
+                        print(f"[SELL-CHASE] {key} 旧单{contract}撤单失败，不重复下单，跳过本次")
+                        continue
+                    _time.sleep(1)
+                except Exception as ex:
+                    print(f"[SELL-CHASE] {key} 确认/撤单异常 contract={contract}: {ex}，跳过本次")
+                    continue
+
+            # 按对手价（买一价）重挂
+            try:
+                cmd = [_sys_sc.executable, _trade_py, "sell", code, str(shares), f"{bid1:.3f}"]
+                _proc = _sp.run(cmd, capture_output=True, text=True, timeout=60, cwd=_script_dir)
+                if _proc.returncode == 0:
+                    print(f"[SELL-CHASE] {key} 第{chase_count+1}次追价成功，重挂@{bid1:.3f}")
+                    # 读取新合同号
+                    from state_center import load_today_orders
+                    _orders = load_today_orders()
+                    _new_contract = "pending"
+                    for _fname, _od in sorted(_orders.items(), reverse=True):
+                        if _od.get("code") == code and _od.get("direction") == "卖出":
+                            _new_contract = _od.get("contract", "pending")
+                            break
+                    st["contract"] = _new_contract
+                    st["chase_count"] = chase_count + 1
+                    st["next_ts"] = _time.time() + self._SELL_CHASE_INTERVAL
+                    changed = True
+                else:
+                    print(f"[SELL-CHASE] {key} 第{chase_count+1}次追价下单失败(exit={_proc.returncode})")
+            except Exception as ex:
+                print(f"[SELL-CHASE] {key} 追价下单异常: {ex}")
+
+        if changed:
+            self._save_sell_chase_state(state)
+
+    def _record_sell_chase_after_execute(self, code, shares):
+        """普通卖出下单成功后，写入追价状态（复用 T0 追价记录思路）。
+        调用点: executor.py 普通卖出/清仓/减仓下单成功后
+        """
+        from datetime import datetime as _dt
+        import time as _time
+
+        today_str = _dt.now().strftime("%Y-%m-%d")
+        state = self._load_sell_chase_state()
+        try:
+            from state_center import load_today_orders
+            _orders = load_today_orders()
+            _contract = "pending"
+            for _fname, _od in sorted(_orders.items(), reverse=True):
+                if _od.get("code") == code and _od.get("direction") == "卖出":
+                    _contract = _od.get("contract", "pending")
+                    break
+        except Exception:
+            _contract = "pending"
+
+        _key = f"{today_str}_{code}_sell"
+        state[_key] = {
+            "code": code,
+            "shares": shares,
+            "contract": _contract,
+            "chase_count": 0,
+            "next_ts": _time.time() + self._SELL_CHASE_INTERVAL,
+            "date": today_str,
+        }
+        self._save_sell_chase_state(state)
+        print(f"[SELL-CHASE] 记录追价 {_key}: contract={_contract} shares={shares}")
+
     def _record_t0_pair_after_execute(self, code: str, action: str, shares: int):
         """T0 配对单下发成功后，读取 orders/*.json 里真实合同号，写入追价状态（写入点①）。
         调用点: executor.py execute_signals t0 下单成功后（见下方 # ═══ T0 追价记录 ═══）
@@ -861,6 +1061,10 @@ class SignalExecutor:
         # ═══ T0 单腿追价检测（每周期入口处调用）═══
         if mode == 't0':
             self._run_t0_chase_cycle()
+
+        # ═══ 【二】普通卖出追价检测（每周期入口处调用）═══
+        if mode in ('buy_sell', None):
+            self._run_sell_chase_cycle()
 
         if not actionable:
             print("[EXECUTE] 无交易信号，跳过执行")
@@ -1164,12 +1368,35 @@ class SignalExecutor:
                             except Exception:
                                 pass
 
+                        # ═══ 【四】成交后更新 sell_pct 到 _signal_state.daily_trade_log ═══
+                        if trade_type in ("sell", "reduce") and before_shares > 0:
+                            try:
+                                from state_center import load_portfolio, save_portfolio
+                                pf = load_portfolio()
+                                _sig_state = pf.setdefault("_signal_state", {})
+                                _code_state = _sig_state.setdefault(code, {})
+                                _tlog = _code_state.setdefault("daily_trade_log", {})
+                                _day = _tlog.setdefault(today_str, {})
+                                _prev_pct = float(_day.get("sell_pct", 0.0))
+                                _sold_pct = shares / before_shares * 100
+                                _day["sell_pct"] = round(_prev_pct + _sold_pct, 2)
+                                save_portfolio(pf)
+                            except Exception as _sp_err:
+                                print(f"  [WARN] 更新sell_pct失败: {_sp_err}")
+
                         # ═══ T0 追价状态记录（写入点①）═══
                         if trade_type == "t0":
                             try:
                                 self._record_t0_pair_after_execute(code, action, shares)
                             except Exception as _chase_err:
                                 print(f"  [T0-CHASE] 记录追价状态失败: {_chase_err}")
+
+                        # ═══ 【二】普通卖出追价状态记录 ═══
+                        if trade_type in ("sell", "liquidate", "reduce"):
+                            try:
+                                self._record_sell_chase_after_execute(code, shares)
+                            except Exception as _sc_err:
+                                print(f"  [SELL-CHASE] 记录追价状态失败: {_sc_err}")
 
                         # ═══ O4: 清仓成交确认后重置持仓状态 ═══
                         if trade_type == "liquidate":

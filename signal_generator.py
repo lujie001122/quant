@@ -111,7 +111,7 @@ def load_rotation_top3_codes():
 
     返回:
       set : 轮动TOP3标的代码集合
-      None: 文件不存在或读取失败 → 不拦截, 按原有逻辑执行
+      None: 文件不存在或读取失败 → 打印告警，不拦截，不触发轮动清仓
     """
     try:
         with open(ROTATION_ADVICE_PATH, encoding="utf-8") as _f:
@@ -119,6 +119,10 @@ def load_rotation_top3_codes():
         _picks = _data.get("all_picks") or _data.get("picks") or []
         return set(_picks)
     except Exception:
+        # 【五】rotation文件缺失时显式告警：取消TOP3保护，但不触发轮动清仓
+        _today = datetime.now().strftime("%Y-%m-%d")
+        print(f"[WARN] rotation_advice.json 读取失败，TOP3保护已取消（文件={ROTATION_ADVICE_PATH}，日期={_today}）"
+              f"；轮动清仓本次不执行（无数据不清仓）")
         return None
 
 
@@ -370,6 +374,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     # 轮动TOP3标的(集中金字塔TOP3): 禁止日内减仓 / 调入标的直接建仓
     rotation_top3_codes = load_rotation_top3_codes()
 
+    # 【四】读取当日最大卖出比例配置
+    _max_daily_sell_pct = 0.5  # 默认50%
+    try:
+        import yaml as _yaml_risk
+        _cfg_path_risk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+        with open(_cfg_path_risk) as _cf_risk:
+            _conf_risk = _yaml_risk.safe_load(_cf_risk)
+        _max_daily_sell_pct = float(_conf_risk.get("risk", {}).get("max_daily_sell_pct", 0.5))
+    except Exception:
+        pass
+
     # ── 入场门控: 沪深300ETF 10日动量 ──
     _entry_gate_allowed = True  # 默认放行（取不到数据时也放行）
     try:
@@ -496,9 +511,30 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # - 做T信号：最低优先级，被止盈止损抢占时降级为配对挂单
         # - 做T与主策略信号冲突时，主策略信号优先
         # ═══════════════════════════════════════════════════════
+
+        # 【一】轮动清仓: etf_pool内已持仓标的，若rotation_top3_codes有效且不包含该标的 → 清仓
+        # 优先级与其他清仓类信号相同，不受TOP3保护拦截（它本来就不在TOP3里）
+        # rotation_top3_codes为None（文件缺失）时不触发清仓
+        _rotation_liquidate = (
+            pos.has_position
+            and rotation_top3_codes is not None   # 有有效数据才执行
+            and code not in rotation_top3_codes   # 不在TOP3 → 清仓
+            and pool_codes                        # etf_pool有效
+            and code in pool_codes                # 只对etf_pool内标的执行（排除手动买入的非池内标的）
+        )
+        if _rotation_liquidate:
+            action = "清仓"
+            position_ratio = "100%"
+            trade_type = "liquidate"
+            reason = "轮动调出TOP3"
+            print(f"[轮动清仓] {code} 不在TOP3集合{rotation_top3_codes}，触发清仓")
+
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
+        # 若已触发轮动清仓，止损止盈的清仓类同样保持清仓，其余类型跳过
         top3_protected = False
         ladder_tiers = []  # 累计阶梯止盈触发的档位 [(pct, sig_name), ...]
+        grid_sell_tiers = []  # 【三】累计网格卖出档位 [(pct, sig_name), ...]
+        trend_sell_tiers = []  # 【三】累计趋势止盈卖出档位 [(pct, sig_name), ...]
         if stop_actions:
             for sig_name, sig_type in stop_actions:
                 # TOP3保护: 轮动TOP3标的禁止日内减仓(破MA5卖活动仓/趋势止盈/阶梯止盈/分级减仓)
@@ -515,53 +551,78 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                     reason = sig_name
                     trade_type = "liquidate"
                     # O4: reset_on_liquidate 移到成交确认后执行，此处不再提前重置
+                    # 【三】清仓类直接跳出，忽略其他信号
+                    ladder_tiers.clear()
+                    grid_sell_tiers.clear()
+                    trend_sell_tiers.clear()
                     break
                 elif sig_type in ("reduce_30pct_all",):
+                    # 【三】减仓类：若已有清仓则skip，否则记录
+                    if trade_type == "liquidate":
+                        continue
                     action = "减仓"
                     position_ratio = "减30%总仓"
                     reason = sig_name
                     trade_type = "reduce"
                     # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
-                    break
                 elif sig_type == "grid_overall_half":
                     # strategy_v2: 网格整体止损 -8% 减半仓
+                    if trade_type == "liquidate":
+                        continue
                     action = "减仓"
                     position_ratio = "减50%总仓"
                     reason = sig_name
                     trade_type = "reduce_half"
-                    break
                 elif sig_type == "trend_profit_sell":
-                    action = "卖出"
-                    position_ratio = "10%(活动仓)"
-                    reason = sig_name
-                    trade_type = "sell"
-                    # P1-6: 只减活动仓（当前dead_shares=0，活动仓=总仓，语义等价）
-                    # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
-                    break
+                    # 【三】趋势止盈: 累计
+                    if trade_type == "liquidate":
+                        continue
+                    trend_sell_tiers.append((10, sig_name))
                 elif sig_type == "sell_active_5pct":
-                    action = "卖出"
-                    position_ratio = "5%(活动仓)"
-                    reason = sig_name
-                    trade_type = "sell"
-                    # B3: reduce_shares 移到 executor 成交确认后执行，此处不再提前修改持仓
-                    break
+                    # 【三】破MA5减仓: 累计
+                    if trade_type == "liquidate":
+                        continue
+                    grid_sell_tiers.append((5, sig_name))
                 elif sig_type in ("sell_active_10pct", "sell_active_15pct", "sell_active_20pct"):
                     # 阶梯止盈: 累计比例一次下单，避免循环覆盖只留最后一档
+                    if trade_type == "liquidate":
+                        continue
                     try:
                         _pct = int(sig_type.replace("sell_active_", "").replace("pct", ""))
                     except ValueError:
                         _pct = 10
                     ladder_tiers.append((_pct, sig_name))
                     # 不在此处设置 action/position_ratio，循环结束后统一累计下单
-            # 阶梯止盈累计: 多档触发时比例相加一次下单(10→25→45)，单档与原行为一致
-            if ladder_tiers and action == "持有":
-                _total = sum(t[0] for t in ladder_tiers)
-                _tier_str = "/".join(f"{t[0]}%" for t in ladder_tiers)
-                action = "卖出"
-                position_ratio = f"{_total}%(活动仓)"
-                reason = "+".join(t[1] for t in ladder_tiers)
-                trade_type = "sell"
-                print(f"[阶梯止盈] 触发档位={_tier_str} 累计比例={_total}%")
+
+            # 【三】合并所有非清仓卖出信号（阶梯止盈 + 趋势止盈 + 破MA5）
+            if trade_type != "liquidate":
+                _all_sell_tiers = ladder_tiers + trend_sell_tiers + grid_sell_tiers
+                if _all_sell_tiers and action in ("持有", "卖出"):
+                    _total = sum(t[0] for t in _all_sell_tiers)
+                    _tier_str = "/".join(f"{t[0]}%" for t in _all_sell_tiers)
+                    # 【四】当日卖出总量上限（清仓类不受限）
+                    _today_sold_pct = 0.0
+                    try:
+                        _tlog = pos.daily_trade_log.get(today_str, {})
+                        _today_sold_pct = float(_tlog.get("sell_pct", 0.0))
+                    except Exception:
+                        pass
+                    _remaining_pct = max(0, _max_daily_sell_pct * 100 - _today_sold_pct)
+                    if _total > _remaining_pct:
+                        print(f"[日限] {code} 累计卖出{_total}%超限，截断至{_remaining_pct:.0f}%"
+                              f"（今日已卖{_today_sold_pct:.0f}%，上限{_max_daily_sell_pct*100:.0f}%）")
+                        _total = _remaining_pct
+                    if _total > 0:
+                        action = "卖出"
+                        position_ratio = f"{_total:.0f}%(活动仓)"
+                        reason = "+".join(t[1] for t in _all_sell_tiers)
+                        trade_type = "sell"
+                        print(f"[合并卖出] {code} 触发档位={_tier_str} 累计比例={_total:.0f}%")
+                    else:
+                        # 已达当日上限，跳过
+                        action = "持有(日限)"
+                        reason = f"当日卖出已达上限{_max_daily_sell_pct*100:.0f}%，跳过"
+                        trade_type = None
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）
         if action == "持有":
@@ -623,14 +684,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         pos.last_grid_trigger_date = today_str  # Bug11: 记录日期
                         # 更新base_price到当前价，使网格上移，防止同一档位重复触发
                         pos.base_price = round(price, 3)
-                        action = "卖出"
-                        # strategy_v2: 网格卖出比例由 grid_weight 决定(10/15/20%)
-                        if is_v2_enabled() and grid_weight and grid_weight > 0:
-                            position_ratio = f"{int(grid_weight*100)}%(活动仓)"
+                        # 【四】网格卖出也受当日卖出上限约束
+                        _gw_pct = int(grid_weight * 100) if (is_v2_enabled() and grid_weight and grid_weight > 0) else 5
+                        _today_sold_pct_g = 0.0
+                        try:
+                            _tlog_g = pos.daily_trade_log.get(today_str, {})
+                            _today_sold_pct_g = float(_tlog_g.get("sell_pct", 0.0))
+                        except Exception:
+                            pass
+                        _remaining_pct_g = max(0, _max_daily_sell_pct * 100 - _today_sold_pct_g)
+                        _gw_pct = min(_gw_pct, _remaining_pct_g)
+                        if _gw_pct > 0:
+                            action = "卖出"
+                            position_ratio = f"{int(_gw_pct)}%(活动仓)"
+                            reason = grid_signal
+                            trade_type = "sell"
                         else:
-                            position_ratio = "5%(活动仓)"
-                        reason = grid_signal
-                        trade_type = "sell"
+                            action = "持有(日限)"
+                            reason = f"网格卖出被日限({_max_daily_sell_pct*100:.0f}%)截断，跳过"
                     else:
                         action = "持有"
                         reason = grid_signal + "(活动仓为0,不卖底仓)"
