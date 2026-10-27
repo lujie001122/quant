@@ -1295,12 +1295,17 @@ class SignalExecutor:
             os.system("open -a 同花顺")
             os.system("cliclick c:960,50")
 
+            _retry_proc = None  # 断连重试成功后，把 retry_r 注入下一轮，走完整成功路径
             for attempt in range(1, max_retries + 1):
                 try:
-                    proc = self._subprocess.run(
-                        cmd, capture_output=True, text=True,
-                        timeout=120, cwd=script_dir
-                    )
+                    if _retry_proc is not None:
+                        proc = _retry_proc
+                        _retry_proc = None
+                    else:
+                        proc = self._subprocess.run(
+                            cmd, capture_output=True, text=True,
+                            timeout=120, cwd=script_dir
+                        )
                     stdout = proc.stdout or ""
                     stderr_out = proc.stderr or ""
 
@@ -1456,9 +1461,10 @@ class SignalExecutor:
                             # 重试下单
                             retry_r = self._subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                             if retry_r.returncode == 0:
-                                print(f"  ✅ {code} 重启后重试成功")
-                                success_count += 1
-                                break
+                                # 重试成功：把 retry_r 注入下一轮，走与首次成功完全相同的后续处理
+                                # （持仓更新/write_order/做T配对/做T计数/trade_recorder），不在此 break
+                                _retry_proc = retry_r
+                                continue
                             else:
                                 print(f"  ❌ {code} 重启后重试仍失败")
                         except Exception as restart_err:

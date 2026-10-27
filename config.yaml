@@ -52,31 +52,6 @@ inverted_weights:
 - 0.2
 - 0.35
 - 0.4
-market_data:
-  ao_long: 34
-  ao_short: 5
-  api_delay: 1
-  atr_period: 14
-  dynamic_spacing:
-    max_factor: 2.0
-    min_factor: 0.5
-    weight_atr: 0.4
-    weight_base: 0.6
-  fetch_retries: 3
-  kline_limit: 1200
-  ma_periods:
-  - 5
-  - 10
-  - 20
-  macd_5min_fast: 5
-  macd_5min_signal: 5
-  macd_5min_slow: 34
-  macd_fast: 12
-  macd_signal: 9
-  macd_slow: 26
-  rsi_period: 14
-  vol_ratio_5min_period: 20
-  vol_ratio_period: 20
 max_daily_buys: 1
 max_daily_t0: 3
 max_per_etf: 220000
