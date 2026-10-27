@@ -626,7 +626,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
         # 优先级2: 做T（仓位超限时禁止T入，允许T出）
         if action == "持有":
-            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct)
+            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False)
             if t0_exec is not None:
                 action, position_ratio, trade_type, reason = t0_exec[:4]
                 t0_pair = t0_exec[4] if len(t0_exec) > 4 else None

@@ -18,13 +18,13 @@
       "below_ma20_date": "2026-09-29",
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 21.5,
+      "prev_rsi": 20.43,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": "2026-09-18",
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -42,7 +42,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "515880": {
       "build_phase": 0,
@@ -62,15 +63,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 27.5,
+      "prev_rsi": 26.15,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-09-30"
       ],
-      "empty_days": 14,
-      "empty_days_date": "2026-10-26",
+      "empty_days": 15,
+      "empty_days_date": "2026-10-27",
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -88,7 +89,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "159532": {
       "build_phase": 2,
@@ -108,13 +110,13 @@
       "below_ma20_date": "2026-10-08",
       "add_count": 2,
       "ma5_touch_count": 0,
-      "prev_rsi": 35.58,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 32.6,
+      "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -132,7 +134,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "513780": {
       "build_phase": 1,
@@ -152,7 +155,7 @@
       "below_ma20_date": "2026-10-26",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 38.62,
+      "prev_rsi": 35.21,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [
         "2026-10-23"
@@ -160,7 +163,7 @@
       "empty_days": 1,
       "empty_days_date": "2026-10-23",
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -178,7 +181,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "512400": {
       "build_phase": 0,
@@ -198,15 +202,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 29.08,
+      "prev_rsi": 32.74,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-09-29"
       ],
-      "empty_days": 15,
-      "empty_days_date": "2026-10-26",
+      "empty_days": 16,
+      "empty_days_date": "2026-10-27",
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -224,7 +228,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "159985": {
       "build_phase": 0,
@@ -244,13 +249,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 40.89,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 37.81,
+      "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
-      "empty_days": 27,
-      "empty_days_date": "2026-10-26",
+      "empty_days": 28,
+      "empty_days_date": "2026-10-27",
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -268,7 +273,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "159981": {
       "build_phase": 1,
@@ -279,8 +285,8 @@
       "trailing_stop_price": 1.7899049999999996,
       "cooldown_until": null,
       "grid_frozen": false,
-      "last_grid_trigger": "触及第2档卖出",
-      "last_grid_trigger_date": "2026-10-26",
+      "last_grid_trigger": "触及第1档卖出",
+      "last_grid_trigger_date": "2026-10-27",
       "last_reset_date": null,
       "peak_price": 1.961,
       "breakeven_activated": false,
@@ -288,13 +294,13 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 64.57,
+      "prev_rsi": 63.47,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -312,7 +318,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     },
     "513300": {
       "build_phase": 1,
@@ -332,8 +339,8 @@
       "below_ma20_date": "2026-10-22",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 40.64,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 43.4,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-10-12",
         "2026-10-14",
@@ -343,7 +350,7 @@
       "empty_days": 0,
       "empty_days_date": "2026-10-12",
       "daily_trade_log": {
-        "2026-10-26": {
+        "2026-10-27": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -361,7 +368,8 @@
       "reached_5pct": false,
       "reached_8pct_ladder": false,
       "grid_stop_level": 0,
-      "grid_stop_date": null
+      "grid_stop_date": null,
+      "build_first_date": null
     }
   },
   "positions": {
@@ -377,11 +385,11 @@
     }
   },
   "account": {
-    "total_asset": 202309.31,
+    "total_asset": 202113.31,
     "cash": 109062.31,
-    "market_value": 93247.0
+    "market_value": 93051.0
   },
-  "last_updated": "2026-10-26 14:41",
+  "last_updated": "2026-10-27 13:56",
   "_today_open": {
     "date": "2026-09-23",
     "asset": 0.0

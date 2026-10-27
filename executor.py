@@ -1391,6 +1391,22 @@ class SignalExecutor:
                             except Exception as _chase_err:
                                 print(f"  [T0-CHASE] 记录追价状态失败: {_chase_err}")
 
+                        # ═══ 做T成交计数: 只在下单成功后才 +1（修复信号阶段误计数）═══
+                        if trade_type == "t0":
+                            try:
+                                from state_center import load_portfolio, save_portfolio
+                                pf = load_portfolio()
+                                _sig_state = pf.setdefault("_signal_state", {})
+                                _code_state = _sig_state.setdefault(code, {})
+                                _tlog = _code_state.setdefault("daily_trade_log", {})
+                                _day = _tlog.setdefault(today_str, {})
+                                _prev_t0 = int(_day.get("t0_count", 0))
+                                _day["t0_count"] = _prev_t0 + 1
+                                save_portfolio(pf)
+                                print(f"  [T0-COUNT] {code} 做T成交计数 {_prev_t0}→{_prev_t0 + 1}")
+                            except Exception as _t0c_err:
+                                print(f"  [WARN] 做T计数更新失败: {_t0c_err}")
+
                         # ═══ 【二】普通卖出追价状态记录 ═══
                         if trade_type in ("sell", "liquidate", "reduce"):
                             try:
