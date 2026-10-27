@@ -859,6 +859,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
     human_readable = "。".join(parts) if parts else "所有标的均无操作信号,继续观望。"
 
+    # 动态读取止损/止盈参数用于文案，避免数字与配置漂移
+    try:
+        import yaml as _yaml_sp
+        _sp_cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+        with open(_sp_cfg_path) as _sp_cf:
+            _sp_cfg = _yaml_sp.safe_load(_sp_cf)
+    except Exception:
+        _sp_cfg = {}
+    _sl_cfg = _sp_cfg.get("stop_loss", {})
+    _pt_cfg = _sp_cfg.get("profit_take", {})
+    _t1 = int(_sl_cfg.get("tier1_pct", 0.07) * 100)
+    _t2 = int(_sl_cfg.get("tier2_pct", 0.10) * 100)
+    _t3 = int(_sl_cfg.get("tier3_pct", 0.25) * 100)
+    _t1_r = int(_sl_cfg.get("tier1_ratio", 0.80) * 100)
+    _t2_r = int(_sl_cfg.get("tier2_ratio", 0.50) * 100)
+    _hs = int(_sl_cfg.get("hard_stop_pct", 0.18) * 100)
+    _htp = int((_sl_cfg.get("hard_take_profit_mult", 1.60) - 1) * 100)
+
     result = {
         "version": "v3.1",
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -866,8 +884,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "market_environment": "全市场弱势(515080也破MA20)" if defense_weak else "正常",
         "human_readable": human_readable,
         "strategy_policy": {
-            "stop_loss": "均价止损12%+硬止损20%+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)",
-            "profit_take": "移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈30%→清仓",
+            "stop_loss": (
+                f"均价止损分档(仓位>{_t1_r}%→{_t1}%, {_t2_r}-{_t1_r}%→{_t2}%, <{_t2_r}%→{_t3}%)"
+                f"+硬止损(峰值回撤{_hs}%)"
+                "+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)"
+            ),
+            "profit_take": f"移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈({_htp}%)→清仓",
             "t0_signal": "弹性做T(5分钟分时:RSI5m<50买入+MACD5m金叉/红柱+量比<1.5; RSI5m>50卖出+MACD5m死叉/绿柱+量比>1.2,30%数量,开盘后即可运行)",
             "entry": "4通道(RSI抄底/趋势跟踪/突破入场/分批建仓)统一30%→确认2次→补仓15%",
             "frequency": "正常1买2T/天, ATR>5%时2买3T/天",

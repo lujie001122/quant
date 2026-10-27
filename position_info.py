@@ -263,6 +263,11 @@ class PositionInfo:
         # strategy_v2: 网格整体止损重置
         self.grid_stop_level = 0
         self.grid_stop_date = None
+        # 补清：冷却批次/日期 + 趋势止盈触发日期 + MA5卖出触发日期
+        self.confirm_batch_count = 0
+        self.confirm_batch_date = None
+        self.trend_profit_trigger_date = None
+        self.ma5_sell_trigger_date = None
         try:
             from datetime import datetime as _dt, timedelta as _td
             dt = _dt.strptime(date_str, "%Y-%m-%d")
