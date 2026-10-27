@@ -207,7 +207,22 @@ class RSIMACDStrategy(BaseStrategy):
                 ao_5ago = t.get("ao_5ago")
                 ao_rising = ao_now is not None and ao_5ago is not None and ao_now > ao_5ago
                 if not ao_rising:
-                    return ("持有(等确认)", None, None, f"分批建仓1已入场,AO未回升(now={ao_now:.4f},5ago={ao_5ago:.4f}),跳过加仓")
+                    # AO 超时兜底：首批入场超过 ao_timeout_days 个自然日则放行
+                    _ao_timeout_days = _CONF.get("entry", {}).get("ao_timeout_days", 5)
+                    _bfd = getattr(pos, 'build_first_date', None)
+                    _ao_timeout_passed = False
+                    if _bfd:
+                        try:
+                            from datetime import datetime as _dt
+                            _days_elapsed = (_dt.strptime(today_str, "%Y-%m-%d") - _dt.strptime(_bfd, "%Y-%m-%d")).days
+                            if _days_elapsed >= _ao_timeout_days:
+                                _ao_timeout_passed = True
+                                print(f"[AO超时放行] {today_str} {code}: 首批入场{_bfd}已过{_days_elapsed}自然日(>={_ao_timeout_days}),视AO回升=True")
+                        except Exception:
+                            pass
+                    if not _ao_timeout_passed:
+                        return ("持有(等确认)", None, None, f"分批建仓1已入场,AO未回升(now={ao_now:.4f},5ago={ao_5ago:.4f}),跳过加仓")
+                    ao_rising = True  # 超时放行，视为满足条件
                 elif _position_capped:
                     return ("持有(仓位已满)", f"{_position_ratio_val*100:.0f}%", None, f"确认加仓信号但仓位{_position_ratio_val*100:.0f}%已达{MAX_POSITION_RATIO*100:.0f}%上限,跳过")
                 elif pos.can_buy_today(today_str, atr_pct):

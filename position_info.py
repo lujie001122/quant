@@ -117,6 +117,7 @@ class PositionInfo:
         # 结构: {pair_id: {filled_leg, pending_action, pending_shares, pending_price,
         #                  chase_count, last_chase_time, code}}
         self.t0_chase_state: dict = {}
+        self.build_first_date: str = None  # 首次建仓日期（只记首批，后续加仓不覆盖）
 
     @property
     def entry_cost(self):
@@ -268,6 +269,7 @@ class PositionInfo:
         self.confirm_batch_date = None
         self.trend_profit_trigger_date = None
         self.ma5_sell_trigger_date = None
+        self.build_first_date = None  # 清空首次建仓日期
         try:
             from datetime import datetime as _dt, timedelta as _td
             dt = _dt.strptime(date_str, "%Y-%m-%d")
@@ -303,6 +305,9 @@ class PositionInfo:
         self.build_first_price = price
         self.base_price = price
         self.empty_days = 0
+        # 只记首批建仓日期，后续加仓不覆盖
+        if not self.build_first_date:
+            self.build_first_date = date_str
         return "买入", channel_name, "buy"
 
     def to_dict(self, today_str):
@@ -345,6 +350,7 @@ class PositionInfo:
             # strategy_v2: 网格整体止损
             "grid_stop_level": getattr(self, 'grid_stop_level', 0),
             "grid_stop_date": getattr(self, 'grid_stop_date', None),
+            "build_first_date": self.build_first_date,
         }
 
     def from_dict(self, data):
@@ -385,3 +391,4 @@ class PositionInfo:
         # strategy_v2: 网格整体止损
         self.grid_stop_level = data.get("grid_stop_level", 0)
         self.grid_stop_date = data.get("grid_stop_date", None)
+        self.build_first_date = data.get("build_first_date", None)

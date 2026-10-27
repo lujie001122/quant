@@ -39,6 +39,7 @@ entry:
   rsi_min: 40
   rsi_minimal: 30
   test_cap_rsi: 35
+  ao_timeout_days: 5
 grid_buy_levels: 5
 grid_reset:
   lower_levels: 6

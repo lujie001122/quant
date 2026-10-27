@@ -53,6 +53,14 @@ with open(_CONFIG_PATH) as f:
 # Phase 3: 引用 market_data + position_info + strategies 模块
 from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
 from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS, MIN_SHARES
+
+class _AddonEvalPos(PositionInfo):
+    """加仓评估专用子类：覆盖 has_position 始终返回 False，
+    使 evaluate_entry 顶部的空仓守卫对已持仓的 build_phase==1 标的可穿透，
+    同时保留 shares 真实值供仓位上限检查使用。"""
+    @property
+    def has_position(self):
+        return False
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
 from strategies.grid import (
     evaluate_grid_signals, check_grid_reset, compute_grid_table,
@@ -359,6 +367,7 @@ class ETFStrategy(bt.Strategy):
                 "reached_3pct": False,  # 阶梯止盈3%标记
                 "reached_5pct": False,  # 阶梯止盈5%标记
                 "reached_8pct_ladder": False,  # 阶梯止盈8%标记
+                "build_first_date": "",  # 首次建仓日期（AO超时兜底用）
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -630,12 +639,14 @@ class ETFStrategy(bt.Strategy):
         if not ps["cooldown_until"]: return False
         return date_str <= ps["cooldown_until"]
 
-    def _init_on_entry(self, ps, price):
+    def _init_on_entry(self, ps, price, date_str=""):
         ps["base"] = price; ps["first_price"] = price
         ps["build_phase"] = 1; ps["bought_today"] = True
         ps["add_count"] = 0; ps["empty_days"] = 0; ps["stop_cooldown"] = False
         ps["entry_avg_cost"] = price  # B1: 锁定建仓均价供止损判断
         ps["pyramid_count"] = 0  # 金字塔加仓次数
+        if date_str and not ps.get("build_first_date"):  # 只在首次建仓记录，后续加仓不覆盖
+            ps["build_first_date"] = date_str
 
     def _full_liquidate_state(self, ps, date_str):
         """清仓后重置状态"""
@@ -655,6 +666,7 @@ class ETFStrategy(bt.Strategy):
         ps["reached_3pct"] = False  # 重置阶梯止盈3%标记
         ps["reached_5pct"] = False  # 重置阶梯止盈5%标记
         ps["reached_8pct_ladder"] = False  # 重置阶梯止盈8%标记
+        ps["build_first_date"] = ""  # 清空首次建仓日期
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -734,33 +746,24 @@ class ETFStrategy(bt.Strategy):
                     if liquidated:
                         continue
 
-                    # ═══ 金字塔加码逻辑 ═══
-                    if "pyramid_count" not in ps:
-                        ps["pyramid_count"] = 0
-                    
-                    entry_cost = ps.get("entry_avg_cost", 0) or avg
-
-                    if entry_cost > 0 and price > entry_cost:
-                        float_profit = (price - entry_cost) / entry_cost
-                        current_value = shares * price
-                        max_value = TOTAL_FUND * POSITION_CAP  # 单只ETF仓位上限50%
-
-                        if ps["pyramid_count"] == 0 and float_profit > 0.05:
-                            # 加仓金额 = 首次建仓金额 × 0.5
-                            # 首次建仓金额 = fund_per_etf * 0.50, 所以加仓 pct = 0.25
-                            add_pct = 0.30
-                            add_value = self.p.fund_per_etf * add_pct
-                            if current_value + add_value <= max_value:
-                                if self._buy(d, add_pct, f"集中金字塔加仓1 浮盈{float_profit*100:.1f}%"):
-                                    ps["pyramid_count"] = 1
-                                    ps["bought_today"] = True
-                        elif ps["pyramid_count"] == 1 and float_profit > 0.10:
-                            add_pct = 0.40
-                            add_value = self.p.fund_per_etf * add_pct
-                            if current_value + add_value <= max_value:
-                                if self._buy(d, add_pct, f"集中金字塔加仓2 浮盈{float_profit*100:.1f}%"):
-                                    ps["pyramid_count"] = 2
-                                    ps["bought_today"] = True
+                    # ═══ 加仓逻辑：与实盘对齐，调用 evaluate_entry (build_phase==1) ═══
+                    if ps["build_phase"] == 1 and ps["first_price"] > 0 and not ps["bought_today"]:
+                        atr_pct_a = atr_val / price if atr_val and price > 0 else 0
+                        pos_a, t_a = self._build_pos_and_tech(d, name, date_str)
+                        # evaluate_entry 顶部守卫 `if pos.has_position: return None` 会拦截 build_phase==1
+                        # 临时切到 _AddonEvalPos 子类使 has_position=False，shares 保持真实值供仓位上限检查
+                        _saved_cls = pos_a.__class__
+                        pos_a.__class__ = _AddonEvalPos
+                        addon_result = evaluate_entry(
+                            pos_a, t_a, price, {}, {}, {},
+                            name, date_str, atr_pct_a, False,
+                            skip_profit_filter=True
+                        )
+                        pos_a.__class__ = _saved_cls
+                        # ma5_touch_count 在 evaluate_entry 等确认分支内部更新，_execute_addon_result 不含，单独同步
+                        ps["ma5_touch_count"] = pos_a.ma5_touch_count
+                        if addon_result and addon_result[0] == "买入" and addon_result[2] == "buy":
+                            self._execute_addon_result(d, name, addon_result, date_str)
                 else:
                     # 只对TOP N ETF允许建仓
                     if name not in top_set:
@@ -1118,7 +1121,7 @@ class ETFStrategy(bt.Strategy):
                         if not entered and self.p.trend_entry:
                             if rsi_val is not None and rsi_val < 65:
                                 if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
-                                    self._init_on_entry(ps, price)
+                                    self._init_on_entry(ps, price, date_str)
                                     entered = True
 
                         # ── 调用实盘策略模块 evaluate_entry (统一入场管线) ──
@@ -1313,7 +1316,7 @@ class ETFStrategy(bt.Strategy):
                         if not entered and self.p.trend_entry:
                             if rsi_val is not None and rsi_val < 65:
                                 if self._buy(d, 0.50, f"集中趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
-                                    self._init_on_entry(ps, price)
+                                    self._init_on_entry(ps, price, date_str)
                                     entered = True
 
                         # ── 调用实盘策略模块 evaluate_entry (统一入场管线) ──
@@ -1595,7 +1598,7 @@ class ETFStrategy(bt.Strategy):
                 self._sync_pos_to_ps(name, pos, date_str)
                 if entry_result and entry_result[0] == "买入" and entry_result[2] == "buy":
                     if self._buy(d, 0.30, entry_result[3]):
-                        self._init_on_entry(ps, price)
+                        self._init_on_entry(ps, price, date_str)
 
             # ═══ ADD-ON LOGIC ═══ 调用实盘策略模块 evaluate_entry (build_phase==1)
             if ps["build_phase"] == 1 and ps["first_price"] > 0 and not ps["bought_today"]:
@@ -1785,6 +1788,7 @@ class ETFStrategy(bt.Strategy):
             pos.reached_3pct = ps.get("reached_3pct", False)
             pos.reached_5pct = ps.get("reached_5pct", False)
             pos.reached_8pct_ladder = ps.get("reached_8pct_ladder", False)
+            pos.build_first_date = ps.get("build_first_date") or None
             pos.update_dead_active()
         else:
             # Bug14: 空仓分支完全重置所有持仓相关字段
@@ -2001,7 +2005,7 @@ class ETFStrategy(bt.Strategy):
 
         price = d.close[0]
         if self._buy(d, pct, reason):
-            self._init_on_entry(ps, price)
+            self._init_on_entry(ps, price, date_str)
             return True
         return False
 
