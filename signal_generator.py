@@ -470,12 +470,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         _ma20_val = t.get("ma20")
         _ma20_slope_down = False
         if _ma20_val and is_v2_enabled():
-            # 用日线K线最近5日MA20斜率判断下行
+            # 用日线K线前20根收盘均值判断MA20斜率下行
             _kl = all_klines.get(code, [])
-            if len(_kl) >= 6:
-                _closes_tail = [k["close"] for k in _kl[-6:]]
+            if len(_kl) >= 21:
+                _closes_tail = [k["close"] for k in _kl[-21:]]
                 from market_data import calc_ma as _calc_ma
-                _ma20_prev = _calc_ma(_closes_tail[:-1], min(20, len(_closes_tail)-1))
+                _ma20_prev = _calc_ma(_closes_tail[:-1], 20)
                 _ma20_slope_down = (_ma20_prev is not None and _ma20_val < _ma20_prev)
         grid_signal, grid_weight = evaluate_grid_signals(
             price, base, spacing, pos.grid_frozen,
