@@ -18,13 +18,13 @@
       "below_ma20_date": "2026-09-29",
       "add_count": 0,
       "ma5_touch_count": 2,
-      "prev_rsi": 26.27,
+      "prev_rsi": 23.81,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 1,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 2,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -63,15 +63,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 32.49,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 27.62,
+      "prev_macd_status": "绿柱放大",
       "liquidate_dates": [
         "2026-09-30"
       ],
-      "empty_days": 16,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 17,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -110,13 +110,13 @@
       "below_ma20_date": "2026-10-08",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 37.39,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 33.77,
+      "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
-      "empty_days": 1,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 2,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -155,15 +155,15 @@
       "below_ma20_date": "2026-10-26",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 40.4,
+      "prev_rsi": 39.96,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-10-23"
       ],
-      "empty_days": 2,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 3,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -202,15 +202,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 29.58,
+      "prev_rsi": 28.42,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-09-29"
       ],
-      "empty_days": 17,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 18,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -249,13 +249,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 39.57,
-      "prev_macd_status": "绿柱缩短",
+      "prev_rsi": 36.63,
+      "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
-      "empty_days": 29,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 30,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -286,7 +286,7 @@
       "cooldown_until": null,
       "grid_frozen": false,
       "last_grid_trigger": "触及第2档卖出",
-      "last_grid_trigger_date": "2026-10-28",
+      "last_grid_trigger_date": "2026-10-29",
       "last_reset_date": null,
       "peak_price": 1.961,
       "breakeven_activated": false,
@@ -294,25 +294,26 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 67.36,
-      "prev_macd_status": "金叉",
+      "prev_rsi": 64.72,
+      "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 1,
-          "sell_pct": 10.2
+          "sell_pct": 11.36,
+          "ma5_sell_count": 1
         }
       },
       "trend_profit_trigger_date": "2026-10-15",
-      "ma5_sell_trigger_date": "2026-10-19",
+      "ma5_sell_trigger_date": "2026-10-29",
       "confirm_batch_count": 2,
       "confirm_batch_date": "2026-09-14",
-      "shares": 49000,
-      "avg_cost": 1.831,
-      "current_price": 1.924,
+      "shares": 39000,
+      "avg_cost": 1.802,
+      "current_price": 1.907,
       "entry_avg_cost": 1.781,
       "base_price": 1.825,
       "reached_3pct": false,
@@ -340,7 +341,7 @@
       "below_ma20_date": "2026-10-22",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 51.56,
+      "prev_rsi": 49.2,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-10-12",
@@ -348,10 +349,10 @@
         "2026-10-16",
         "2026-10-19"
       ],
-      "empty_days": 1,
-      "empty_days_date": "2026-10-28",
+      "empty_days": 2,
+      "empty_days_date": "2026-10-29",
       "daily_trade_log": {
-        "2026-10-28": {
+        "2026-10-29": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -376,21 +377,21 @@
   "positions": {
     "159981": {
       "name": "能源化工ETF",
-      "shares": 44000,
-      "avg_cost": 1.818,
-      "current_price": 1.934,
-      "market_value": 85096.0,
-      "pnl": 5106.0,
-      "pnl_pct": 6.38,
+      "shares": 39000,
+      "avg_cost": 1.802,
+      "current_price": 1.907,
+      "market_value": 74373.0,
+      "pnl": 4100.11,
+      "pnl_pct": 5.83,
       "base_price": 1.825
     }
   },
   "account": {
-    "total_asset": 203827.17,
-    "cash": 118775.17,
-    "market_value": 85052.0
+    "total_asset": 203333.28,
+    "cash": 128492.28,
+    "market_value": 74841.0
   },
-  "last_updated": "2026-10-28 14:50",
+  "last_updated": "2026-10-29 14:41",
   "_today_open": {
     "date": "2026-09-23",
     "asset": 0.0
