@@ -341,6 +341,26 @@ def _is_continuous_auction():
     return (570 <= t <= 690) or (780 <= t <= 900)
 
 
+def _get_baseline_shares(code):
+    """读取 T0 配对建立时的基准持仓（_signal_state 优先，回退 positions）。
+
+    用于写入订单文件 baseline_shares 字段，配对建立后永不改写，
+    sync 也不覆盖它。t0_close.py 读取时优先用此固定基线。
+    """
+    try:
+        with open(PF_PATH) as f:
+            pf = json.load(f)
+        s = pf.get('_signal_state', {}).get(code, {})
+        if s.get('shares'):
+            return int(s['shares'])
+        pos = pf.get('positions', {}).get(code, {})
+        if pos.get('shares'):
+            return int(pos['shares'])
+    except Exception:
+        pass
+    return 0
+
+
 # ─── 统一买卖做T入口 ───────────────────────────────────────────────────
 
 def _unified_trade(action, code, shares, price, pair_price=None):
@@ -365,6 +385,9 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     sync_entrust_to_orders(e=e)
     direction = '买入' if 'buy' in action else '卖出'
     write_intent(code, action, direction)
+
+    # T0 配对：在下单前捕获基准持仓（固定基线，sync 后不变）
+    baseline_shares = _get_baseline_shares(code) if is_t0 else None
 
     if is_t0 and not _is_continuous_auction():
         print(f"❌ 非连续竞价时段，不执行挂单")
@@ -405,14 +428,14 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     # 下单后捞真实合同号（用于追价撤单）
     direction_main = '买入' if 'buy' in action else '卖出'
     contract_main = _fetch_contract(e, code, direction_main, price, shares)
-    write_order(code, action, shares, price, contract_main)
+    write_order(code, action, shares, price, contract_main, baseline_shares=baseline_shares)
 
     if is_t0 and pair_price is not None:
         time.sleep(5)
         _call_evolving(pair_method, code, shares, pair_price, e=e)
         direction_pair = '卖出' if 'buy' in action else '买入'
         contract_pair = _fetch_contract(e, code, direction_pair, pair_price, shares)
-        write_order(code, pair_action, shares, pair_price, contract_pair)
+        write_order(code, pair_action, shares, pair_price, contract_pair, baseline_shares=baseline_shares)
 
     return True
 

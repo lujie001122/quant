@@ -521,8 +521,13 @@ def write_intent_failed(code, action, shares, price, reason='failed'):
         print(f"  ⚠️ failed intent 文件写入失败: {e}")
 
 
-def write_order(code, action, shares, price, contract, status='pending'):
-    """写订单到 orders/ 目录。"""
+def write_order(code, action, shares, price, contract, status='pending', baseline_shares=None):
+    """写订单到 orders/ 目录。
+
+    baseline_shares: T0 配对建立时的基准持仓（固定基线）。
+        写入后永不改写，sync 不覆盖它。t0_close.py 读取时优先用它，
+        缺失才回退 _signal_state。传 None 则不写该字段（非 T0 订单）。
+    """
     os.makedirs(_ORDERS_DIR, exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
     # 序号从该目录下已有文件数计算，避免同日同code同action第二次下单覆盖
@@ -540,6 +545,8 @@ def write_order(code, action, shares, price, contract, status='pending'):
         'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
+    if baseline_shares is not None:
+        order['baseline_shares'] = baseline_shares
     try:
         with open(order_path, 'w') as f:
             json.dump(order, f, ensure_ascii=False, indent=2)

@@ -111,20 +111,35 @@ def ensure_iface(label: str = '') -> bool:
 # 基准持仓（portfolio.json，不依赖 THS）
 # ══════════════════════════════════════════════════════════════════════════
 
-def get_baseline_shares(code: str) -> int:
+def get_baseline_shares(code: str, order: dict = None) -> tuple:
     """
-    从 portfolio.json _signal_state[code]["shares"] 读取策略基准持仓。
-    这是非 T0 的底仓，不受 THS 接口状态影响。
-    读取失败返回 0（保守：宁可误判为有超额持仓也不漏报）。
+    读取配对的基准持仓，返回 (baseline, source_label)。
+
+    优先级：
+    1. 配对记录里的 baseline_shares（配对建立时固定写入，永不改写）
+    2. portfolio.json _signal_state[code]["shares"]（缺失时兜底，日志标注"基线缺失"）
+
+    参数 order: 任意一条配对腿的 dict（buy_order 或 sell_order），
+                含 baseline_shares 字段时直接用；传 None 则直接走兜底。
     """
+    # ── 优先：配对记录里的固定基线 ───────────────────────────────────────
+    if order is not None:
+        v = order.get('baseline_shares')
+        if v is not None:
+            try:
+                return int(v), '配对记录 baseline_shares'
+            except (TypeError, ValueError):
+                pass
+
+    # ── 兜底：_signal_state（sync 可能已更新，需在日志中标注） ─────────────
     try:
         with open(PORTFOLIO_JSON, encoding='utf-8') as f:
             data = json.load(f)
         shares = data.get('_signal_state', {}).get(code, {}).get('shares', 0)
-        return int(shares)
+        return int(shares), '_signal_state shares（基线缺失，可能已被 sync 覆盖）'
     except Exception as ex:
-        log.warning(f"  [{code}] 读 portfolio.json 失败: {ex}")
-        return 0
+        log.warning(f'  [{code}] 读 portfolio.json 失败: {ex}')
+        return 0, '_signal_state shares（读取失败）'
 
 
 def get_local_position_shares(code: str) -> int:
@@ -154,18 +169,21 @@ def _shares_match(a: int, b: int) -> bool:
     return abs(a - b) <= _SHARE_TOLERANCE
 
 
-def assess_by_local_data(code: str, buy_shares: int, sell_shares: int) -> dict:
+def assess_by_local_data(code: str, buy_shares: int, sell_shares: int,
+                         buy_order: dict = None, sell_order: dict = None) -> dict:
     """
     第二级降级判断：接口不可用时，用本地 portfolio.json 数据判断腿成交状态。
 
     T0 做法：先卖出 sell_shares（减仓），再买回 buy_shares（加仓）。
-    设 baseline = _signal_state[code]["shares"]（策略底仓，T0 配对建立时的基准）。
+    设 baseline = 配对记录里的 baseline_shares（配对建立时固定写入，永不改写）。
+                  缺失时回退 _signal_state[code]["shares"]，日志标注"基线缺失"。
     设 local   = positions[code]["shares"]（本地 sync 记录的实际持仓）。
 
     持仓变化分析：
       两腿均未成交 → local == baseline（持仓未动）
       两腿均已成交 → local == baseline - sell_shares + buy_shares
-                      buy==sell 时等于 baseline，所以与"均未成"数值相同
+                      buy==sell 时等于 baseline，与"均未成"数值相同
+                      ⚠️ 两者数值无法区分，必须输出"无法确认"，不得断言已成交
       仅卖腿成交   → local == baseline - sell_shares  ← 单边暴露，真风险
       仅买腿成交   → local == baseline + buy_shares   ← 异常超买
 
@@ -173,83 +191,87 @@ def assess_by_local_data(code: str, buy_shares: int, sell_shares: int) -> dict:
       level         : 2（本地数据可用）或 3（数据矛盾/缺失）
       buy_filled    : bool
       sell_filled   : bool
-      skip_no_alert : bool  接口不可用但本地判定无风险，跳过不报警
+      skip_no_alert : bool  接口不可用且本地判定无风险，跳过不报警
       single_side   : str   'sell_only'|'buy_only'|'' 单边暴露方向
-      evidence      : str   日志用说明字符串
+      inconclusive  : bool  True=无法区分两腿都成交/两腿都未成交，必须人工核对
+      evidence      : str   日志用说明字符串（含基线来源）
     """
-    baseline    = get_baseline_shares(code)
-    local       = get_local_position_shares(code)
+    # 优先读配对记录里的固定基线；缺失时兜底 _signal_state
+    ref_order = buy_order or sell_order
+    baseline, baseline_src = get_baseline_shares(code, ref_order)
+    local = get_local_position_shares(code)
 
-    base_info = f"baseline={baseline} local={local} buy_shares={buy_shares} sell_shares={sell_shares}"
+    base_info = (f"baseline={baseline}（来自:{baseline_src}）"
+                 f" local={local} buy_shares={buy_shares} sell_shares={sell_shares}")
+
+    _base = {
+        'buy_filled': False, 'sell_filled': False,
+        'skip_no_alert': False, 'single_side': '',
+        'inconclusive': False,
+    }
 
     # ── Level 3：数据不可用 ──────────────────────────────────────────────
     if local < 0:
-        return {
-            'level': 3,
-            'buy_filled': False, 'sell_filled': False,
-            'skip_no_alert': False, 'single_side': '',
-            'evidence': f"[第三级] portfolio.json 读取失败，无法判断 | {base_info}",
-        }
+        return {**_base, 'level': 3,
+                'evidence': f"[第三级] portfolio.json 读取失败，无法判断 | {base_info}"}
 
     if baseline <= 0 and local <= 0:
-        # 两个都是 0，可能标的从未建仓，数据矛盾
-        return {
-            'level': 3,
-            'buy_filled': False, 'sell_filled': False,
-            'skip_no_alert': False, 'single_side': '',
-            'evidence': f"[第三级] baseline 和 local 均为 0，数据矛盾或缺失 | {base_info}",
-        }
+        return {**_base, 'level': 3,
+                'evidence': f"[第三级] baseline 和 local 均为 0，数据矛盾或缺失 | {base_info}"}
 
     # ── Level 2：用持仓变化判断 ──────────────────────────────────────────
-    diff = baseline - local  # 正值表示持仓相比基线减少
+    diff = local - baseline   # 正值表示持仓相比基线增加
 
-    # 情形 A：仅卖腿成交（持仓下降 ≈ sell_shares）→ 单边暴露，真风险
-    if sell_shares > 0 and _shares_match(diff, sell_shares) and diff > 0:
-        return {
-            'level': 2,
-            'buy_filled': False, 'sell_filled': True,
-            'skip_no_alert': False, 'single_side': 'sell_only',
-            'evidence': (
-                f"[第二级] 持仓减少 {diff} ≈ sell_shares={sell_shares}，"
-                f"判定卖腿已成交、买腿未成交，单边暴露 | {base_info}"
-            ),
-        }
+    # 情形 A：仅买腿成交（持仓增加 ≈ buy_shares）→ 异常超买，真风险
+    if buy_shares > 0 and _shares_match(diff, buy_shares) and diff > 0:
+        return {**_base, 'level': 2,
+                'buy_filled': True, 'sell_filled': False,
+                'skip_no_alert': False, 'single_side': 'buy_only',
+                'evidence': (
+                    f"[第二级] 持仓增加 {diff} ≈ buy_shares={buy_shares}，"
+                    f"判定买腿已成交、卖腿未成交，单边暴露（超买） | {base_info}"
+                )}
 
-    # 情形 B：仅买腿成交（持仓上升 ≈ buy_shares）→ 异常超买，真风险
-    if buy_shares > 0 and _shares_match(-diff, buy_shares) and diff < 0:
-        return {
-            'level': 2,
-            'buy_filled': True, 'sell_filled': False,
-            'skip_no_alert': False, 'single_side': 'buy_only',
-            'evidence': (
-                f"[第二级] 持仓增加 {-diff} ≈ buy_shares={buy_shares}，"
-                f"判定买腿已成交、卖腿未成交，异常超买 | {base_info}"
-            ),
-        }
+    # 情形 B：仅卖腿成交（持仓减少 ≈ sell_shares）→ 单边暴露，真风险
+    if sell_shares > 0 and _shares_match(-diff, sell_shares) and diff < 0:
+        return {**_base, 'level': 2,
+                'buy_filled': False, 'sell_filled': True,
+                'skip_no_alert': False, 'single_side': 'sell_only',
+                'evidence': (
+                    f"[第二级] 持仓减少 {-diff} ≈ sell_shares={sell_shares}，"
+                    f"判定卖腿已成交、买腿未成交，单边暴露 | {base_info}"
+                )}
 
-    # 情形 C：持仓未明显变化（≈ baseline）
-    # → 两腿都成交（sell==buy，净持仓回归）或两腿都未成交
-    # → 无论哪种，当前不存在单边暴露风险，跳过不报警
+    # 情形 C：持仓 ≈ baseline（diff ≈ 0）
+    # → 两腿都未成交  OR  两腿都成交（buy==sell 时净持仓回归基线）
+    # → 仅凭本地持仓无法区分，绝不断言"已成交"，必须输出"无法确认"
     if _shares_match(diff, 0):
-        return {
-            'level': 2,
-            'buy_filled': True, 'sell_filled': True,   # 保守：视为已成交
-            'skip_no_alert': True, 'single_side': '',
-            'evidence': (
-                f"[第二级] 持仓未变化（diff={diff}≈0），"
-                f"判定配对已成交或两腿均未触发，跳过不报警 | {base_info}"
-            ),
-        }
+        sym_ambiguous = _shares_match(buy_shares, sell_shares)
+        if sym_ambiguous:
+            # buy==sell：两腿都成/两腿都未成，本地数据无法区分
+            return {**_base, 'level': 2,
+                    'buy_filled': False, 'sell_filled': False,
+                    'skip_no_alert': False, 'single_side': '',
+                    'inconclusive': True,
+                    'evidence': (
+                        f"[第二级] 持仓未变化（diff={diff}≈0）且 buy_shares==sell_shares，"
+                        f"本地数据无法区分两腿都成交/两腿都未成交，需人工核对 | {base_info}"
+                    )}
+        else:
+            # buy != sell 但持仓 ≈ baseline：两腿都未成交（net≠0若只一腿成交，已被上面情形捕获）
+            return {**_base, 'level': 2,
+                    'buy_filled': False, 'sell_filled': False,
+                    'skip_no_alert': True, 'single_side': '',
+                    'evidence': (
+                        f"[第二级] 持仓未变化（diff={diff}≈0），buy≠sell，"
+                        f"判定两腿均未成交，无过夜风险 | {base_info}"
+                    )}
 
     # 情形 D：持仓变化不符合任何预期模式 → Level 3
-    return {
-        'level': 3,
-        'buy_filled': False, 'sell_filled': False,
-        'skip_no_alert': False, 'single_side': '',
-        'evidence': (
-            f"[第三级] 持仓变化 diff={diff} 不符合预期模式，数据矛盾 | {base_info}"
-        ),
-    }
+    return {**_base, 'level': 3,
+            'evidence': (
+                f"[第三级] 持仓变化 diff={diff} 不符合预期模式，数据矛盾 | {base_info}"
+            )}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -405,11 +427,12 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
       {
         'buy_filled':   bool,
         'sell_filled':  bool,
-        'iface_ok':     bool,     # THS 接口是否可用
+        'iface_ok':     bool,       # THS 接口是否可用
+        'inconclusive': bool,       # True=无法确认成交状态，必须人工核对
         'evidence': {
-          'file':      str,       # 文件 status
-          'holdings':  str,       # 持仓证据
-          'entrust':   str,       # 委托证据
+          'file':      str,
+          'holdings':  str,
+          'entrust':   str,
         }
       }
     """
@@ -428,14 +451,21 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
 
     if not iface_ok:
         # ── 第二/三级降级：接口不可用，用本地数据判断 ─────────────────
-        local_assess = assess_by_local_data(code, buy_shares, sell_shares)
+        local_assess = assess_by_local_data(
+            code, buy_shares, sell_shares,
+            buy_order=buy_order, sell_order=sell_order,
+        )
         ev_local = local_assess['evidence']
         level    = local_assess['level']
+        inconclusive = local_assess.get('inconclusive', False)
 
-        # 如果文件状态已明确（filled），优先采信文件状态
+        # 文件状态已明确（filled）时优先采信；但 inconclusive 情形下
+        # 若两腿文件状态均非 filled，仍维持 inconclusive
         if file_buy_filled or file_sell_filled:
             final_buy  = file_buy_filled  or local_assess['buy_filled']
             final_sell = file_sell_filled or local_assess['sell_filled']
+            # 文件已明确至少一腿，inconclusive 解除
+            inconclusive = False
         else:
             final_buy  = local_assess['buy_filled']
             final_sell = local_assess['sell_filled']
@@ -444,9 +474,10 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
             'buy_filled':     final_buy,
             'sell_filled':    final_sell,
             'iface_ok':       False,
-            'local_level':    level,            # 2 或 3
+            'local_level':    level,
             'skip_no_alert':  local_assess['skip_no_alert'],
             'single_side':    local_assess['single_side'],
+            'inconclusive':   inconclusive,
             'evidence': {
                 'file':     ev_file,
                 'holdings': f'[第{level}级降级] {ev_local}',
@@ -455,19 +486,21 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
         }
 
     # ── 源2：真实持仓 vs 基准持仓 ─────────────────────────────────────
-    baseline    = get_baseline_shares(code)
+    baseline, baseline_src = get_baseline_shares(code, buy_order)
     real_shares = get_real_holding_shares(code)
+    log.info(f"  [{pair_id}] 基线来源: {baseline_src}，baseline={baseline}")
 
     if real_shares >= 0:
         excess = real_shares - baseline
-        hold_buy_filled  = excess >= buy_shares   # 持仓超出基准 ≥ 买入量
-        hold_sell_filled = (baseline - real_shares) >= sell_shares  # 持仓低于基准 ≥ 卖出量
-        ev_holdings = (f"real={real_shares} baseline={baseline} excess={excess} "
-                       f"→ buy_filled={hold_buy_filled} sell_filled={hold_sell_filled}")
+        hold_buy_filled  = excess >= buy_shares
+        hold_sell_filled = (baseline - real_shares) >= sell_shares
+        ev_holdings = (f"real={real_shares} baseline={baseline}（{baseline_src}）"
+                       f" excess={excess}"
+                       f" → buy_filled={hold_buy_filled} sell_filled={hold_sell_filled}")
     else:
         hold_buy_filled  = False
         hold_sell_filled = False
-        ev_holdings = 'getHoldingShares 返回 -1'
+        ev_holdings = f'getHoldingShares 返回 -1 | baseline={baseline}（{baseline_src}）'
 
     # ── 源3：当日委托回报 ──────────────────────────────────────────────
     entrusts = get_today_all_entrusts(code)
@@ -489,7 +522,8 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
         'buy_filled':  final_buy_filled,
         'sell_filled': final_sell_filled,
         'iface_ok':    True,
-        '_entrusts':   entrusts,          # 供后续幂等检查复用
+        'inconclusive': False,
+        '_entrusts':   entrusts,
         'evidence': {
             'file':     ev_file,
             'holdings': ev_holdings,
@@ -727,7 +761,21 @@ def main_verify():
         elif not status['buy_filled'] and status['sell_filled']:
             log.info(f"  ★ 需要平仓（买回 {sell_order.get('shares')} 股）")
         elif status['buy_filled'] and status['sell_filled']:
-            log.info(f"  ✓ 两腿均已成交，无需操作")
+            log.info(f"  ✓ 两腿均已成交（文件/委托确认），无需操作")
+        elif status.get('inconclusive'):
+            shares   = buy_order.get('shares', '?')
+            buy_p    = buy_order.get('price', '?')
+            sell_p   = sell_order.get('price', '?')
+            buy_c    = buy_order.get('contract', '?')
+            sell_c   = sell_order.get('contract', '?')
+            local_v  = get_local_position_shares(code)
+            log.warning(
+                f"  ⚠ [ALERT] 无法确认成交状态，请人工核对！\n"
+                f"    配对方向: 买入{shares}股@{buy_p} / 卖出{shares}股@{sell_p}\n"
+                f"    买入合同号: {buy_c}  卖出合同号: {sell_c}\n"
+                f"    当前持仓: {local_v} 股\n"
+                f"    原因: 买入量==卖出量，本地持仓无法区分双边成交/双边未成"
+            )
         else:
             log.info(f"  ？ 两腿均未确认成交")
             if not status['iface_ok']:
@@ -774,26 +822,43 @@ def main():
 
         # ── 判断需要平仓的方向 ─────────────────────────────────────────
         if buy_filled and sell_filled:
-            log.info(f"  [{pair_id}] 两腿均已成交，跳过")
+            log.info(f"  [{pair_id}] 两腿均已成交（文件/委托确认），跳过")
             continue
 
         if not buy_filled and not sell_filled:
+            inconclusive = status.get('inconclusive', False)
             if not iface_ok:
                 local_level   = status.get('local_level', 3)
                 skip_no_alert = status.get('skip_no_alert', False)
                 single_side   = status.get('single_side', '')
 
-                # 第二级：本地数据可用且持仓变化有明确判断
-                if local_level == 2:
+                # ── 无法确认：buy==sell 且 local≈baseline，绝不断言已成交 ──
+                if inconclusive:
+                    shares = int(buy_order.get('shares', 0))
+                    buy_price  = buy_order.get('price', '?')
+                    sell_price = sell_order.get('price', '?')
+                    buy_cont   = buy_order.get('contract', '?')
+                    sell_cont  = sell_order.get('contract', '?')
+                    local_val  = get_local_position_shares(code)
+                    log.error(
+                        f"[ALERT] [{pair_id}] 无法确认成交状态，请人工核对！\n"
+                        f"  配对方向: 买入{shares}股@{buy_price} / 卖出{shares}股@{sell_price}\n"
+                        f"  买入合同号: {buy_cont}  卖出合同号: {sell_cont}\n"
+                        f"  当前持仓: {local_val} 股\n"
+                        f"  原因: 买入量==卖出量，本地持仓无法区分双边成交/双边未成\n"
+                        f"  证据: {status['evidence']['holdings']}"
+                    )
+                    _overnight_risk.append((code, shares))
+
+                # ── 第二级：本地数据可用且持仓变化有明确判断 ──
+                elif local_level == 2:
                     if skip_no_alert:
-                        # 持仓 ≈ 基线，判定已配对成交或两腿均未触发，不报过夜风险
                         log.info(
                             f"  [{pair_id}] [第二级降级] 接口不可用，"
-                            f"本地持仓未异常，判定无过夜风险，跳过"
+                            f"本地持仓未异常（buy≠sell），判定两腿均未成交，无过夜风险，跳过"
                         )
                         log.info(f"  [{pair_id}] 降级依据: {status['evidence']['holdings']}")
                     elif single_side:
-                        # 持仓偏离基线，确认单边暴露 → 真风险
                         shares = int(buy_order.get('shares', 0))
                         log.error(
                             f"[ALERT] [第二级降级] T0 单边暴露，存在过夜风险: "
@@ -802,7 +867,6 @@ def main():
                         log.error(f"  [{pair_id}] 风险依据: {status['evidence']['holdings']}")
                         _overnight_risk.append((code, shares))
                     else:
-                        # level=2 但既非 skip_no_alert 也非 single_side，不应到达这里
                         shares = int(buy_order.get('shares', 0))
                         log.warning(
                             f"[ALERT] [第二级降级] 接口不可用，本地数据未能明确判断: "
@@ -820,8 +884,8 @@ def main():
                     log.error(f"  [{pair_id}] 依据: {status['evidence']['holdings']}")
                     _overnight_risk.append((code, shares))
             else:
-                # 接口正常但两腿均未成交（可能真的都没成）
-                log.info(f"  [{pair_id}] 两腿均未成交（接口正常，三方均为 pending），跳过")
+                # 接口正常但三方均未确认成交 → 判定两腿均未成交，无过夜风险
+                log.info(f"  [{pair_id}] 两腿均未成交（接口正常，三方均为 pending），无过夜风险，可手动撤单，跳过")
             continue
 
         if buy_filled and not sell_filled:
@@ -870,9 +934,9 @@ def main():
                 # 若持仓已回归基准 → 已平仓
                 real = get_real_holding_shares(code)
                 if real >= 0:
-                    baseline = get_baseline_shares(code)
+                    baseline, baseline_src = get_baseline_shares(code, buy_order)
                     if real <= baseline:
-                        log.info(f"  [{code}] 持仓已回归基准（real={real} baseline={baseline}），跳过（幂等）")
+                        log.info(f"  [{code}] 持仓已回归基准（real={real} baseline={baseline} 来自:{baseline_src}），跳过（幂等）")
                         continue
             else:  # buy
                 if entrusts is not None and _entrust_has_pending_buy(entrusts):
