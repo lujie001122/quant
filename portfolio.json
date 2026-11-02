@@ -18,13 +18,13 @@
       "below_ma20_date": "2026-09-29",
       "add_count": 0,
       "ma5_touch_count": 2,
-      "prev_rsi": 20.35,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 28.65,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 4,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 5,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -63,15 +63,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 24.61,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 27.04,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-09-30"
       ],
-      "empty_days": 19,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 20,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -110,13 +110,13 @@
       "below_ma20_date": "2026-10-08",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 29.48,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 34.82,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 4,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 5,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -155,15 +155,15 @@
       "below_ma20_date": "2026-10-26",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 36.56,
-      "prev_macd_status": "绿柱放大",
+      "prev_rsi": 36.21,
+      "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [
         "2026-10-23"
       ],
-      "empty_days": 5,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 6,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -202,15 +202,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 25.72,
+      "prev_rsi": 24.62,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [
         "2026-09-29"
       ],
-      "empty_days": 20,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 21,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -249,13 +249,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 36.74,
+      "prev_rsi": 41.88,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 32,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 33,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -294,19 +294,20 @@
       "below_ma20_date": null,
       "add_count": 2,
       "ma5_touch_count": 2,
-      "prev_rsi": 66.48,
+      "prev_rsi": 66.58,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
-          "t0_count": 0
+          "t0_count": 1,
+          "ma5_sell_count": 2
         }
       },
       "trend_profit_trigger_date": "2026-10-15",
-      "ma5_sell_trigger_date": "2026-10-29",
+      "ma5_sell_trigger_date": "2026-11-02",
       "confirm_batch_count": 2,
       "confirm_batch_date": "2026-09-14",
       "shares": 34000,
@@ -339,7 +340,7 @@
       "below_ma20_date": "2026-10-22",
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 41.93,
+      "prev_rsi": 42.68,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [
         "2026-10-12",
@@ -347,10 +348,10 @@
         "2026-10-16",
         "2026-10-19"
       ],
-      "empty_days": 4,
-      "empty_days_date": "2026-10-31",
+      "empty_days": 5,
+      "empty_days_date": "2026-11-02",
       "daily_trade_log": {
-        "2026-10-31": {
+        "2026-11-02": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -385,11 +386,11 @@
     }
   },
   "account": {
-    "total_asset": 204300.5,
+    "total_asset": 204334.5,
     "cash": 138408.5,
-    "market_value": 65892.0
+    "market_value": 65926.0
   },
-  "last_updated": "2026-10-31 08:02",
+  "last_updated": "2026-11-02 14:41",
   "_today_open": {
     "date": "2026-09-23",
     "asset": 0.0
