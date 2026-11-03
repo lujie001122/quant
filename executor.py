@@ -1001,6 +1001,88 @@ class SignalExecutor:
         from state_center import write_intent
         write_intent(code, action, direction, mode=mode)
 
+    def _verify_order_via_entrust(self, code, direction, shares):
+        """下单后通过 getEntrust 独立核验订单是否真实提交到券商。
+        不依赖 trade.py 返回码；接口查不到视为未知，不得当作成功。
+
+        轮询策略：最多5次，每次间隔2秒，匹配即返回成功；5次都未匹配则判失败。
+        接口返回异常(unknown err)时同样重试，5次后判失败。
+
+        返回:
+          (True, detail)   核验通过
+          (False, reason)   核验失败（未找到匹配 或 接口异常）
+        """
+        # 统一方向为中文
+        if direction in ('buy', 'Buy', 'BUY'):
+            direction = '买入'
+        elif direction in ('sell', 'Sell', 'SELL'):
+            direction = '卖出'
+
+        from evolving.evolving import EvolvingSim
+        e = EvolvingSim()
+
+        MAX_TRIES = 5
+        last_ent = None
+        last_rows = []
+        last_reason = ''
+
+        for attempt in range(1, MAX_TRIES + 1):
+            time.sleep(2)
+            try:
+                ent = e.getEntrust('today', False)
+            except Exception as ex:
+                last_reason = f"getEntrust 调用异常(未知): {ex}"
+                print(f"  第{attempt}次查委托表，接口异常: {ex}，未匹配。")
+                last_ent = None
+                continue
+
+            if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+                last_reason = f"getEntrust 返回异常(非有效数据): {ent}"
+                print(f"  第{attempt}次查委托表，返回非有效数据，未匹配。")
+                last_ent = ent
+                continue
+
+            rows = ent['data']
+            last_ent = ent
+            last_rows = [str(r) for r in rows if r and len(r) >= 11]
+            print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录，未匹配。")
+
+            for row in rows:
+                if not row or len(row) < 11:
+                    continue
+                if str(row[2]).strip() != code:
+                    continue
+                row_op = str(row[4]).strip()
+                if direction == '买入' and '买' not in row_op:
+                    continue
+                if direction == '卖出' and '卖' not in row_op:
+                    continue
+                try:
+                    row_shares = int(row[6])
+                except (ValueError, TypeError):
+                    continue
+                if row_shares != shares:
+                    continue
+                contract = str(row[10]).strip()
+                if not contract or contract == '0':
+                    continue
+                print(f"  第{attempt}次即匹配: {code} {direction} {shares}股 合同号={contract}")
+                return True, f"{code} {direction} {shares}股 合同号={contract}"
+
+            last_reason = f"委托表共{len(last_rows)}条，未找到 {code} {direction} {shares}股"
+
+        # 5次都未匹配 — 失败
+        reason = (
+            f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} 数量={shares}股\n"
+            f"  原始返回: {last_ent}\n"
+            f"  最后一次委托表条数: {len(last_rows)}条\n"
+            f"  最后一次判定依据: {last_reason}\n"
+            f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
+            + ("\n  ..." if len(last_rows) > 30 else "")
+            + "\n  ⚠️ 可能已下单但接口未刷新，请人工核对同花顺委托表"
+        )
+        return False, reason
+
     def execute_signals(self, result, mode=None):
         """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
 
@@ -1325,6 +1407,17 @@ class SignalExecutor:
                             print(stdout.strip())
                         if stderr_out:
                             print(f"  [stderr] {stderr_out.strip()}")
+
+                        # ═══ 下单后强制核验（不依赖返回码，直接查委托表）═══
+                        # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
+                        _v_ok, _v_detail = self._verify_order_via_entrust(code, direction, shares)
+                        if not _v_ok:
+                            print(f"  🚨 核验失败: {_v_detail}")
+                            print(f"  ❌ {code} {direction} {shares}股 委托表未确认，判定失败，不扣做T额度")
+                            final_error = f"委托表核验失败: {_v_detail}"
+                            final_error_type = "verify_failed"
+                            break
+                        print(f"  ✅ 核验通过: {_v_detail}")
 
                         # ═══ B4+: 成交后按实查持仓更新 portfolio.json，禁止写0 ═══
                         # 用 SignalExecutor 内部已有的 _get_position_shares（state_center.get_position_shares）

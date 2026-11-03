@@ -137,6 +137,82 @@ def _fetch_contract(e, code, direction, price, shares):
     return 'pending'
 
 
+def _verify_order_in_entrust(e, code, direction, shares, price=None):
+    """下单后强制核验：查当日委托表，匹配 代码+方向+数量 且拿到合同号才算成功。
+    不允许用返回码为0当作成交依据。接口查不到视为未知，不得当作成功。
+
+    轮询策略：最多5次，每次间隔2秒，匹配即返回成功；5次都未匹配则判失败。
+    接口返回异常(unknown err)时同样重试，5次后判失败。
+
+    返回:
+      (True, contract, detail)   核验通过，contract为合同号
+      (False, '', detail)         核验失败（未找到匹配 或 接口异常）
+    """
+    MAX_TRIES = 5
+    last_ent = None
+    last_rows = []
+    last_reason = ''
+
+    for attempt in range(1, MAX_TRIES + 1):
+        time.sleep(2)
+        try:
+            ent = e.getEntrust('today', False)
+        except Exception as ex:
+            last_reason = f"getEntrust 调用异常(未知): {ex}"
+            print(f"  第{attempt}次查委托表，接口异常: {ex}，未匹配。")
+            last_ent = None
+            continue
+
+        # 接口异常：status不为真 或 无data → 重试
+        if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
+            last_reason = f"getEntrust 返回异常(非有效数据): {ent}"
+            print(f"  第{attempt}次查委托表，返回非有效数据，未匹配。")
+            last_ent = ent
+            continue
+
+        rows = ent['data']
+        last_ent = ent
+        last_rows = [str(r) for r in rows if r and len(r) >= 11]
+        print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录，未匹配。")
+
+        for row in rows:
+            if not row or len(row) < 11:
+                continue
+            if str(row[2]).strip() != code:
+                continue
+            row_op = str(row[4]).strip()
+            if direction == '买入' and '买' not in row_op:
+                continue
+            if direction == '卖出' and '卖' not in row_op:
+                continue
+            try:
+                row_shares = int(row[6])
+            except (ValueError, TypeError):
+                continue
+            if row_shares != shares:
+                continue
+            contract = str(row[10]).strip()
+            if not contract or contract == '0':
+                continue
+            # 匹配成功，覆盖上面已打印的"未匹配"提示
+            print(f"  第{attempt}次即匹配: {code} {direction} {shares}股 合同号={contract}")
+            return True, contract, f"匹配成功: {code} {direction} {shares}股 合同号={contract}"
+
+        last_reason = f"委托表共{len(last_rows)}条，未找到 {code} {direction} {shares}股"
+
+    # 5次都未匹配 — 失败
+    detail = (
+        f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} 数量={shares}股\n"
+        f"  原始返回: {last_ent}\n"
+        f"  最后一次委托表条数: {len(last_rows)}条\n"
+        f"  最后一次判定依据: {last_reason}\n"
+        f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
+        + ("\n  ..." if len(last_rows) > 30 else "")
+        + "\n  ⚠️ 可能已下单但接口未刷新，请人工核对同花顺委托表"
+    )
+    return False, '', detail
+
+
 # ─── 数量校验 ──────────────────────────────────────────────────────────
 
 def _validate_shares(shares):
@@ -411,7 +487,12 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     else:
         print(f"📊 卖出 {name}({code}) {shares:,}股 @{price}  金额¥{amount:,.0f}")
 
+    # 打印原始返回值（issuingEntrust 返回 (status, contractNo)，核验失败时用于诊断）
+    print(f"  📤 EvolvingSim.{method} 原始返回: {result}")
+
+    # 返回值解析：None=调用异常; (False,None)=同花顺拒单; (True,contractNo)=已发送
     if result is None:
+        print(f"  ⚠️ EvolvingSim 调用异常返回 None，尝试重启同花顺后重试...")
         try:
             from evolving import ascmds
             raw = os.popen(ascmds.asissuingEntrustSim + ' ' + method + ' stock ' + code + ' ' + str(price) + ' ' + str(shares)).read().strip()
@@ -423,19 +504,41 @@ def _unified_trade(action, code, shares, price, pair_price=None):
                 time.sleep(5)
         except Exception:
             pass
+        # 重启后重试一次
+        time.sleep(2)
+        result = _call_evolving(method, code, shares, price, e=e)
+        print(f"  📤 重试后 EvolvingSim.{method} 原始返回: {result}")
+    elif isinstance(result, tuple) and len(result) > 0 and not result[0]:
+        print(f"  ⚠️ EvolvingSim 返回 status=False（同花顺拒单），原始返回: {result}")
 
-    # Bug6: 双重写订单修复 — 统一由 state_center.write_order 管理
-    # 下单后捞真实合同号（用于追价撤单）
+    # ═══ 强制核验：查当日委托表，匹配 代码+方向+数量 且拿到合同号，才算成功 ═══
+    # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
     direction_main = '买入' if 'buy' in action else '卖出'
-    contract_main = _fetch_contract(e, code, direction_main, price, shares)
-    write_order(code, action, shares, price, contract_main, baseline_shares=baseline_shares)
+    ok_main, contract_main, detail_main = _verify_order_in_entrust(e, code, direction_main, shares, price)
+    if not ok_main:
+        print(f"  🚨 核验失败: {code} {direction_main} {shares}股 未在委托表确认")
+        print(f"     原始返回: {result}")
+        print(f"     判定依据: {detail_main}")
+        print(f"  ❌ 下单失败，退出(非零退出码)，不扣做T额度、不写成交记录")
+        sys.exit(1)
+    print(f"  ✅ 核验通过: {detail_main}")
+    write_order(code, action, shares, price, contract_main, status='pending', baseline_shares=baseline_shares)
 
+    # T0 配对单
     if is_t0 and pair_price is not None:
         time.sleep(5)
-        _call_evolving(pair_method, code, shares, pair_price, e=e)
+        pair_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
+        print(f"  📤 配对单 EvolvingSim.{pair_method} 原始返回: {pair_result}")
         direction_pair = '卖出' if 'buy' in action else '买入'
-        contract_pair = _fetch_contract(e, code, direction_pair, pair_price, shares)
-        write_order(code, pair_action, shares, pair_price, contract_pair, baseline_shares=baseline_shares)
+        ok_pair, contract_pair, detail_pair = _verify_order_in_entrust(e, code, direction_pair, shares, pair_price)
+        if not ok_pair:
+            print(f"  🚨 配对单核验失败: {code} {direction_pair} {shares}股 未在委托表确认")
+            print(f"     原始返回: {pair_result}")
+            print(f"     判定依据: {detail_pair}")
+            print(f"  ❌ 配对单下单失败，退出(非零退出码)")
+            sys.exit(1)
+        print(f"  ✅ 配对单核验通过: {detail_pair}")
+        write_order(code, pair_action, shares, pair_price, contract_pair, status='pending', baseline_shares=baseline_shares)
 
     return True
 
@@ -478,27 +581,35 @@ if __name__ == '__main__':
         if len(sys.argv) != 5:
             print("用法: trade.py buy CODE SHARES PRICE")
             sys.exit(1)
-        do_buy(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
+        ok = do_buy(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
+        if not ok:
+            sys.exit(1)
 
     elif cmd == 'sell':
         if len(sys.argv) != 5:
             print("用法: trade.py sell CODE SHARES PRICE")
             sys.exit(1)
-        do_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
+        ok = do_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
+        if not ok:
+            sys.exit(1)
 
     elif cmd == 't0_buy':
         if len(sys.argv) < 5:
             print("用法: trade.py t0_buy CODE SHARES PRICE [PAIR_PRICE]")
             sys.exit(1)
         pair_p = float(sys.argv[5]) if len(sys.argv) >= 6 else None
-        do_t0_buy(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
+        ok = do_t0_buy(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
+        if not ok:
+            sys.exit(1)
 
     elif cmd == 't0_sell':
         if len(sys.argv) < 5:
             print("用法: trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE]")
             sys.exit(1)
         pair_p = float(sys.argv[5]) if len(sys.argv) >= 6 else None
-        do_t0_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
+        ok = do_t0_sell(sys.argv[2], int(sys.argv[3]), float(sys.argv[4]), pair_p)
+        if not ok:
+            sys.exit(1)
 
     else:
         print(f"未知命令: {cmd}")
