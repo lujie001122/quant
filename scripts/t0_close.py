@@ -26,7 +26,6 @@ import json
 import time
 import logging
 import subprocess
-import urllib.request
 from datetime import datetime
 
 # ── 路径 ────────────────────────────────────────────────────────────────
@@ -553,92 +552,6 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 涨跌停价获取（市价单兜底用）
-# ══════════════════════════════════════════════════════════════════════════
-
-def get_limit_price(code: str, direction: str) -> float:
-    """
-    获取涨跌停价，用于第二档强制成交委托。
-    direction='sell' → 跌停价（卖出用跌停价保证成交）
-    direction='buy'  → 涨停价（买入用涨停价保证成交）
-
-    优先从 Sina 行情取 parts[47]=涨停价 / parts[48]=跌停价。
-    取不到时：昨收 ±10% 向下/向上取整到分（精度 0.001）。
-    完全取不到返回 0.0。
-    """
-    try:
-        from state_center import get_code_map
-        code_map = get_code_map()
-        sid = code_map.get(code, {}).get('sid', '')
-    except Exception:
-        sid = ''
-
-    if not sid:
-        try:
-            with open(os.path.join(ROOT_DIR, 'etf_pool.json')) as f:
-                pool_data = json.load(f)
-            for item in pool_data.get('etf_pool_detail', []):
-                if item.get('code') == code:
-                    sid = item.get('sid', '')
-                    break
-        except Exception:
-            pass
-
-    yesterday_close = 0.0
-    if sid:
-        try:
-            url = f"https://hq.sinajs.cn/list={sid}"
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://finance.sina.com.cn",
-            })
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                raw = resp.read().decode('gbk')
-            idx = raw.find('"')
-            if idx != -1:
-                content = raw[idx+1:raw.rfind('"')]
-                parts = content.split(',')
-                # parts[2] = 昨收, parts[47] = 涨停, parts[48] = 跌停
-                if len(parts) > 2:
-                    try:
-                        yesterday_close = float(parts[2])
-                    except ValueError:
-                        pass
-                if len(parts) > 48:
-                    try:
-                        if direction == 'sell':
-                            v = float(parts[48])   # 跌停价
-                            if v > 0:
-                                return round(v, 3)
-                        else:
-                            v = float(parts[47])   # 涨停价
-                            if v > 0:
-                                return round(v, 3)
-                    except (ValueError, IndexError):
-                        pass
-        except Exception as e:
-            log.warning(f"[{code}] 行情获取涨跌停失败: {e}")
-
-    # 兜底：昨收 ±10%，向分取整
-    if yesterday_close > 0:
-        if direction == 'sell':
-            # 跌停 = 昨收×0.9，向下取整到 0.001
-            import math
-            raw_price = yesterday_close * 0.9
-            limit_p = math.floor(raw_price * 1000) / 1000
-        else:
-            # 涨停 = 昨收×1.1，向上取整到 0.001
-            import math
-            raw_price = yesterday_close * 1.1
-            limit_p = math.ceil(raw_price * 1000) / 1000
-        log.warning(f"[{code}] 用昨收兜底计算限价: 昨收={yesterday_close} → {direction}限价={limit_p}")
-        return limit_p
-
-    log.error(f"[{code}] 无法获取涨跌停价，昨收也取不到")
-    return 0.0
-
-
-# ══════════════════════════════════════════════════════════════════════════
 # 市价单直接下单（不经 trade.py，price=None 即对手价）
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -760,18 +673,13 @@ def _is_order_filled_from_entrust(code: str, action: str, shares: int,
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 单腿平仓循环（市价→跌停/涨停→循环到14:57）
+# 单腿平仓（一次市价单，不重试）
 # ══════════════════════════════════════════════════════════════════════════
 
-CLOSE_MARKET_WAIT   = 20   # 市价单等待成交秒数
-CLOSE_DEADLINE_HHMM = (14, 57)   # 放弃时间 (hour, minute)
-CLOSE_RETRY_INTERVAL = 5  # 每次轮询间隔秒数
-
-
-def _past_deadline() -> bool:
-    now = datetime.now()
-    h, m = CLOSE_DEADLINE_HHMM
-    return (now.hour, now.minute) >= (h, m)
+# 市价单下单后等待成交的最长秒数（可调整）
+CLOSE_MARKET_WAIT   = 30
+# 轮询间隔
+CLOSE_POLL_INTERVAL = 5
 
 
 def _clear_chase_state(pair_id: str, code: str) -> None:
@@ -801,176 +709,66 @@ def _clear_chase_state(pair_id: str, code: str) -> None:
 def close_single_leg(code: str, pair_id: str, action: str,
                      shares: int) -> bool:
     """
-    单腿平仓主循环（在撤单完成后调用）。
-    action: 'sell' 或 'buy'
-    shares: 需平仓股数
+    单腿平仓：只挂一次市价单（对手价），不重试，不挂涨跌停价。
 
-    流程：
-      第一档  市价单(price=None)，等 CLOSE_MARKET_WAIT 秒核验
-      第二档  跌停/涨停价，每 CLOSE_RETRY_INTERVAL 秒重试，直到 14:57
-      超时后报 ALERT（含已尝试的价格和合同号），返回 False
+    流程（严格执行一次，绝不循环下单）：
+      1. 挂市价单 price=None（对手价），只调用一次
+      2. 查委托表拿合同号
+      3. 等待最多 CLOSE_MARKET_WAIT 秒，轮询成交状态
+         a. 已成交 → 打印结果，清追价记录，返回 True
+         b. 等完仍未成 → 撤单，[ALERT] 报警"平仓未成交已撤单，将留过夜"，返回 False
+      4. 下单失败（拒单）→ 直接 [ALERT] 报警，返回 False
 
-    DRY_RUN 时完整走逻辑、打印所有步骤，不真实下单，直接返回 True。
+    DRY_RUN 模式下打印所有步骤，不真实下单，直接模拟场景 a（成交），返回 True。
     """
     now_str = lambda: datetime.now().strftime('%H:%M:%S')
-    attempt = 0
-    tried_contracts = []   # [(价格类型, 价格, 合同号)]
-    tried_prices    = []
 
-    # ── 第一档：市价单 ────────────────────────────────────────────────────
-    attempt += 1
-    price_type = '对手价(市价)'
-    log.info(f"  [{now_str()}] [{pair_id}] 平仓尝试#{attempt} "
-             f"方向={action} 股数={shares} 价格类型={price_type}")
+    # ── 【唯一一次】市价单下单 ───────────────────────────────────────────
+    log.info(f"  [{now_str()}] [{pair_id}] 平仓下单（仅此一次）"
+             f" 方向={action} 股数={shares} 价格类型=对手价(market)")
 
     ok, raw = place_order_market(action, code, shares, price=None)
-    contract = ''
-    if ok or DRY_RUN:
-        if DRY_RUN:
-            contract = 'DRY-RUN-contract'
-        else:
-            contract = find_contract_from_entrust(code, action, shares) or ''
-        log.info(f"  [{now_str()}] [{pair_id}] 下单返回={raw} 合同号={contract or '未取到'}")
-        tried_contracts.append((price_type, 'None', contract))
-        tried_prices.append(price_type)
-    else:
-        log.warning(f"  [{now_str()}] [{pair_id}] 市价单下单失败 raw={raw}")
-        tried_contracts.append((price_type, 'None', ''))
-        tried_prices.append(price_type)
 
-    # 等待 CLOSE_MARKET_WAIT 秒，轮询成交状态
-    if not DRY_RUN:
-        deadline_ts = time.time() + CLOSE_MARKET_WAIT
-        while time.time() < deadline_ts:
-            time.sleep(CLOSE_RETRY_INTERVAL)
-            if _is_order_filled_from_entrust(code, action, shares, contract):
-                log.info(f"  [{now_str()}] [{pair_id}] ✅ 市价单已成交 合同号={contract}")
-                _clear_chase_state(pair_id, code)
-                return True
-            log.info(f"  [{now_str()}] [{pair_id}] 市价单等待中… 合同号={contract}")
-    else:
-        log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 跳过等待，模拟场景a(一次成交)直接返回True")
+    # ── 下单失败：拒单或接口异常，不重试 ───────────────────────────────
+    if not ok and not DRY_RUN:
+        log.error(
+            f"[ALERT] [{pair_id}] {code} {shares}股 市价{action}单下单失败（拒单/异常）\n"
+            f"  raw={raw}\n"
+            f"  价格类型=对手价  已撤对侧委托  不再重试"
+        )
+        return False
+
+    # ── DRY_RUN 模拟场景 a：一次成交 ────────────────────────────────────
+    if DRY_RUN:
+        log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 下单调用次数=1 模拟场景a(一次成交)")
         log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 将清除追价记录 {pair_id}")
+        _clear_chase_state(pair_id, code)
         return True
 
-    log.info(f"  [{now_str()}] [{pair_id}] 市价单 {CLOSE_MARKET_WAIT}s 未成交，切换第二档限价")
+    # ── 查委托表获取合同号 ───────────────────────────────────────────────
+    contract = find_contract_from_entrust(code, action, shares) or ''
+    log.info(f"  [{now_str()}] [{pair_id}] 下单返回={raw} 合同号={contract or '未取到'}")
 
-    # ── 第二档：涨跌停价，循环到 14:57 ──────────────────────────────────
-    limit_price = get_limit_price(code, action)
-    if limit_price <= 0:
-        log.error(f"  [{now_str()}] [{pair_id}] 涨跌停价取不到，无法继续")
-        # 仍然走到最终告警
+    # ── 等待成交（最多 CLOSE_MARKET_WAIT 秒，每 CLOSE_POLL_INTERVAL 秒查一次）
+    deadline_ts = time.time() + CLOSE_MARKET_WAIT
+    while time.time() < deadline_ts:
+        time.sleep(CLOSE_POLL_INTERVAL)
+        if _is_order_filled_from_entrust(code, action, shares, contract):
+            log.info(f"  [{now_str()}] [{pair_id}] ✅ 市价单已成交"
+                     f" 合同号={contract} 股数={shares} 价格类型=对手价")
+            _clear_chase_state(pair_id, code)
+            return True
+        log.info(f"  [{now_str()}] [{pair_id}] 等待成交中… 合同号={contract or '未取到'}")
 
-    while not _past_deadline():
-        attempt += 1
-        price_type = ('跌停价' if action == 'sell' else '涨停价')
-        log.info(f"  [{now_str()}] [{pair_id}] 平仓尝试#{attempt} "
-                 f"方向={action} 股数={shares} 价格类型={price_type} 价格={limit_price}")
-
-        if limit_price > 0:
-            ok, raw = place_order_market(action, code, shares, price=limit_price)
-            contract2 = ''
-            if ok:
-                contract2 = find_contract_from_entrust(code, action, shares) or ''
-                log.info(f"  [{now_str()}] [{pair_id}] 下单返回={raw} 合同号={contract2 or '未取到'}")
-                tried_contracts.append((price_type, limit_price, contract2))
-                tried_prices.append(f"{price_type}={limit_price}")
-
-                # 等一个间隔再核验
-                time.sleep(CLOSE_RETRY_INTERVAL)
-                if _is_order_filled_from_entrust(code, action, shares, contract2):
-                    log.info(f"  [{now_str()}] [{pair_id}] ✅ {price_type}单已成交 "
-                             f"合同号={contract2}")
-                    _clear_chase_state(pair_id, code)
-                    return True
-            else:
-                log.warning(f"  [{now_str()}] [{pair_id}] {price_type}下单失败 raw={raw}")
-                tried_contracts.append((price_type, limit_price, ''))
-                tried_prices.append(f"{price_type}={limit_price}(下单失败)")
-                time.sleep(CLOSE_RETRY_INTERVAL)
-        else:
-            time.sleep(CLOSE_RETRY_INTERVAL)
-
-    # ── 14:57 超时，报警 ─────────────────────────────────────────────────
-    tried_summary = '; '.join(
-        f"#{i+1} {pt} price={pr} contractNo={cn}"
-        for i, (pt, pr, cn) in enumerate(tried_contracts)
-    )
+    # ── 等完仍未成：撤单 + 报警，不再下单 ─────────────────────────────
+    log.info(f"  [{now_str()}] [{pair_id}] {CLOSE_MARKET_WAIT}s 等待结束，仍未成交，尝试撤单")
+    revoke_order(contract)
     log.error(
-        f"[ALERT] [{pair_id}] {code} {shares}股 平仓失败，已过14:57截止时间，存在过夜风险！\n"
-        f"  已尝试: {tried_summary}\n"
-        f"  最后限价: {limit_price}"
+        f"[ALERT] [{pair_id}] 平仓未成交已撤单，将留过夜\n"
+        f"  合同号={contract or '未取到'}  股数={shares}  价格类型=对手价\n"
+        f"  已撤单，不再重试，请人工处理"
     )
     return False
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 市场行情
-# ══════════════════════════════════════════════════════════════════════════
-
-def _fetch_sina_quote(code: str):
-    """通过 Sina API 获取实时报价，返回 (bid1, ask1, current)，失败返回 None。"""
-    try:
-        from state_center import get_code_map
-        code_map = get_code_map()
-        sid = code_map.get(code, {}).get('sid', '')
-    except Exception:
-        sid = ''
-
-    if not sid:
-        try:
-            with open(os.path.join(ROOT_DIR, 'etf_pool.json')) as f:
-                pool_data = json.load(f)
-            for item in pool_data.get('etf_pool_detail', []):
-                if item.get('code') == code:
-                    sid = item.get('sid', '')
-                    break
-        except Exception:
-            pass
-
-    if not sid:
-        log.warning(f"[{code}] 找不到 sid，无法获取行情")
-        return None
-
-    try:
-        url = f"https://hq.sinajs.cn/list={sid}"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.sina.com.cn",
-        })
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            raw = resp.read().decode('gbk')
-        idx = raw.find('"')
-        if idx == -1:
-            return None
-        content = raw[idx+1:raw.rfind('"')]
-        parts = content.split(',')
-        if len(parts) < 10:
-            return None
-        current = float(parts[3]) if parts[3] else 0.0
-        bid1    = float(parts[6]) if parts[6] else 0.0
-        ask1    = float(parts[7]) if parts[7] else 0.0
-        return bid1, ask1, current
-    except Exception as e:
-        log.warning(f"[{code}] Sina 行情获取失败: {e}")
-        return None
-
-
-def get_close_price(code: str, direction: str) -> float:
-    """
-    direction='sell' → ask1×0.995（略低于卖一，保证成交）
-    direction='buy'  → bid1×1.005（略高于买一，保证成交）
-    """
-    q = _fetch_sina_quote(code)
-    if q is None:
-        return 0.0
-    bid1, ask1, current = q
-    if direction == 'sell':
-        p = ask1 if ask1 > 0 else current * 0.995
-        return round(p * 0.995, 3)
-    else:
-        p = bid1 if bid1 > 0 else current * 1.005
-        return round(p * 1.005, 3)
 
 
 # ══════════════════════════════════════════════════════════════════════════
