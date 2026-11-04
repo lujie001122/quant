@@ -553,6 +553,358 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 涨跌停价获取（市价单兜底用）
+# ══════════════════════════════════════════════════════════════════════════
+
+def get_limit_price(code: str, direction: str) -> float:
+    """
+    获取涨跌停价，用于第二档强制成交委托。
+    direction='sell' → 跌停价（卖出用跌停价保证成交）
+    direction='buy'  → 涨停价（买入用涨停价保证成交）
+
+    优先从 Sina 行情取 parts[47]=涨停价 / parts[48]=跌停价。
+    取不到时：昨收 ±10% 向下/向上取整到分（精度 0.001）。
+    完全取不到返回 0.0。
+    """
+    try:
+        from state_center import get_code_map
+        code_map = get_code_map()
+        sid = code_map.get(code, {}).get('sid', '')
+    except Exception:
+        sid = ''
+
+    if not sid:
+        try:
+            with open(os.path.join(ROOT_DIR, 'etf_pool.json')) as f:
+                pool_data = json.load(f)
+            for item in pool_data.get('etf_pool_detail', []):
+                if item.get('code') == code:
+                    sid = item.get('sid', '')
+                    break
+        except Exception:
+            pass
+
+    yesterday_close = 0.0
+    if sid:
+        try:
+            url = f"https://hq.sinajs.cn/list={sid}"
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://finance.sina.com.cn",
+            })
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                raw = resp.read().decode('gbk')
+            idx = raw.find('"')
+            if idx != -1:
+                content = raw[idx+1:raw.rfind('"')]
+                parts = content.split(',')
+                # parts[2] = 昨收, parts[47] = 涨停, parts[48] = 跌停
+                if len(parts) > 2:
+                    try:
+                        yesterday_close = float(parts[2])
+                    except ValueError:
+                        pass
+                if len(parts) > 48:
+                    try:
+                        if direction == 'sell':
+                            v = float(parts[48])   # 跌停价
+                            if v > 0:
+                                return round(v, 3)
+                        else:
+                            v = float(parts[47])   # 涨停价
+                            if v > 0:
+                                return round(v, 3)
+                    except (ValueError, IndexError):
+                        pass
+        except Exception as e:
+            log.warning(f"[{code}] 行情获取涨跌停失败: {e}")
+
+    # 兜底：昨收 ±10%，向分取整
+    if yesterday_close > 0:
+        if direction == 'sell':
+            # 跌停 = 昨收×0.9，向下取整到 0.001
+            import math
+            raw_price = yesterday_close * 0.9
+            limit_p = math.floor(raw_price * 1000) / 1000
+        else:
+            # 涨停 = 昨收×1.1，向上取整到 0.001
+            import math
+            raw_price = yesterday_close * 1.1
+            limit_p = math.ceil(raw_price * 1000) / 1000
+        log.warning(f"[{code}] 用昨收兜底计算限价: 昨收={yesterday_close} → {direction}限价={limit_p}")
+        return limit_p
+
+    log.error(f"[{code}] 无法获取涨跌停价，昨收也取不到")
+    return 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 市价单直接下单（不经 trade.py，price=None 即对手价）
+# ══════════════════════════════════════════════════════════════════════════
+
+def place_order_market(action: str, code: str, shares: int,
+                       price=None) -> tuple:
+    """
+    直接调 EvolvingSim.issuingEntrust(stockCode, amount, price, tradingAction)。
+    price=None  → 对手价（市价单）
+    price=float → 指定价格（跌停/涨停价兜底）
+
+    返回 (ok: bool, raw_result)
+    DRY_RUN 时不真实下单，返回 (True, 'DRY-RUN')。
+    """
+    price_label = f"@{price}" if price is not None else "@市价(None=对手价)"
+    log.info(f"  [下单] {action} {code} {shares}股 {price_label}")
+    if DRY_RUN or VERIFY:
+        log.info(f"  [{'VERIFY' if VERIFY else 'DRY-RUN'}] 跳过真实下单")
+        return True, 'DRY-RUN'
+    try:
+        from evolving.evolving import EvolvingSim
+        e = EvolvingSim()
+        trading_action = 'buy' if action == 'buy' else 'sell'
+        result = e.issuingEntrust(
+            stockCode=code,
+            amount=shares,
+            price=price,
+            tradingAction=trading_action,
+        )
+        time.sleep(1)
+        ok = (result is not None and isinstance(result, tuple)
+              and len(result) > 0 and result[0] is True)
+        return ok, result
+    except Exception as ex:
+        log.error(f"  [下单] EvolvingSim 异常: {ex}")
+        return False, None
+
+
+def find_contract_from_entrust(code: str, action: str, shares: int,
+                                price_hint=None) -> str:
+    """
+    下单后查当日委托表，匹配 代码+方向+数量，取最新一条的合同号。
+    price_hint 传 None 时不过滤价格（市价单成交价不定）。
+    返回合同号字符串，找不到返回空串。
+
+    getEntrust 列：[0]日期 [1]时间 [2]代码 [3]名称 [4]操作
+                   [5]备注 [6]委托数量 [7]撤销数量 [8]委托价格 [9]成交价格 [10]合同编号
+    """
+    try:
+        from evolving.evolving import EvolvingSim
+        e = EvolvingSim()
+        result = e.getEntrust('today', False)
+        time.sleep(1)
+        if not (result and isinstance(result, dict) and result.get('status')):
+            return ''
+        direction_kw = '买' if action == 'buy' else '卖'
+        candidates = []
+        for row in result.get('data', []):
+            if not row or len(row) < 11:
+                continue
+            if str(row[2]) != code:
+                continue
+            if direction_kw not in str(row[4]):
+                continue
+            try:
+                qty = int(float(row[6]))
+            except ValueError:
+                continue
+            if qty != shares:
+                continue
+            candidates.append(row)
+        if not candidates:
+            return ''
+        # 取最新一条（按时间字段排序，取 row[1] 最大的）
+        candidates.sort(key=lambda r: str(r[1]), reverse=True)
+        return str(candidates[0][10])
+    except Exception as ex:
+        log.warning(f"  [核验] getEntrust 查询异常: {ex}")
+        return ''
+
+
+def _is_order_filled_from_entrust(code: str, action: str, shares: int,
+                                   contract_no: str) -> bool:
+    """
+    根据合同号查委托状态，判断是否已全部成交。
+    合同号为空则按 代码+方向+数量 找最新一条。
+    """
+    try:
+        from evolving.evolving import EvolvingSim
+        e = EvolvingSim()
+        result = e.getEntrust('today', False)
+        time.sleep(1)
+        if not (result and isinstance(result, dict) and result.get('status')):
+            return False
+        direction_kw = '买' if action == 'buy' else '卖'
+        for row in result.get('data', []):
+            if not row or len(row) < 11:
+                continue
+            if str(row[2]) != code:
+                continue
+            if direction_kw not in str(row[4]):
+                continue
+            if contract_no and str(row[10]) != contract_no:
+                continue
+            try:
+                qty = int(float(row[6]))
+            except ValueError:
+                continue
+            if qty != shares:
+                continue
+            remark = str(row[5])
+            filled = (('已成' in remark or '全部' in remark)
+                      and '未成' not in remark and '撤' not in remark)
+            if filled:
+                return True
+        return False
+    except Exception as ex:
+        log.warning(f"  [核验] 状态查询异常: {ex}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 单腿平仓循环（市价→跌停/涨停→循环到14:57）
+# ══════════════════════════════════════════════════════════════════════════
+
+CLOSE_MARKET_WAIT   = 20   # 市价单等待成交秒数
+CLOSE_DEADLINE_HHMM = (14, 57)   # 放弃时间 (hour, minute)
+CLOSE_RETRY_INTERVAL = 5  # 每次轮询间隔秒数
+
+
+def _past_deadline() -> bool:
+    now = datetime.now()
+    h, m = CLOSE_DEADLINE_HHMM
+    return (now.hour, now.minute) >= (h, m)
+
+
+def _clear_chase_state(pair_id: str, code: str) -> None:
+    """
+    平仓成功后，清掉 orders/t0_chase_state.json 里该配对的追价记录，
+    避免第二天继续追。删除 key 为 pair_id 的条目，保留其他条目。
+    注意：不动 portfolio.json 里的 t0_leg_added（那是加仓幂等标记，不能删）。
+    """
+    chase_path = os.path.join(ORDERS_DIR, 't0_chase_state.json')
+    try:
+        if not os.path.exists(chase_path):
+            log.info(f"  [{pair_id}] t0_chase_state.json 不存在，无需清除")
+            return
+        with open(chase_path, encoding='utf-8') as f:
+            chase = json.load(f)
+        if pair_id in chase:
+            del chase[pair_id]
+            with open(chase_path, 'w', encoding='utf-8') as f:
+                json.dump(chase, f, ensure_ascii=False, indent=2)
+            log.info(f"  [{pair_id}] 追价记录已清除（t0_chase_state.json[{pair_id}]）")
+        else:
+            log.info(f"  [{pair_id}] t0_chase_state.json 中无该配对记录，跳过")
+    except Exception as ex:
+        log.warning(f"  [{pair_id}] 清除追价状态失败（不影响平仓结果）: {ex}")
+
+
+def close_single_leg(code: str, pair_id: str, action: str,
+                     shares: int) -> bool:
+    """
+    单腿平仓主循环（在撤单完成后调用）。
+    action: 'sell' 或 'buy'
+    shares: 需平仓股数
+
+    流程：
+      第一档  市价单(price=None)，等 CLOSE_MARKET_WAIT 秒核验
+      第二档  跌停/涨停价，每 CLOSE_RETRY_INTERVAL 秒重试，直到 14:57
+      超时后报 ALERT（含已尝试的价格和合同号），返回 False
+
+    DRY_RUN 时完整走逻辑、打印所有步骤，不真实下单，直接返回 True。
+    """
+    now_str = lambda: datetime.now().strftime('%H:%M:%S')
+    attempt = 0
+    tried_contracts = []   # [(价格类型, 价格, 合同号)]
+    tried_prices    = []
+
+    # ── 第一档：市价单 ────────────────────────────────────────────────────
+    attempt += 1
+    price_type = '对手价(市价)'
+    log.info(f"  [{now_str()}] [{pair_id}] 平仓尝试#{attempt} "
+             f"方向={action} 股数={shares} 价格类型={price_type}")
+
+    ok, raw = place_order_market(action, code, shares, price=None)
+    contract = ''
+    if ok or DRY_RUN:
+        if DRY_RUN:
+            contract = 'DRY-RUN-contract'
+        else:
+            contract = find_contract_from_entrust(code, action, shares) or ''
+        log.info(f"  [{now_str()}] [{pair_id}] 下单返回={raw} 合同号={contract or '未取到'}")
+        tried_contracts.append((price_type, 'None', contract))
+        tried_prices.append(price_type)
+    else:
+        log.warning(f"  [{now_str()}] [{pair_id}] 市价单下单失败 raw={raw}")
+        tried_contracts.append((price_type, 'None', ''))
+        tried_prices.append(price_type)
+
+    # 等待 CLOSE_MARKET_WAIT 秒，轮询成交状态
+    if not DRY_RUN:
+        deadline_ts = time.time() + CLOSE_MARKET_WAIT
+        while time.time() < deadline_ts:
+            time.sleep(CLOSE_RETRY_INTERVAL)
+            if _is_order_filled_from_entrust(code, action, shares, contract):
+                log.info(f"  [{now_str()}] [{pair_id}] ✅ 市价单已成交 合同号={contract}")
+                _clear_chase_state(pair_id, code)
+                return True
+            log.info(f"  [{now_str()}] [{pair_id}] 市价单等待中… 合同号={contract}")
+    else:
+        log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 跳过等待，模拟场景a(一次成交)直接返回True")
+        log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 将清除追价记录 {pair_id}")
+        return True
+
+    log.info(f"  [{now_str()}] [{pair_id}] 市价单 {CLOSE_MARKET_WAIT}s 未成交，切换第二档限价")
+
+    # ── 第二档：涨跌停价，循环到 14:57 ──────────────────────────────────
+    limit_price = get_limit_price(code, action)
+    if limit_price <= 0:
+        log.error(f"  [{now_str()}] [{pair_id}] 涨跌停价取不到，无法继续")
+        # 仍然走到最终告警
+
+    while not _past_deadline():
+        attempt += 1
+        price_type = ('跌停价' if action == 'sell' else '涨停价')
+        log.info(f"  [{now_str()}] [{pair_id}] 平仓尝试#{attempt} "
+                 f"方向={action} 股数={shares} 价格类型={price_type} 价格={limit_price}")
+
+        if limit_price > 0:
+            ok, raw = place_order_market(action, code, shares, price=limit_price)
+            contract2 = ''
+            if ok:
+                contract2 = find_contract_from_entrust(code, action, shares) or ''
+                log.info(f"  [{now_str()}] [{pair_id}] 下单返回={raw} 合同号={contract2 or '未取到'}")
+                tried_contracts.append((price_type, limit_price, contract2))
+                tried_prices.append(f"{price_type}={limit_price}")
+
+                # 等一个间隔再核验
+                time.sleep(CLOSE_RETRY_INTERVAL)
+                if _is_order_filled_from_entrust(code, action, shares, contract2):
+                    log.info(f"  [{now_str()}] [{pair_id}] ✅ {price_type}单已成交 "
+                             f"合同号={contract2}")
+                    _clear_chase_state(pair_id, code)
+                    return True
+            else:
+                log.warning(f"  [{now_str()}] [{pair_id}] {price_type}下单失败 raw={raw}")
+                tried_contracts.append((price_type, limit_price, ''))
+                tried_prices.append(f"{price_type}={limit_price}(下单失败)")
+                time.sleep(CLOSE_RETRY_INTERVAL)
+        else:
+            time.sleep(CLOSE_RETRY_INTERVAL)
+
+    # ── 14:57 超时，报警 ─────────────────────────────────────────────────
+    tried_summary = '; '.join(
+        f"#{i+1} {pt} price={pr} contractNo={cn}"
+        for i, (pt, pr, cn) in enumerate(tried_contracts)
+    )
+    log.error(
+        f"[ALERT] [{pair_id}] {code} {shares}股 平仓失败，已过14:57截止时间，存在过夜风险！\n"
+        f"  已尝试: {tried_summary}\n"
+        f"  最后限价: {limit_price}"
+    )
+    return False
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 市场行情
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1075,23 +1427,16 @@ def main():
             _log_record(code, close_action, shares, price, '撤单失败跳过', False, contract)
             continue
 
-        # ── 取对手价 ──────────────────────────────────────────────────
-        close_price = get_close_price(code, close_action)
-        if close_price <= 0:
-            log.error(f"  [{code}] 行情获取失败，跳过平仓")
-            _log_record(code, close_action, shares, price, '行情失败跳过', False, contract)
-            continue
+        log.info(f"  [{code}] 平仓: {close_action} {shares}股（原成交价 {price}）原因=T0尾盘平仓 → 进入市价/限价循环")
 
-        log.info(f"  [{code}] 平仓: {close_action} {shares}股 @{close_price}（原成交价 {price}）原因=T0尾盘平仓")
-
-        # ── 下单 ──────────────────────────────────────────────────────
-        ok = place_order(close_action, code, shares, close_price)
-        _log_record(code, close_action, shares, close_price, 'T0尾盘平仓', ok, contract)
+        # ── 单腿平仓循环（市价→跌停/涨停→重试到14:57）─────────────────
+        ok = close_single_leg(code, pair_id, close_action, shares)
+        _log_record(code, close_action, shares, 0.0, 'T0尾盘平仓(市价循环)', ok, contract)
 
         if ok:
-            log.info(f"  [{code}] 平仓下单{'成功（dry-run）' if DRY_RUN else '成功'}")
+            log.info(f"  [{code}] 平仓{'成功（dry-run）' if DRY_RUN else '成功'}")
         else:
-            log.error(f"  [{code}] 平仓下单失败")
+            # close_single_leg 内部已打印 ALERT，此处追加过夜风险记录
             _overnight_risk.append((code, shares))
 
     # ── 最终告警 + 退出码 ────────────────────────────────────────────────
