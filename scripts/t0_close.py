@@ -284,6 +284,19 @@ def get_real_holding_shares(code: str) -> int:
     接口正常但未持仓返回 0；接口失败返回 -1。
     注意：调用前需已通过 ensure_iface()。
     """
+    info = get_real_holding_info(code)
+    return info['shares']
+
+
+def get_real_holding_info(code: str) -> dict:
+    """
+    通过 getHoldingShares 获取当前真实持仓完整信息。
+    返回 dict: shares / available / avg_cost
+    shares=-1 表示接口失败。
+    row 列顺序（与 trade.py sync 一致）：
+      [0]=代码 [1]=名称 [2]=现价 [6]=总持股 [8]=可用余额 [9]=冻结 [10]=成本价
+    """
+    _default = {'shares': -1, 'available': 0, 'avg_cost': 0.0}
     try:
         from evolving.evolving import EvolvingSim
         e = EvolvingSim()
@@ -291,15 +304,18 @@ def get_real_holding_shares(code: str) -> int:
         time.sleep(1)
         if not (result and isinstance(result, dict) and result.get('status')):
             log.warning(f"  [{code}] getHoldingShares status=False（unknown err）")
-            return -1
+            return _default
         for row in result.get('data', []):
-            if row and str(row[0]) == code:
-                # row[6] = 股票余额（与 trade.py sync 一致）
-                return int(float(row[6]))
-        return 0
+            if row and len(row) > 10 and str(row[0]) == code:
+                return {
+                    'shares':    int(float(row[6])),
+                    'available': int(float(row[8])),
+                    'avg_cost':  float(row[10]),
+                }
+        return {'shares': 0, 'available': 0, 'avg_cost': 0.0}
     except Exception as ex:
         log.warning(f"  [{code}] getHoldingShares 异常: {ex}")
-        return -1
+        return _default
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -487,7 +503,8 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
 
     # ── 源2：真实持仓 vs 基准持仓 ─────────────────────────────────────
     baseline, baseline_src = get_baseline_shares(code, buy_order)
-    real_shares = get_real_holding_shares(code)
+    real_info   = get_real_holding_info(code)   # 含 shares / available / avg_cost
+    real_shares = real_info['shares']
     log.info(f"  [{pair_id}] 基线来源: {baseline_src}，baseline={baseline}")
 
     if real_shares >= 0:
@@ -519,11 +536,14 @@ def detect_leg_status(code: str, buy_order: dict, sell_order: dict, pair_id: str
     final_sell_filled = file_sell_filled or hold_sell_filled or ent_sell_filled
 
     return {
-        'buy_filled':  final_buy_filled,
-        'sell_filled': final_sell_filled,
-        'iface_ok':    True,
+        'buy_filled':   final_buy_filled,
+        'sell_filled':  final_sell_filled,
+        'iface_ok':     True,
         'inconclusive': False,
-        '_entrusts':   entrusts,
+        '_entrusts':    entrusts,
+        # 供 main() 仓位对齐用，iface_ok=True 且 real_shares>=0 时才可信
+        '_real_info':   real_info,
+        '_baseline':    baseline,
         'evidence': {
             'file':     ev_file,
             'holdings': ev_holdings,
@@ -786,6 +806,96 @@ def main_verify():
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 防仓位走高：买入腿成交、卖出腿未成交 → 额外份额转普通持仓，消耗金字塔名额
+# ══════════════════════════════════════════════════════════════════════════
+
+def _handle_t0_leg_to_position(code: str, pair_id: str, buy_shares: int, status: dict) -> None:
+    """
+    买入腿成交、卖出腿未成交时调用。
+    条件：接口可用（iface_ok=True）且真实持仓已取到（real_shares >= 0）。
+
+    1. 幂等检查：_signal_state[code]['t0_leg_added'][pair_id] == today → 跳过
+    2. add_count +1，_signal_state[code]['shares'/'avg_cost'] 按真实持仓对齐
+       positions[code]['shares'/'available'/'avg_cost'] 按真实持仓对齐
+    3. 写回 portfolio.json
+    4. 打印日志
+
+    接口不可用或 real_shares < 0 时直接返回，不做任何修改。
+    """
+    # ── 前置守卫：必须有真实持仓数据 ────────────────────────────────────
+    if not status.get('iface_ok', False):
+        log.warning(f"  [{code}] 接口不可用，跳过仓位对齐和加仓次数更新（避免误判）")
+        return
+
+    real_info = status.get('_real_info', {})
+    real_shares = real_info.get('shares', -1)
+    if real_shares < 0:
+        log.warning(f"  [{code}] 真实持仓获取失败（shares=-1），跳过仓位对齐和加仓次数更新")
+        return
+
+    real_available = real_info.get('available', 0)
+    real_avg_cost  = real_info.get('avg_cost',  0.0)
+    baseline       = status.get('_baseline', 0)
+    excess         = real_shares - baseline
+
+    if excess <= 0:
+        log.info(f"  [{code}] 真实持仓({real_shares}) <= 基线({baseline})，无超出份额，跳过")
+        return
+
+    today = _today()
+
+    # ── 读取 portfolio.json ───────────────────────────────────────────────
+    try:
+        with open(PORTFOLIO_JSON, encoding='utf-8') as f:
+            pf = json.load(f)
+    except Exception as ex:
+        log.error(f"  [{code}] 读 portfolio.json 失败，跳过: {ex}")
+        return
+
+    sig = pf.setdefault('_signal_state', {}).setdefault(code, {})
+
+    # ── 幂等检查 ──────────────────────────────────────────────────────────
+    leg_added = sig.setdefault('t0_leg_added', {})
+    if leg_added.get(pair_id) == today:
+        log.info(f"  [{code}] [T0转持仓] 配对 {pair_id} 今日已处理过，跳过（幂等）")
+        return
+
+    # ── 更新 add_count ────────────────────────────────────────────────────
+    old_count = int(sig.get('add_count', 0))
+    new_count = old_count + 1
+    sig['add_count'] = new_count
+
+    # ── 对齐 _signal_state 持仓字段 ───────────────────────────────────────
+    sig['shares']   = real_shares
+    if real_avg_cost > 0:
+        sig['avg_cost'] = real_avg_cost
+
+    # ── 对齐 positions[code] ──────────────────────────────────────────────
+    pos = pf.setdefault('positions', {}).setdefault(code, {})
+    pos['shares']    = real_shares
+    pos['available'] = real_available
+    if real_avg_cost > 0:
+        pos['avg_cost'] = real_avg_cost
+
+    # ── 标记幂等 key ──────────────────────────────────────────────────────
+    leg_added[pair_id] = today
+
+    # ── 写回 portfolio.json ───────────────────────────────────────────────
+    try:
+        with open(PORTFOLIO_JSON, 'w', encoding='utf-8') as f:
+            json.dump(pf, f, ensure_ascii=False, indent=2)
+    except Exception as ex:
+        log.error(f"  [{code}] 写 portfolio.json 失败: {ex}")
+        return
+
+    log.info(
+        f"[T0转持仓] {code} 单腿成交{excess}股转普通持仓，"
+        f"加仓次数 {old_count}→{new_count}（已用掉一个金字塔名额）"
+        f"  real={real_shares} available={real_available} avg_cost={real_avg_cost}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 主流程
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -903,6 +1013,16 @@ def main():
 
         log.info(f"  [{pair_id}] 已成交腿={filled_order['action']} {shares}股 @{price}，"
                  f"需撤 {pending_order['action']} contractNo={contract}，平仓方向={close_action}")
+
+        # ── 防仓位走高：买入腿成交、卖出腿未成交 → 额外份额转普通持仓 ──────
+        # 只在 buy_filled and not sell_filled 时执行；接口不可用时跳过
+        if buy_filled and not sell_filled:
+            _handle_t0_leg_to_position(
+                code=code,
+                pair_id=pair_id,
+                buy_shares=int(buy_order.get('shares', 0)),
+                status=status,
+            )
 
         # ── 数量校验 ──────────────────────────────────────────────────
         try:
