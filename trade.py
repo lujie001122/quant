@@ -309,9 +309,17 @@ def sync():
                     continue
                 code = row[0]
                 try:
-                    shares_val = int(row[6])
+                    shares_val = int(row[6])   # 实际数量（总持股）
                 except (ValueError, TypeError):
                     shares_val = 0
+                try:
+                    available_val = int(row[8])  # 可用余额
+                except (ValueError, TypeError):
+                    available_val = 0
+                try:
+                    frozen_val = int(row[9])     # 冻结数量
+                except (ValueError, TypeError):
+                    frozen_val = 0
                 try:
                     cost = float(row[10])
                 except (ValueError, TypeError):
@@ -328,7 +336,9 @@ def sync():
                     base_price = signal_state.get('base_price') or cost
                     pf['positions'][code] = {
                         'name': name,
-                        'shares': shares_val,
+                        'shares': shares_val,      # 总持股（实际数量，含冻结）
+                        'available': available_val, # 可用股数（做T/卖出时参考）
+                        'frozen': frozen_val,        # 冻结股数（已挂卖单等）
                         'avg_cost': cost,
                         'current_price': cur_price,
                         'market_value': float(row[11]),

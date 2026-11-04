@@ -389,9 +389,11 @@ class T0Strategy(BaseStrategy):
 
         return result
 
-    def evaluate_t0_execute(self, result, t, pos, price, today_str, atr_pct, record_t0=True):
+    def evaluate_t0_execute(self, result, t, pos, price, today_str, atr_pct, record_t0=True, available_shares=None):
         """从 evaluate_t0 结果中解析出具体的执行动作
 
+        available_shares: 可用股数（不含冻结）。卖出路径用此值限制卖出量；
+                          传 None 时退回 pos.shares（向后兼容）。
         返回: (action, position_ratio, trade_type, reason, t0_pair) 或 None
         """
         buy_score = result["buy_score"]
@@ -447,7 +449,15 @@ class T0Strategy(BaseStrategy):
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_shares = max(int(pos.shares * ratio / 100) * 100, _CONF.get("trade", {}).get("min_shares", 5000))
+                    min_shares = _CONF.get("trade", {}).get("min_shares", 5000)
+                    # 卖出腿以可用股数为上限（available_shares=None 时退回 pos.shares 保持向后兼容）
+                    avail = available_shares if available_shares is not None else pos.shares
+                    sell_cap = int(avail / 100) * 100  # 向下取整到整百
+                    if sell_cap < min_shares:
+                        log.info(f"[T0] 可用股数{avail}不足最小交易单位{min_shares}，跳过本次做T")
+                        print(f"[T0] 可用股数{avail}不足最小交易单位{min_shares}，跳过本次做T")
+                        return None
+                    pair_shares = min(max(int(pos.shares * ratio / 100) * 100, min_shares), sell_cap)
                     pair_price = calc_t0_pair_price(price, pair_shares, False, atr_5min=atr_5m)  # Bug D: 传入ATR
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(price - pair_price) * pair_shares
