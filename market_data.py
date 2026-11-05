@@ -413,6 +413,7 @@ from factors.macd import calc_macd
 from factors.atr import calc_atr
 from factors.ao import calc_ao
 
+
 def calc_vol_ratio_120min(volumes, period=20):
     if len(volumes) < period + 1:
         return None

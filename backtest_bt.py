@@ -384,6 +384,7 @@ class ETFStrategy(bt.Strategy):
         self.daily_values = []
         self._order_pending = {}  # data_name -> order
         self._last_date = ""  # 上次交易日，用于每日计数器重置
+
         self._day_count = 0  # 交易日计数器，用于重平衡周期判断
 
         # Bug14: PositionInfo 缓存 — 避免每次 _build_pos_and_tech 新建实例
@@ -2129,7 +2130,6 @@ def main():
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
     rotation_interval = 5  # 每周轮动间隔(天): 5天最优(周轮动) | 20天(月轮动)
-
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
