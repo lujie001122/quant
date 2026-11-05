@@ -135,24 +135,32 @@ def _fetch_contract(e, code, direction, price, shares):
     return 'pending'
 
 
-def _verify_order_in_entrust(e, code, direction, shares, price=None):
-    """下单后强制核验：查当日委托表，匹配 代码+方向+数量 且拿到合同号才算成功。
+def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None):
+    """下单后强制核验：查当日委托表，匹配 代码+方向 且拿到合同号才算成功。
     不允许用返回码为0当作成交依据。接口查不到视为未知，不得当作成功。
 
-    轮询策略：最多5次，每次间隔2秒，匹配即返回成功；5次都未匹配则判失败。
-    接口返回异常(unknown err)时同样重试，5次后判失败。
+    轮询策略：最多8次，每次间隔3秒，匹配即返回成功；8次都未匹配则判失败。
+    接口返回异常(unknown err)时同样重试，8次后判失败。
+
+    匹配规则：
+      - 代码 + 方向 必须完全匹配
+      - since: 下单时刻(HH:MM:SS)，委托时间早于该时刻的记录一律跳过（防误匹配同日旧单）
+      - 数量容差：只接受数量相等或差异不超过100股的记录；差异超过100股不算匹配
+      - 委托表时间在第1列（格式 HH:MM:SS）
+      - 状态含"成交"字样的记录优先匹配并在日志中标注
+      - 只有时间窗口内完全找不到满足数量容差的记录才返回失败
 
     返回:
       (True, contract, detail)   核验通过，contract为合同号
-      (False, '', detail)         核验失败（未找到匹配 或 接口异常）
+      (False, '', detail)         核验失败
     """
-    MAX_TRIES = 5
+    MAX_TRIES = 8
     last_ent = None
     last_rows = []
     last_reason = ''
 
     for attempt in range(1, MAX_TRIES + 1):
-        time.sleep(2)
+        time.sleep(3)
         try:
             ent = e.getEntrust('today', False)
         except Exception as ex:
@@ -171,8 +179,12 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None):
         rows = ent['data']
         last_ent = ent
         last_rows = [str(r) for r in rows if r and len(r) >= 11]
-        print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录，未匹配。")
+        print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录。")
 
+        # 匹配：代码+方向+时间窗口+数量容差（≤100股）
+        # 优先匹配含"成交"状态的记录
+        best_row = None
+        best_filled = False
         for row in rows:
             if not row or len(row) < 11:
                 continue
@@ -183,24 +195,44 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None):
                 continue
             if direction == '卖出' and '卖' not in row_op:
                 continue
+            contract = str(row[10]).strip()
+            if not contract or contract == '0':
+                continue
+            # 时间窗口：委托时间 >= since
+            if since:
+                row_time = str(row[1]).strip()
+                if row_time < since:
+                    continue
+            # 数量容差：差异不超过100股
             try:
                 row_shares = int(row[6])
             except (ValueError, TypeError):
                 continue
-            if row_shares != shares:
+            if abs(row_shares - shares) > 100:
                 continue
-            contract = str(row[10]).strip()
-            if not contract or contract == '0':
-                continue
-            # 匹配成功，覆盖上面已打印的"未匹配"提示
-            print(f"  第{attempt}次即匹配: {code} {direction} {shares}股 合同号={contract}")
-            return True, contract, f"匹配成功: {code} {direction} {shares}股 合同号={contract}"
+            # 检查状态是否含"成交"
+            row_status = str(row[5]).strip() if len(row) > 5 else ''
+            is_filled = '成交' in row_status or '成交' in row_op
+            if best_row is None or (is_filled and not best_filled):
+                best_row = row
+                best_filled = is_filled
+        if best_row is not None:
+            try:
+                matched_shares = int(best_row[6])
+            except (ValueError, TypeError):
+                matched_shares = -1
+            contract = str(best_row[10]).strip()
+            filled_tag = '(已成交)' if best_filled else ''
+            shares_tag = '' if matched_shares == shares else f'(委托量={matched_shares}≠信号量={shares},差异{abs(matched_shares-shares)}股)'
+            since_tag = f' since>={since}' if since else ''
+            print(f"  第{attempt}次即匹配{filled_tag}: {code} {direction} 合同号={contract}{shares_tag}{since_tag}")
+            return True, contract, f"匹配成功: {code} {direction} 合同号={contract}{filled_tag}{shares_tag}{since_tag}"
 
-        last_reason = f"委托表共{len(last_rows)}条，未找到 {code} {direction} {shares}股"
+        last_reason = f"委托表共{len(last_rows)}条，时间窗口内未找到 {code} {direction} 数量容差≤100股的有效记录"
 
-    # 5次都未匹配 — 失败
+    # 8次都未匹配 — 失败
     detail = (
-        f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} 数量={shares}股\n"
+        f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} since={since}\n"
         f"  原始返回: {last_ent}\n"
         f"  最后一次委托表条数: {len(last_rows)}条\n"
         f"  最后一次判定依据: {last_reason}\n"
@@ -483,6 +515,8 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     else:
         method, pair_method, pair_action = 'sell', 'buy', 't0_buy'
 
+    # 下单前记录当前时刻，核验时只认 >= 该时刻的委托记录（防误匹配同日旧单）
+    _order_since = time.strftime("%H:%M:%S")
     # 下单
     time.sleep(2)
     result = _call_evolving(method, code, shares, price, e=e)
@@ -522,7 +556,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     # ═══ 强制核验：查当日委托表，匹配 代码+方向+数量 且拿到合同号，才算成功 ═══
     # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
     direction_main = '买入' if 'buy' in action else '卖出'
-    ok_main, contract_main, detail_main = _verify_order_in_entrust(e, code, direction_main, shares, price)
+    ok_main, contract_main, detail_main = _verify_order_in_entrust(e, code, direction_main, shares, price, since=_order_since)
     if not ok_main:
         print(f"  🚨 核验失败: {code} {direction_main} {shares}股 未在委托表确认")
         print(f"     原始返回: {result}")
@@ -538,7 +572,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         pair_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
         print(f"  📤 配对单 EvolvingSim.{pair_method} 原始返回: {pair_result}")
         direction_pair = '卖出' if 'buy' in action else '买入'
-        ok_pair, contract_pair, detail_pair = _verify_order_in_entrust(e, code, direction_pair, shares, pair_price)
+        ok_pair, contract_pair, detail_pair = _verify_order_in_entrust(e, code, direction_pair, shares, pair_price, since=_order_since)
         if not ok_pair:
             print(f"  🚨 配对单核验失败: {code} {direction_pair} {shares}股 未在委托表确认")
             print(f"     原始返回: {pair_result}")

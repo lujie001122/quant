@@ -1000,16 +1000,24 @@ class SignalExecutor:
         from state_center import write_intent
         write_intent(code, action, direction, mode=mode)
 
-    def _verify_order_via_entrust(self, code, direction, shares):
+    def _verify_order_via_entrust(self, code, direction, shares, since=None):
         """下单后通过 getEntrust 独立核验订单是否真实提交到券商。
         不依赖 trade.py 返回码；接口查不到视为未知，不得当作成功。
 
-        轮询策略：最多5次，每次间隔2秒，匹配即返回成功；5次都未匹配则判失败。
-        接口返回异常(unknown err)时同样重试，5次后判失败。
+        轮询策略：最多8次，每次间隔3秒，匹配即返回成功；8次都未匹配则判失败。
+        接口返回异常(unknown err)时同样重试，8次后判失败。
+
+        匹配规则：
+          - 代码 + 方向 必须完全匹配
+          - since: 下单时刻(HH:MM:SS)，委托时间早于该时刻的记录一律跳过（防误匹配同日旧单）
+          - 数量容差：只接受数量相等或差异不超过100股的记录；差异超过100股不算匹配
+          - 委托表时间在第1列（格式 HH:MM:SS）
+          - 状态含"成交"字样的记录优先匹配并在日志中标注
+          - 只有时间窗口内完全找不到满足数量容差的记录才返回失败
 
         返回:
           (True, detail)   核验通过
-          (False, reason)   核验失败（未找到匹配 或 接口异常）
+          (False, reason)   核验失败
         """
         # 统一方向为中文
         if direction in ('buy', 'Buy', 'BUY'):
@@ -1020,13 +1028,13 @@ class SignalExecutor:
         from evolving.evolving import EvolvingSim
         e = EvolvingSim()
 
-        MAX_TRIES = 5
+        MAX_TRIES = 8
         last_ent = None
         last_rows = []
         last_reason = ''
 
         for attempt in range(1, MAX_TRIES + 1):
-            time.sleep(2)
+            time.sleep(3)
             try:
                 ent = e.getEntrust('today', False)
             except Exception as ex:
@@ -1044,8 +1052,12 @@ class SignalExecutor:
             rows = ent['data']
             last_ent = ent
             last_rows = [str(r) for r in rows if r and len(r) >= 11]
-            print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录，未匹配。")
+            print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录。")
 
+            # 匹配：代码+方向+时间窗口+数量容差（≤100股）
+            # 优先匹配含"成交"状态的记录
+            best_row = None
+            best_filled = False
             for row in rows:
                 if not row or len(row) < 11:
                     continue
@@ -1056,23 +1068,44 @@ class SignalExecutor:
                     continue
                 if direction == '卖出' and '卖' not in row_op:
                     continue
+                contract = str(row[10]).strip()
+                if not contract or contract == '0':
+                    continue
+                # 时间窗口：委托时间 >= since
+                if since:
+                    row_time = str(row[1]).strip()
+                    if row_time < since:
+                        continue
+                # 数量容差：差异不超过100股
                 try:
                     row_shares = int(row[6])
                 except (ValueError, TypeError):
                     continue
-                if row_shares != shares:
+                if abs(row_shares - shares) > 100:
                     continue
-                contract = str(row[10]).strip()
-                if not contract or contract == '0':
-                    continue
-                print(f"  第{attempt}次即匹配: {code} {direction} {shares}股 合同号={contract}")
-                return True, f"{code} {direction} {shares}股 合同号={contract}"
+                # 检查状态是否含"成交"
+                row_status = str(row[5]).strip() if len(row) > 5 else ''
+                is_filled = '成交' in row_status or '成交' in row_op
+                if best_row is None or (is_filled and not best_filled):
+                    best_row = row
+                    best_filled = is_filled
+            if best_row is not None:
+                try:
+                    matched_shares = int(best_row[6])
+                except (ValueError, TypeError):
+                    matched_shares = -1
+                contract = str(best_row[10]).strip()
+                filled_tag = '(已成交)' if best_filled else ''
+                shares_tag = '' if matched_shares == shares else f'(委托量={matched_shares}≠信号量={shares},差异{abs(matched_shares-shares)}股)'
+                since_tag = f' since>={since}' if since else ''
+                print(f"  第{attempt}次即匹配{filled_tag}: {code} {direction} 合同号={contract} {shares_tag}{since_tag}")
+                return True, f"{code} {direction} 合同号={contract}{filled_tag}{shares_tag}{since_tag}"
 
-            last_reason = f"委托表共{len(last_rows)}条，未找到 {code} {direction} {shares}股"
+            last_reason = f"委托表共{len(last_rows)}条，时间窗口内未找到 {code} {direction} 数量容差≤100股的有效记录"
 
-        # 5次都未匹配 — 失败
+        # 8次都未匹配 — 失败
         reason = (
-            f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} 数量={shares}股\n"
+            f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} since={since}\n"
             f"  原始返回: {last_ent}\n"
             f"  最后一次委托表条数: {len(last_rows)}条\n"
             f"  最后一次判定依据: {last_reason}\n"
@@ -1377,6 +1410,8 @@ class SignalExecutor:
             os.system("cliclick c:960,50")
 
             _retry_proc = None  # 断连重试成功后，把 retry_r 注入下一轮，走完整成功路径
+            # 下单前记录当前时刻，核验时只认 >= 该时刻的委托记录（防误匹配同日旧单）
+            _order_since = time.strftime("%H:%M:%S")
             for attempt in range(1, max_retries + 1):
                 try:
                     if _retry_proc is not None:
@@ -1409,10 +1444,54 @@ class SignalExecutor:
 
                         # ═══ 下单后强制核验（不依赖返回码，直接查委托表）═══
                         # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
-                        _v_ok, _v_detail = self._verify_order_via_entrust(code, direction, shares)
+                        _v_ok, _v_detail = self._verify_order_via_entrust(code, direction, shares, since=_order_since)
                         if not _v_ok:
                             print(f"  🚨 核验失败: {_v_detail}")
-                            print(f"  ❌ {code} {direction} {shares}股 委托表未确认，判定失败，不扣做T额度")
+                            # ═══ 防重复下单：核验失败后先查持仓，持仓已变则判定成功，不重试 ═══
+                            _abort_retry = False
+                            try:
+                                _pos_after = self._get_position_shares(code)
+                                _is_liquidate = (trade_type == "liquidate")
+                                if _is_liquidate and (_pos_after == 0 or _pos_after is None):
+                                    print(f"  ✅ 核验失败但持仓已归零 → 清仓已成交，判定成功，不重试")
+                                    _abort_retry = True
+                                    # 补充填充逻辑：视为成功
+                                    after_shares = 0
+                                    success_count += 1
+                                    success = True
+                                    filled_codes.add((code, sig_mode, sig_direction))
+                                    self._write_intent_for_sg(code, sig_mode, sig_direction)
+                                    # O4: 清仓成交确认后重置持仓状态
+                                    try:
+                                        from state_center import load_portfolio, save_portfolio
+                                        from position_info import PositionInfo
+                                        pf = load_portfolio()
+                                        sig_state = pf.get("_signal_state", {}).get(code, {})
+                                        if sig_state:
+                                            pos = PositionInfo()
+                                            pos.from_dict(sig_state)
+                                            pos.reset_on_liquidate(today_str)
+                                            pf.setdefault("_signal_state", {})[code] = pos.to_dict(today_str)
+                                        if code in pf.get("positions", {}):
+                                            del pf["positions"][code]
+                                        save_portfolio(pf)
+                                    except Exception:
+                                        pass
+                                    break
+                                elif not _is_liquidate and _pos_after != before_shares:
+                                    print(f"  ✅ 核验失败但持仓已从{before_shares}→{_pos_after}股 → 判定成交，不重试")
+                                    _abort_retry = True
+                                    after_shares = _pos_after if _pos_after is not None else before_shares
+                                    success_count += 1
+                                    success = True
+                                    filled_codes.add((code, sig_mode, sig_direction))
+                                    self._write_intent_for_sg(code, sig_mode, sig_direction)
+                                    break
+                            except Exception as _chk_ex:
+                                print(f"  ⚠️ 持仓核查异常: {_chk_ex}")
+                            if _abort_retry:
+                                break
+                            print(f"  ❌ {code} {direction} {shares}股 委托表未确认且持仓未变，判定失败，不扣做T额度")
                             final_error = f"委托表核验失败: {_v_detail}"
                             final_error_type = "verify_failed"
                             break
