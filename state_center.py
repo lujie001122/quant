@@ -420,6 +420,46 @@ def get_position_info(code):
     return pf.get("positions", {}).get(code, {})
 
 
+def reset_signal_state_on_liquidate(pf, code, date_str):
+    """
+    统一入口：持仓归零时彻底重置 _signal_state[code] 的止盈止损字段。
+    直接用 PositionInfo.reset_on_liquidate 保证与建仓初始化完全一致。
+    调用方须自行 save_portfolio(pf)。
+    """
+    try:
+        from position_info import PositionInfo
+        sig_state = pf.setdefault("_signal_state", {})
+        old = sig_state.get(code, {})
+        pos = PositionInfo()
+        if old:
+            pos.from_dict(old)
+        pos.reset_on_liquidate(date_str)
+        sig_state[code] = pos.to_dict(date_str)
+        print(f"  🔄 [reset_signal_state] {code} 止盈止损状态已重置 (date={date_str})")
+    except Exception as _e:
+        print(f"  ⚠️ [reset_signal_state] {code} 重置失败: {_e}")
+
+
+def reset_signal_state_on_liquidate(pf, code, date_str):
+    """
+    统一入口：持仓归零时彻底重置 _signal_state[code] 的止盈止损字段。
+    直接用 PositionInfo.reset_on_liquidate 保证与建仓初始化完全一致。
+    调用方须自行 save_portfolio(pf)。
+    """
+    try:
+        from position_info import PositionInfo
+        sig_state = pf.setdefault("_signal_state", {})
+        old = sig_state.get(code, {})
+        pos = PositionInfo()
+        if old:
+            pos.from_dict(old)
+        pos.reset_on_liquidate(date_str)
+        sig_state[code] = pos.to_dict(date_str)
+        print(f"  🔄 [reset_signal_state] {code} 止盈止损状态已重置 (date={date_str})")
+    except Exception as _e:
+        print(f"  ⚠️ [reset_signal_state] {code} 重置失败: {_e}")
+
+
 # ====================================================================
 # 三、订单管理（orders/ 目录）
 # ====================================================================

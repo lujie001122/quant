@@ -401,6 +401,8 @@ def sync():
                         # 当日委托证明已清仓，立即删除
                         del pf['positions'][code]
                         zero_counts.pop(code, None)
+                        from state_center import reset_signal_state_on_liquidate
+                        reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
                     else:
                         n = zero_counts.get(code, 0) + 1
                         zero_counts[code] = n
@@ -408,6 +410,8 @@ def sync():
                             del pf['positions'][code]
                             zero_counts.pop(code, None)
                             print(f"[SYNC] {code} 连续3次返回0股，判定已清仓，删除持仓")
+                            from state_center import reset_signal_state_on_liquidate
+                            reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
                         else:
                             print(f"[SYNC] {code} 返回0股，第 {n} 次，保留原持仓 {old}股")
 

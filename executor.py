@@ -1479,17 +1479,11 @@ class SignalExecutor:
                                     success = True
                                     filled_codes.add((code, sig_mode, sig_direction))
                                     self._write_intent_for_sg(code, sig_mode, sig_direction)
-                                    # O4: 清仓成交确认后重置持仓状态
+                                    # O4: 清仓成交确认后重置持仓状态（统一入口）
                                     try:
-                                        from state_center import load_portfolio, save_portfolio
-                                        from position_info import PositionInfo
+                                        from state_center import load_portfolio, save_portfolio, reset_signal_state_on_liquidate
                                         pf = load_portfolio()
-                                        sig_state = pf.get("_signal_state", {}).get(code, {})
-                                        if sig_state:
-                                            pos = PositionInfo()
-                                            pos.from_dict(sig_state)
-                                            pos.reset_on_liquidate(today_str)
-                                            pf.setdefault("_signal_state", {})[code] = pos.to_dict(today_str)
+                                        reset_signal_state_on_liquidate(pf, code, today_str)
                                         if code in pf.get("positions", {}):
                                             del pf["positions"][code]
                                         save_portfolio(pf)
@@ -1608,19 +1602,12 @@ class SignalExecutor:
                             except Exception as _sc_err:
                                 print(f"  [SELL-CHASE] 记录追价状态失败: {_sc_err}")
 
-                        # ═══ O4: 清仓成交确认后重置持仓状态 ═══
+                        # ═══ O4: 清仓成交确认后重置持仓状态（统一入口）═══
                         if trade_type == "liquidate":
                             try:
-                                from state_center import load_portfolio, save_portfolio
-                                from position_info import PositionInfo
+                                from state_center import load_portfolio, save_portfolio, reset_signal_state_on_liquidate
                                 pf = load_portfolio()
-                                # 从 _signal_state 读取（与 PositionInfo.to_dict 格式一致）
-                                sig_state = pf.get("_signal_state", {}).get(code, {})
-                                if sig_state:
-                                    pos = PositionInfo()
-                                    pos.from_dict(sig_state)
-                                    pos.reset_on_liquidate(today_str)
-                                    pf.setdefault("_signal_state", {})[code] = pos.to_dict(today_str)
+                                reset_signal_state_on_liquidate(pf, code, today_str)
                                 # 同时清理 positions[code]
                                 if code in pf.get("positions", {}):
                                     del pf["positions"][code]
