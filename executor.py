@@ -1391,19 +1391,37 @@ class SignalExecutor:
             success = False
             final_error = None
             final_error_type = None
-            # before_shares 必须从 portfolio.json 读当前值，绝不允许用 0 兜底
+            # before_shares: 优先 portfolio.json；无记录时查券商；券商异常才跳过
             try:
                 from state_center import load_portfolio as _lp_bs
                 _pf_bs = _lp_bs()
-                before_shares = _pf_bs.get("positions", {}).get(code, {}).get("shares", None)
-                if before_shares is None:
-                    print(f"  ⚠️ [{code}] portfolio.json 中无此标的持仓记录，before_shares 无法确定，跳过此笔")
-                    fail_count += 1
-                    continue
+                _bs_from_pf = _pf_bs.get("positions", {}).get(code, {}).get("shares", None)
             except Exception as _bs_ex:
                 print(f"  ⚠️ [{code}] 读取 portfolio.json 失败: {_bs_ex}，跳过此笔")
                 fail_count += 1
                 continue
+
+            if _bs_from_pf is not None:
+                before_shares = _bs_from_pf
+                print(f"  [{code}] before_shares={before_shares} 来源=portfolio.json")
+            else:
+                # portfolio 无记录（新建仓场景）→ 查券商
+                try:
+                    _broker_shares = self._get_position_shares(code)
+                    if _broker_shares is None:
+                        # 券商持仓列表里无该代码 → 合法新建仓
+                        before_shares = 0
+                        print(f"  [{code}] before_shares=0 来源=券商持仓(无该标的) → 判定为新建仓")
+                    elif _broker_shares == 0:
+                        before_shares = 0
+                        print(f"  [{code}] before_shares=0 来源=券商持仓(股数=0) → 判定为新建仓")
+                    else:
+                        before_shares = _broker_shares
+                        print(f"  [{code}] before_shares={before_shares} 来源=券商持仓")
+                except Exception as _broker_ex:
+                    print(f"  🚨 [{code}] 券商接口异常: {_broker_ex}，before_shares 无法确定，跳过此笔")
+                    fail_count += 1
+                    continue
             after_shares = before_shares  # 默认保持原值，只有实查确认才更新
 
             os.system("open -a 同花顺")
