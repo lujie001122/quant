@@ -410,13 +410,21 @@ class T0Strategy(BaseStrategy):
                 return None
 
             if "买入" in t0_signal:
+                # ── 问题二修复: 买入腿必须检查可用股数 >= 配对卖出股数（T+1限制）──
+                avail_buy = available_shares if available_shares is not None else pos.shares
+                ratio = _CONF.get("t0", {}).get("t0_buy_ratio", 0.30)
+                min_shares_cfg = _CONF.get("trade", {}).get("min_shares", 5000)
+                needed = max(int(pos.shares * ratio / 100) * 100, min_shares_cfg)
+                if avail_buy < needed:
+                    log.info(f"[T0] 可用股数{avail_buy} < 配对股数{needed}，T+1限制，跳过本次做T")
+                    print(f"[T0] 可用股数{avail_buy} < 配对股数{needed}，T+1限制，跳过本次做T")
+                    return None
                 if record_t0:
                     pos.record_t0(today_str)
-                ratio = _CONF.get("t0", {}).get("t0_buy_ratio", 0.30)
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
-                    pair_shares = max(int(pos.shares * ratio / 100) * 100, _CONF.get("trade", {}).get("min_shares", 5000))
+                    pair_shares = max(int(pos.shares * ratio / 100) * 100, min_shares_cfg)
                     pair_price = calc_t0_pair_price(price, pair_shares, True, atr_5min=atr_5m)  # Bug D: 传入ATR
                     if pair_shares >= 100 and pair_price > 0:
                         spread = abs(pair_price - price) * pair_shares

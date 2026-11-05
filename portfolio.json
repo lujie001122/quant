@@ -18,7 +18,7 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 64.73,
+      "prev_rsi": 67.8,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
@@ -145,10 +145,10 @@
       "available": 0,
       "frozen": 25000,
       "avg_cost": 0.703,
-      "current_price": 0.705,
-      "market_value": 17625.0,
-      "pnl": 44.73,
-      "pnl_pct": 0.25,
+      "current_price": 0.706,
+      "market_value": 17650.0,
+      "pnl": 69.73,
+      "pnl_pct": 0.4,
       "base_price": 0.703
     },
     "512800": {
@@ -157,31 +157,31 @@
       "available": 0,
       "frozen": 40600,
       "avg_cost": 0.864,
-      "current_price": 0.863,
-      "market_value": 35037.8,
-      "pnl": -41.12,
-      "pnl_pct": -0.12,
+      "current_price": 0.869,
+      "market_value": 35281.4,
+      "pnl": 202.48,
+      "pnl_pct": 0.58,
       "base_price": 0.865
     },
     "512890": {
       "name": "红利低波ETF",
-      "shares": 28800,
+      "shares": 46000,
       "available": 0,
-      "frozen": 28800,
-      "avg_cost": 1.215,
-      "current_price": 1.216,
-      "market_value": 35020.8,
-      "pnl": 18.3,
-      "pnl_pct": 0.05,
+      "frozen": 46000,
+      "avg_cost": 1.217,
+      "current_price": 1.221,
+      "market_value": 56166.0,
+      "pnl": 199.01,
+      "pnl_pct": 0.36,
       "base_price": 1.216
     }
   },
   "account": {
-    "total_asset": 198588.22,
-    "cash": 110655.82,
-    "market_value": 87932.4
+    "total_asset": 198788.73,
+    "cash": 89691.33,
+    "market_value": 109097.4
   },
-  "last_updated": "2026-11-05 14:15",
+  "last_updated": "2026-11-05 14:41",
   "_today_open": {
     "date": "2026-11-04",
     "asset": 0.0

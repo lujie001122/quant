@@ -915,6 +915,34 @@ class SignalExecutor:
         self._save_sell_chase_state(state)
         print(f"[SELL-CHASE] 记录追价 {_key}: contract={_contract} shares={shares}")
 
+    def _check_t0_buy_idempotent(self, code: str, shares: int) -> bool:
+        """做T买入下单前幂等检查（一次信号只允许下一单）。
+
+        读取 orders/*.json 当日记录：
+          - 已存在 code + action=t0_buy 的订单（任意状态：filled/pending/failed/...）
+            则判定为今日已下过该单，返回 False（不允许再下）。
+          - 否则返回 True。
+        核验失败/未知不在本方法处理，由后续 _verify_order_via_entrust 三态判定，
+        无论如何不会在本方法触发重下单。
+        """
+        try:
+            from state_center import load_today_orders
+            today_orders = load_today_orders()
+        except Exception as ex:
+            # 读取失败时保守起见放行，但打告警；下单核验阶段会再判
+            print(f"  ⚠️ [T0幂等] 读取今日订单失败({ex})，放行但依赖后续核验")
+            return True
+        for fname, ord_data in today_orders.items():
+            if ord_data.get('code') != code:
+                continue
+            if ord_data.get('action', '') != 't0_buy':
+                continue
+            status = ord_data.get('status', '')
+            # 任意已下单记录都视为今日已下过（filled/pending/partial/failed 均阻塞）
+            print(f"  [T0幂等] {code} 今日已有做T买入记录 {fname} status={status}，不允许重复下单")
+            return False
+        return True
+
     def _record_t0_pair_after_execute(self, code: str, action: str, shares: int):
         """T0 配对单下发成功后，读取 orders/*.json 里真实合同号，写入追价状态（写入点①）。
         调用点: executor.py execute_signals t0 下单成功后（见下方 # ═══ T0 追价记录 ═══）
@@ -1308,6 +1336,12 @@ class SignalExecutor:
                     continue
 
                 if "买入" in action:
+                    # ── 问题一修复: 做T买入下单前幂等检查，一次信号只允许下一单 ──
+                    _t0_buy_idempotent_ok = self._check_t0_buy_idempotent(code, pair_shares)
+                    if not _t0_buy_idempotent_ok:
+                        print(f"  🚨 [T0幂等] {code} 今日做T买入已有挂单/成交记录，本次跳过，不重复下单")
+                        skip_count += 1
+                        continue
                     cmd = ["python3", trade_script, "t0_buy",
                            code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"]
                     label = f"做T买入 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
@@ -1332,6 +1366,12 @@ class SignalExecutor:
                 shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 atr_5min = sig.get('atr_5min', 0)
                 if "买入" in action:
+                    # ── 问题一修复: 做T买入下单前幂等检查，一次信号只允许下一单 ──
+                    _t0_buy_idempotent_ok = self._check_t0_buy_idempotent(code, shares)
+                    if not _t0_buy_idempotent_ok:
+                        print(f"  🚨 [T0幂等] {code} 今日做T买入已有挂单/成交记录，本次跳过，不重复下单")
+                        skip_count += 1
+                        continue
                     pair_price = calc_t0_pair_price(price, shares, True, atr_5min=atr_5min)
                     cmd = ["python3", trade_script, "t0_buy",
                            code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
