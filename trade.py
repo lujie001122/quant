@@ -21,8 +21,6 @@ import sys
 import os
 import json
 import time
-import subprocess
-from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')

@@ -26,8 +26,6 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from core.db import get_session
-from core.models import Trade
 from core.repositories import EntrustRepo, PositionStateRepo, TradeRepo
 
 DATA_TRADES_DIR = os.path.join(_PROJECT_ROOT, 'data', 'trades')

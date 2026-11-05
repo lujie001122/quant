@@ -27,7 +27,6 @@ alert.py — 告警系统（webhook推送 + 分级 + 去重 + 日志落盘）
 import json
 import os
 import time
-import traceback
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta

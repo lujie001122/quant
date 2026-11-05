@@ -27,7 +27,7 @@ import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 
 # ═══════════════════════════════════════════════════════
@@ -798,10 +798,9 @@ class SignalExecutor:
             if now_hm >= deadline_hm:
                 print(f"[SELL-CHASE] ⚠️ {key} 截至{self._SELL_CHASE_DEADLINE}未成交，告警不再追价")
                 try:
-                    from core.alert_manager import get_alert_manager as _gam
-                    _gam().warning("卖出追价未成交",
-                                   f"{key} 收盘前未成交，已停止追价",
-                                   dedup_key=f"sell_chase_unfilled:{key}")
+                    get_alert_manager().warning("卖出追价未成交",
+                                                f"{key} 收盘前未成交，已停止追价",
+                                                dedup_key=f"sell_chase_unfilled:{key}")
                 except Exception:
                     pass
                 del state[key]

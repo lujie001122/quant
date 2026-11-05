@@ -32,11 +32,9 @@ core/trade_recorder.py — 交易记录 + 对账 + 绩效报告
   diff = recorder.reconcile(system_positions, actual_positions)
 """
 
-import json
 import os
-from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from core.atomic_writer import atomic_write_json, atomic_read_json
 
