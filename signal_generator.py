@@ -157,6 +157,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     pf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
     already_traded_today = set()
     pf_data = {}
+    # 被调出池子但仍持仓的标的（需要额外监控）
+    orphan_codes = set()
     if os.path.exists(pf_path):
         try:
             with open(pf_path) as _f:
@@ -167,9 +169,45 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         if t.get("date") == today_str:
                             already_traded_today.add(code)
                             break
+            # 识别"调出池子但仍持仓"的孤儿标的
+            for code, pos_data in pf_data.get("positions", {}).items():
+                if pos_data.get("shares", 0) > 0 and code not in pool_codes and code not in ETFS:
+                    orphan_codes.add(code)
+                    print(f"[ORPHAN] {code} 已调出etf_pool但仍持仓{pos_data['shares']}股，纳入监控")
+        except Exception:
+            print("[WARN] portfolio.json 读取失败，跳过孤儿标的识别")
+
+    # ── 孤儿标的补充进 positions / all_klines / all_tech ──
+    # 从 market_data.ETFS 取不到 orphan 的静态配置，用 etf_pool.json 的 names/sids 补全
+    _orphan_meta = {}
+    if orphan_codes and os.path.exists(pool_path):
+        try:
+            with open(pool_path) as _f:
+                _pool_full = json.load(_f)
+            _pool_names = _pool_full.get("names", {})
+            _pool_sids  = _pool_full.get("sids", {})
+            for oc in orphan_codes:
+                _orphan_meta[oc] = {
+                    "name": _pool_names.get(oc, oc),
+                    "sid":  _pool_sids.get(oc, oc),
+                    "fund": 50000,       # 孤儿标的只做卖出，fund 仅占位
+                    "base_spacing": 0.01,
+                }
+        except Exception:
+            pass
+
+    # 孤儿标的加入 positions（若尚未存在）
+    for oc in orphan_codes:
+        if oc not in positions:
+            positions[oc] = PositionInfo()
+
+    # 恢复持仓状态（遍历范围扩展到 ETFS + orphan_codes）
+    _all_monitored_codes = set(ETFS.keys()) | orphan_codes
+    if pf_data:
+        try:
             # 恢复持仓状态
             saved_state = pf_data.get("_signal_state", {})
-            for code in ETFS:
+            for code in _all_monitored_codes:
                 if code in positions:
                     p = positions[code]
                     # 从 _signal_state 恢复信号状态
@@ -212,6 +250,26 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             print("[WARN] portfolio.json 读取失败，跳过状态恢复")
             pass
 
+    # ── 门控状态记录 + blocked→allowed 自动触发轮动 ──
+    # 状态文件路径
+    _gate_state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate_state.json")
+
+    def _load_gate_state():
+        try:
+            if os.path.exists(_gate_state_path):
+                with open(_gate_state_path) as _gf:
+                    return json.load(_gf)
+        except Exception:
+            pass
+        return {}
+
+    def _save_gate_state(state):
+        try:
+            with open(_gate_state_path, "w") as _gf:
+                json.dump(state, _gf, ensure_ascii=False, indent=2)
+        except Exception as _ge:
+            print(f"[WARN] gate_state.json 写入失败: {_ge}")
+
     # 获取数据
     try:
         realtime = fetch_realtime_quotes()
@@ -220,6 +278,28 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         realtime = {code: {"name": ETFS[code]["name"], "price": 0, "pct_change": 0, "change": 0,
                            "volume": 0, "amount": 0, "high": 0, "low": 0, "open": 0, "prev_close": 0}
                     for code in ETFS}
+
+    # 孤儿标的补充行情（fetch_realtime_quotes 只覆盖 ETFS，需单独补取）
+    for _oc in orphan_codes:
+        if _oc not in realtime:
+            try:
+                _oc_rt = fetch_realtime_quotes([_oc]) if _oc not in realtime else {}
+                if _oc_rt and _oc in _oc_rt:
+                    realtime[_oc] = _oc_rt[_oc]
+                else:
+                    _oc_meta = _orphan_meta.get(_oc, {})
+                    realtime[_oc] = {
+                        "name": _oc_meta.get("name", _oc), "price": 0, "pct_change": 0,
+                        "change": 0, "volume": 0, "amount": 0,
+                        "high": 0, "low": 0, "open": 0, "prev_close": 0,
+                    }
+            except Exception:
+                _oc_meta = _orphan_meta.get(_oc, {})
+                realtime[_oc] = {
+                    "name": _oc_meta.get("name", _oc), "price": 0, "pct_change": 0,
+                    "change": 0, "volume": 0, "amount": 0,
+                    "high": 0, "low": 0, "open": 0, "prev_close": 0,
+                }
 
     # ── 缓存行情到 StateCenter ──
     try:
@@ -238,11 +318,24 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         all_klines = {}
         for code in ETFS:
             all_klines[code] = fetch_klines_daily(code)
+        # 孤儿标的 K 线
+        for _oc in orphan_codes:
+            try:
+                all_klines[_oc] = fetch_klines_daily(_oc)
+            except Exception:
+                all_klines[_oc] = []
 
     if all_tech is None:
         all_tech = {}
-        for code in ETFS:
-            klines = all_klines[code]
+        # 统一处理 ETFS + 孤儿标的
+        _tech_codes = list(ETFS.keys()) + [oc for oc in orphan_codes if oc not in ETFS]
+        for code in _tech_codes:
+            _is_orphan = code not in ETFS
+            _cfg_base_spacing = _orphan_meta.get(code, {}).get("base_spacing", 0.01) if _is_orphan else ETFS[code]["base_spacing"]
+            klines = all_klines.get(code, [])
+            if not klines:
+                all_tech[code] = {"macd_status": "数据不足"}
+                continue
             closes = [k["close"] for k in klines]
             volumes = [k["volume"] for k in klines]
             ma5 = calc_ma(closes, 5)
@@ -252,8 +345,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             dif, dea, macd_bar, macd_status = calc_macd(closes)
             vol_ratio_120 = calc_vol_ratio_120min(volumes, 20)
             atr = calc_atr(klines, 14)
-            base_s = ETFS[code]["base_spacing"]
-            spacing = dynamic_spacing(atr, realtime[code]["price"], base_s)
+            base_s = _cfg_base_spacing
+            _cur_price = realtime.get(code, {}).get("price", closes[-1] if closes else 1)
+            spacing = dynamic_spacing(atr, _cur_price, base_s)
 
             # AO momentum
             highs = [k["high"] for k in klines]
@@ -283,12 +377,14 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 "ao_now": ao_now, "ao_5ago": ao_5ago,
             }
 
-    # 网格基准价
+    # 网格基准价（兼容孤儿标的：realtime 可能不含该 code）
     base_prices = {}
     for code, pos in positions.items():
-        if pos.has_position and pos.base_price:
-            price = realtime[code]["price"]
-            spacing = all_tech[code]["spacing"]
+        _rt_price = realtime.get(code, {}).get("price", 0)
+        _tech_entry = all_tech.get(code, {})
+        if pos.has_position and pos.base_price and _rt_price and _tech_entry.get("spacing"):
+            price = _rt_price
+            spacing = _tech_entry["spacing"]
             new_base, reset, new_reset_date = check_grid_reset(
                 price, pos.base_price, spacing, today_str, pos.last_reset_date
             )
@@ -297,7 +393,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 pos.last_reset_date = new_reset_date
             base_prices[code] = pos.base_price
         else:
-            base_prices[code] = realtime[code]["price"]
+            base_prices[code] = _rt_price
 
     # P2: 市场环境过滤(检查防御标的是否也弱势)
     defense_weak = check_defense(DEFENSE_CODE, all_tech, realtime)
@@ -387,6 +483,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 
     # ── 入场门控: 沪深300ETF 10日动量 ──
     _entry_gate_allowed = True  # 默认放行（取不到数据时也放行）
+    _entry_gate_momentum = None  # 记录当次动量值
     try:
         import yaml as _ygcfg
         _cfg_path_eg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
@@ -404,6 +501,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 _eg_cur = _eg_klines[-1]["close"]
                 _eg_prev = _eg_klines[-1 - _eg_days]["close"]
                 _eg_mom = (_eg_cur - _eg_prev) / _eg_prev * 100
+                _entry_gate_momentum = round(_eg_mom, 4)
                 if _eg_mom >= 0:
                     _entry_gate_allowed = True
                     print(f"[ENTRY_GATE] {_eg_code} 十日动量 +{_eg_mom:.2f}% → 允许建仓")
@@ -415,9 +513,61 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     except Exception as _eg_err:
         print(f"[ENTRY_GATE] 获取 510300 数据失败: {_eg_err}，放行所有买入信号")
 
+    # ── 门控状态持久化 + blocked→allowed 自动触发轮动 ──
+    _gate_state = _load_gate_state()
+    _gate_status_now = "allowed" if _entry_gate_allowed else "blocked"
+    _gate_prev_date = _gate_state.get("date", "")
+    _gate_prev_status = _gate_state.get("status", "")
+    _gate_rotation_triggered_today = (
+        _gate_state.get("rotation_triggered_date", "") == today_str
+    )
+
+    # blocked → allowed 且今天还没触发过 → 自动重跑轮动
+    if (
+        _gate_prev_status == "blocked"
+        and _gate_status_now == "allowed"
+        and not _gate_rotation_triggered_today
+    ):
+        print(f"[GATE-TURN] 门控由负转正（上次={_gate_prev_date} blocked，今日={today_str} allowed，动量={_entry_gate_momentum}%）→ 重新轮动")
+        try:
+            import rotation as _rot_mod
+            _rot_result = _rot_mod.run_rotation(force_write=True)
+            # run_rotation 返回 top3/all_picks 列表或 dict
+            if isinstance(_rot_result, dict):
+                _new_top3 = _rot_result.get("all_picks") or _rot_result.get("picks") or []
+            elif isinstance(_rot_result, list):
+                _new_top3 = _rot_result
+            else:
+                _new_top3 = []
+            print(f"[GATE-TURN] 轮动完成，新TOP3={_new_top3}")
+            # 刷新 rotation_top3_codes 以便本次信号使用最新 TOP3
+            rotation_top3_codes = set(_new_top3) if _new_top3 else rotation_top3_codes
+            # 标记今日已触发，避免同一天重复触发
+            _gate_state["rotation_triggered_date"] = today_str
+            _gate_state["rotation_triggered_top3"] = _new_top3
+        except Exception as _rot_err:
+            print(f"[GATE-TURN] 自动轮动失败: {_rot_err}")
+
+    # 记录今日门控状态（无论是否触发轮动都更新）
+    _gate_state.update({
+        "date": today_str,
+        "status": _gate_status_now,
+        "momentum": _entry_gate_momentum,
+    })
+    _save_gate_state(_gate_state)
+
     # 信号生成
+    # 构建统一迭代列表: ETFS 的标准 cfg + 孤儿标的的临时 cfg
+    _iter_codes = list(ETFS.items()) + [
+        (oc, {
+            "name": _orphan_meta.get(oc, {}).get("name", oc),
+            "fund": _orphan_meta.get(oc, {}).get("fund", 50000),
+            "base_spacing": _orphan_meta.get(oc, {}).get("base_spacing", 0.01),
+        })
+        for oc in orphan_codes
+    ]
     signals_output = {}
-    for code, cfg in ETFS.items():
+    for code, cfg in _iter_codes:
         if code not in realtime:
             signals_output[code] = {"action": "持有(观望)", "reason": "无实时数据", "price": "N/A"}
             continue
@@ -512,22 +662,28 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # - 做T与主策略信号冲突时，主策略信号优先
         # ═══════════════════════════════════════════════════════
 
-        # 【一】轮动清仓: etf_pool内已持仓标的，若rotation_top3_codes有效且不包含该标的 → 清仓
-        # 优先级与其他清仓类信号相同，不受TOP3保护拦截（它本来就不在TOP3里）
+        # 【一】轮动清仓: 已持仓标的不在TOP3 → 清仓
+        # 适用于: etf_pool内标的调出TOP3 + 已调出池子但仍持仓的标的（含ETFS合并持仓的）
         # rotation_top3_codes为None（文件缺失）时不触发清仓
         _rotation_liquidate = (
             pos.has_position
             and rotation_top3_codes is not None   # 有有效数据才执行
             and code not in rotation_top3_codes   # 不在TOP3 → 清仓
-            and pool_codes                        # etf_pool有效
-            and code in pool_codes                # 只对etf_pool内标的执行（排除手动买入的非池内标的）
+            and (
+                (pool_codes and code in pool_codes)          # 池内标的调出TOP3
+                or (pos.has_position and code not in pool_codes)  # 已调出池子但仍持仓
+            )
         )
         if _rotation_liquidate:
             action = "清仓"
             position_ratio = "100%"
             trade_type = "liquidate"
-            reason = "轮动调出TOP3"
-            print(f"[轮动清仓] {code} 不在TOP3集合{rotation_top3_codes}，触发清仓")
+            if code not in pool_codes:
+                reason = "已调出池子但仍持仓，不在TOP3→清仓"
+                print(f"[轮动清仓] {code} 已调出池子但仍持仓，不在TOP3集合{rotation_top3_codes}，触发清仓")
+            else:
+                reason = "轮动调出TOP3"
+                print(f"[轮动清仓] {code} 不在TOP3集合{rotation_top3_codes}，触发清仓")
 
         # 优先级1: 止盈止损（不受仓位上限约束，必须执行）
         # 若已触发轮动清仓，止损止盈的清仓类同样保持清仓，其余类型跳过
@@ -810,6 +966,11 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 position_ratio = "0%"
                 reason = f"非监控池标的，仅允许卖出; {reason}"
                 trade_type = None
+
+        # 孤儿标的标注（已调出池子但仍持仓）
+        _orphan_tag = " [已调出池子但仍持仓]" if code in orphan_codes else ""
+        if _orphan_tag:
+            reason = reason + _orphan_tag if reason else _orphan_tag.strip()
 
         signals_output[code] = {
             "price": f"{price:.3f}",
