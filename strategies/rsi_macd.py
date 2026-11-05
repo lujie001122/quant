@@ -22,6 +22,12 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 with open(_CONFIG_PATH) as f:
     _CONF = yaml.safe_load(f)
 EMPTY_DAYS_THRESHOLD = _CONF['trend']['empty_days_threshold']
+_MA_FILTER_CONF = _CONF.get('entry_ma_filter', {})
+_MA_FILTER_ENABLED_DEFAULT = _MA_FILTER_CONF.get('enabled', False)
+_MA_FILTER_LIST_DEFAULT = _MA_FILTER_CONF.get('ma_list', [5, 10, 20, 120, 250])
+_MA_FILTER_STRICT_DEFAULT = _MA_FILTER_CONF.get('require_strict', True)
+# 数据不足日志已输出过的标的集合（避免刷屏）
+_MA_FILTER_INSUF_WARNED = set()
 
 # ═══════════════════════════════════════════════
 # 常量（从 position_info 统一导入，避免跨文件定义不一致）
@@ -107,6 +113,74 @@ def check_defense(DEFENSE_CODE, all_tech, realtime):
     return False
 
 
+def check_entry_ma_filter(price, all_klines, code, ma_list=None, require_strict=True):
+    """建仓均线过滤器：价格必须站上 ma_list 中所有（或至少N条）均线。
+
+    参数:
+      price        : 当前价格
+      all_klines   : {code: [{"close": float}, ...]} 历史K线（至少需要 max(ma_list) 根）
+      code         : 当前标的代码
+      ma_list      : 需要检查的均线周期列表，默认 [5, 10, 20, 120, 250]
+      require_strict: True=全部站上, False=至少站上3条
+
+    返回:
+      (passed: bool, fail_reason: str)
+        passed=True  → 允许建仓
+        passed=False → 拒绝建仓，fail_reason 说明哪条均线未过
+    """
+    if ma_list is None:
+        ma_list = _MA_FILTER_LIST_DEFAULT
+
+    klines = all_klines.get(code, [])
+    n_bars = len(klines)
+
+    failed_mas = []
+    skipped_mas = []
+    checked = 0
+
+    for period in sorted(ma_list):
+        if n_bars < period:
+            # 数据不足，跳过此周期
+            skipped_mas.append(period)
+            # 只在首次出现时打印日志（避免每日刷屏）
+            warn_key = (code, period)
+            if warn_key not in _MA_FILTER_INSUF_WARNED:
+                _MA_FILTER_INSUF_WARNED.add(warn_key)
+                print(f"[MA过滤] {code} 数据集不足: 仅{n_bars}根K线，MA{period}跳过")
+            continue
+
+        closes = [k["close"] for k in klines[-period:]]
+        ma_val = sum(closes) / len(closes)
+        checked += 1
+
+        if price <= ma_val:
+            failed_mas.append((period, ma_val))
+
+    if not failed_mas:
+        return True, ""
+
+    # 根据 require_strict 决定是否拒绝
+    total_checkable = len(ma_list) - len(skipped_mas)
+    if require_strict:
+        # 全部站上才允许（只要有一条不过就拒绝）
+        parts = [f"MA{p}={v:.3f}" for p, v in failed_mas]
+        reason = f"持有(均线不符) | 价{price:.3f} 低于{', '.join(parts)}"
+        if skipped_mas:
+            reason += f"（数据不足跳过MA{'/'.join(str(p) for p in skipped_mas)}）"
+        return False, reason
+    else:
+        # 宽松: 至少站上3条才允许
+        passed_count = total_checkable - len(failed_mas)
+        min_pass = 3
+        if passed_count < min_pass:
+            parts = [f"MA{p}={v:.3f}" for p, v in failed_mas]
+            reason = f"持有(均线不符) | 价{price:.3f} 低于{', '.join(parts)}（已过{passed_count}/{total_checkable}，需≥{min_pass}）"
+            if skipped_mas:
+                reason += f"（数据不足跳过MA{'/'.join(str(p) for p in skipped_mas)}）"
+            return False, reason
+        return True, ""
+
+
 class RSIMACDStrategy(BaseStrategy):
     """RSI+MACD 建仓策略"""
 
@@ -157,6 +231,17 @@ class RSIMACDStrategy(BaseStrategy):
             # 所有建仓通道要求多头排列
             if not bullish_align:
                 return ("持有(观望)", "0%", None, f"非多头排列(MA5={t['ma5']:.3f},MA20={t['ma20']:.3f}),暂停建仓")
+            # ── 均线过滤：价格须站上全部指定均线（通过配置开关控制，只影响新建仓）──
+            _maf_conf = _CONF.get('entry_ma_filter', {})
+            _maf_enabled = _maf_conf.get('enabled', _MA_FILTER_ENABLED_DEFAULT)
+            if _maf_enabled:
+                _maf_list = _maf_conf.get('ma_list', _MA_FILTER_LIST_DEFAULT)
+                _maf_strict = _maf_conf.get('require_strict', _MA_FILTER_STRICT_DEFAULT)
+                _maf_passed, _maf_reason = check_entry_ma_filter(
+                    price, all_klines, code, ma_list=_maf_list, require_strict=_maf_strict
+                )
+                if not _maf_passed:
+                    return ("持有(均线不符)", "0%", None, _maf_reason)
             # 通道1: RSI抄底 (MACD金叉+RSI≤55) → 30%(极限方案C: 去掉MA20过滤)
             if t["macd_status"] == "金叉" and (t["rsi"] is not None and t["rsi"] <= _CONF.get("entry", {}).get("rsi_entry_max", 55)) and pos.can_buy_today(today_str, atr_pct):
                 action, position_ratio, trade_type = pos._enter_position(today_str, price, "30%(RSI抄底)")

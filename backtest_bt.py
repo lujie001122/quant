@@ -122,7 +122,7 @@ from state_center import get_code_map, get_etfs_config
 # 每周轮动: 引入候选池
 from rotation import ETF_CANDIDATES
 
-CODES = get_code_map()
+CODES = {**ETF_CANDIDATES, **{k: v for k, v in _DEFAULT_CODES.items() if k not in ETF_CANDIDATES}}
 
 # ═══════════════════════════════════════════════
 #  Data fetch (腾讯前复权)
@@ -301,6 +301,8 @@ class ETFStrategy(bt.Strategy):
         ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
         ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
         ("enhanced_trend", False),  # 增强趋势止盈: MACD红柱缩短+RSI<60, 卖20%
+        ("entry_ma_filter", None),  # 建仓均线过滤: None=跟config, True=强制开, False=强制关
+        ("entry_ma_list", None),    # 均线周期覆盖: None=跟config, 如 [5,10,20,120,250]
     )
 
     # 板块分类: 用于板块分散
@@ -820,6 +822,10 @@ class ETFStrategy(bt.Strategy):
                         closes_cp = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
                         _all_klines_cp[nn] = [{"close": c} for c in closes_cp]
 
+                    # ── MA过滤器: 仅给当前标的补充260根K线（过滤器关闭时无额外开销）──
+                    if CONF.get('entry_ma_filter', {}).get('enabled', False):
+                        _ma_n260 = min(260, len(d.close))
+                        _all_klines_cp[name] = [{'close': float(d.close[-(_ma_n260 - _i)])} for _i in range(_ma_n260)]
                     atr_pct_cp_entry = atr_val / price if atr_val and price > 0 else 0
                     # 防御盾过滤: 只拦同板块
                     defense_weak_cp = False
@@ -1139,6 +1145,10 @@ class ETFStrategy(bt.Strategy):
                                 closes = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
                                 _all_klines[nn] = [{"close": c} for c in closes]
 
+                            # ── MA过滤器: 仅给当前标的补充260根K线（过滤器关闭时无额外开销）──
+                            if CONF.get('entry_ma_filter', {}).get('enabled', False):
+                                _ma_n260 = min(260, len(d.close))
+                                _all_klines[name] = [{'close': float(d.close[-(_ma_n260 - _i)])} for _i in range(_ma_n260)]
                             atr_pct_wr = atr_val / price if atr_val and price > 0 else 0
                             # 防御盾过滤: 只拦同板块
                             defense_weak_wr = False
@@ -1334,6 +1344,10 @@ class ETFStrategy(bt.Strategy):
                                 closes = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
                                 _all_klines[nn] = [{"close": c} for c in closes]
 
+                            # ── MA过滤器: 仅给当前标的补充260根K线（过滤器关闭时无额外开销）──
+                            if CONF.get('entry_ma_filter', {}).get('enabled', False):
+                                _ma_n260 = min(260, len(d.close))
+                                _all_klines[name] = [{'close': float(d.close[-(_ma_n260 - _i)])} for _i in range(_ma_n260)]
                             atr_pct_cm = atr_val / price if atr_val and price > 0 else 0
                             # 防御盾过滤: 只拦同板块
                             defense_weak_cm = False
@@ -1589,6 +1603,10 @@ class ETFStrategy(bt.Strategy):
                     closes = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
                     _all_klines[nn] = [{"close": c} for c in closes]
 
+                # ── MA过滤器: 仅给当前标的补充260根K线（过滤器关闭时无额外开销）──
+                if CONF.get('entry_ma_filter', {}).get('enabled', False):
+                    _ma_n260 = min(260, len(d.close))
+                    _all_klines[name] = [{'close': float(d.close[-(_ma_n260 - _i)])} for _i in range(_ma_n260)]
                 atr_pct = atr_val / price if atr_val and price > 0 else 0
                 pos, t = self._build_pos_and_tech(d, name, date_str)
                 entry_result = evaluate_entry(
@@ -1693,6 +1711,10 @@ class ETFStrategy(bt.Strategy):
                     closes_v = [float(dd.close[-(n_bars - i)]) for i in range(n_bars)]
                     _all_klines_v[nn] = [{"close": c} for c in closes_v]
                 atr_val = self.atr[name].atr[0]
+                # ── MA过滤器: 仅给当前标的补充260根K线（过滤器关闭时无额外开销）──
+                if CONF.get('entry_ma_filter', {}).get('enabled', False):
+                    _ma_n260 = min(260, len(d.close))
+                    _all_klines_v[name] = [{'close': float(d.close[-(_ma_n260 - _i)])} for _i in range(_ma_n260)]
                 atr_pct_v = atr_val / price if atr_val and price > 0 else 0
                 defense_weak_v = False
                 if DEFENSE_CODE:
@@ -2129,6 +2151,8 @@ def main():
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
     rotation_interval = 5  # 每周轮动间隔(天): 5天最优(周轮动) | 20天(月轮动)
+    entry_ma_filter = None  # 建仓均线过滤: None=跟config, True/False=CLI覆盖
+    entry_ma_list = None    # 均线周期: None=跟config
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -2178,6 +2202,12 @@ def main():
             if i + 1 < len(args):
                 rotation_interval = int(args[i + 1])
                 i += 1
+        elif arg == "--entry-ma-filter":
+            entry_ma_filter = True
+        elif arg == "--no-entry-ma-filter":
+            entry_ma_filter = False
+        elif arg.startswith("--ma-list="):
+            entry_ma_list = [int(x) for x in arg.split("=", 1)[1].split(",")]
         i += 1
 
     # --period X 支持: 从 config.yaml 读取
@@ -2295,6 +2325,19 @@ def main():
         data = bt.feeds.PandasData(dataname=df, name=code)
         cerebro.adddata(data, name=code)
 
+    # ── 均线过滤 CLI 覆盖: 根据 --entry-ma-filter / --no-entry-ma-filter / --ma-list 更新 CONF ──
+    if entry_ma_filter is not None or entry_ma_list is not None:
+        from strategies import rsi_macd as _rsi_macd_mod
+        _maf = _rsi_macd_mod._CONF.setdefault('entry_ma_filter', {})
+        if entry_ma_filter is not None:
+            _maf['enabled'] = entry_ma_filter
+            CONF.setdefault('entry_ma_filter', {})['enabled'] = entry_ma_filter
+            print(f"▸ 均线过滤 CLI 覆盖: enabled={entry_ma_filter}")
+        if entry_ma_list is not None:
+            _maf['ma_list'] = entry_ma_list
+            CONF.setdefault('entry_ma_filter', {})['ma_list'] = entry_ma_list
+            print(f"▸ 均线过滤 CLI 覆盖: ma_list={entry_ma_list}")
+
     cerebro.addstrategy(ETFStrategy, fund_per_etf=FUND_PER_ETF,
                         rotation_mode=run_rotation,
                         concentrated_mode=run_concentrated,
@@ -2316,7 +2359,9 @@ def main():
                         trend_entry=trend_entry,
                         rsi_entry_max=rsi_entry_max,
                         rotation_interval=rotation_interval,
-                        enhanced_trend=run_enhanced_trend)
+                        enhanced_trend=run_enhanced_trend,
+                        entry_ma_filter=entry_ma_filter,
+                        entry_ma_list=entry_ma_list)
 
     # Analyzers
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True, riskfreerate=RISK_FREE_RATE)
