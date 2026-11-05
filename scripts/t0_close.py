@@ -1251,7 +1251,20 @@ def main():
 
 
 if __name__ == '__main__':
-    if VERIFY:
-        main_verify()
-    else:
-        main()
+    import fcntl as _fcntl
+    _lock_path = os.path.join(ROOT_DIR, ".t0_close.lock")
+    _lock_fd = open(_lock_path, "w")
+    try:
+        _fcntl.flock(_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("[SKIP] 另一进程正在执行，跳过本次")
+        _lock_fd.close()
+        sys.exit(0)
+    try:
+        if VERIFY:
+            main_verify()
+        else:
+            main()
+    finally:
+        _fcntl.flock(_lock_fd, _fcntl.LOCK_UN)
+        _lock_fd.close()

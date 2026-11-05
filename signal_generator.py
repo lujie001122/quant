@@ -1114,39 +1114,55 @@ def execute_signals(result, mode=None):
 
 
 def main():
-    # 解析 --execute 参数
-    execute_mode = None  # None 表示未指定 --execute，不执行
-    execute_flag = False  # 标记是否出现了 --execute 参数
-    for arg in sys.argv:
-        if arg == "--execute":
-            execute_flag = True
-            execute_mode = None  # 全部（None 在此上下文表示全部模式）
-            break
-        if arg.startswith("--execute="):
-            execute_flag = True
-            val = arg.split("=", 1)[1].strip().lower()
-            if val in ("buy_sell", "t0"):
-                execute_mode = val
-            else:
-                print(f"[WARN] 无效的 --execute 值: {val}, 使用默认模式(全部)")
-                execute_mode = None
-            break
+    # ── 排他锁：同一时刻只允许一个进程从"读信号"到"下单完成"执行 ──
+    import fcntl
+    _lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".signal_generator.lock")
+    _lock_fd = open(_lock_path, "w")
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("[SKIP] 另一进程正在执行，跳过本次")
+        _lock_fd.close()
+        sys.exit(0)
 
     try:
-        result = generate_signals()
-        json_str = json.dumps(result, indent=2, ensure_ascii=False)
-        if sys.stdout.encoding != "utf-8":
-            sys.stdout.reconfigure(encoding="utf-8")
-        print(json_str)
+        # 解析 --execute 参数
+        execute_mode = None  # None 表示未指定 --execute，不执行
+        execute_flag = False  # 标记是否出现了 --execute 参数
+        for arg in sys.argv:
+            if arg == "--execute":
+                execute_flag = True
+                execute_mode = None  # 全部（None 在此上下文表示全部模式）
+                break
+            if arg.startswith("--execute="):
+                execute_flag = True
+                val = arg.split("=", 1)[1].strip().lower()
+                if val in ("buy_sell", "t0"):
+                    execute_mode = val
+                else:
+                    print(f"[WARN] 无效的 --execute 值: {val}, 使用默认模式(全部)")
+                    execute_mode = None
+                break
 
-        if execute_flag:  # 只要在命令行出现了 --execute，就执行信号
-            execute_signals(result, mode=execute_mode)
+        try:
+            result = generate_signals()
+            json_str = json.dumps(result, indent=2, ensure_ascii=False)
+            if sys.stdout.encoding != "utf-8":
+                sys.stdout.reconfigure(encoding="utf-8")
+            print(json_str)
 
-        return result
-    except Exception as e:
-        error_msg = {"error": str(e), "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-        print(json.dumps(error_msg, indent=2, ensure_ascii=False))
-        return None
+            if execute_flag:  # 只要在命令行出现了 --execute，就执行信号
+                execute_signals(result, mode=execute_mode)
+
+            return result
+        except Exception as e:
+            error_msg = {"error": str(e), "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            print(json.dumps(error_msg, indent=2, ensure_ascii=False))
+            return None
+    finally:
+        # 进程正常或异常退出时自动释放锁
+        fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+        _lock_fd.close()
 
 if __name__ == "__main__":
     main()

@@ -824,6 +824,9 @@ def check_pending_orders(mode=None, sync_entrust=True):
     pending_map = {}
     filled_codes = set()
 
+    # 预先加载持仓，供 order 文件和 intent 文件的卖出去重共用
+    pf_positions = load_portfolio().get("positions", {})
+
     # 1. 收集订单文件的 filled/pending
     for fname, order in orders.items():
         code = order.get('code', '')
@@ -837,6 +840,16 @@ def check_pending_orders(mode=None, sync_entrust=True):
         #   filled                 → 阻塞（已成交，不重复交易）
         #   cancelled/revoked      → 不阻塞（已撤/已取消，可以重新下单）
         if status in ('filled', 'pending', 'pending_confirm', 'partial', 'failed'):
+            if direction == '卖出':
+                # 卖出去重：有真实持仓则不阻塞（允许再次卖出）
+                real_shares = pf_positions.get(code, {}).get("shares", 0)
+                if real_shares > 0:
+                    print(f"[check_pending] order 卖出去重跳过: ({code},{order_mode},{direction}) "
+                          f"status={status} 当前持仓:{real_shares}股 > 0，允许再卖 (来源:{fname})")
+                    # pending 挂单仍需记录（不是已成交，是仍在途）
+                    if status == 'pending' and (not mode or order_mode == mode):
+                        pending_map[code] = direction
+                    continue
             filled_codes.add((code, order_mode, direction))
 
         # pending_map 受 mode 过滤
@@ -847,11 +860,39 @@ def check_pending_orders(mode=None, sync_entrust=True):
             pending_map[code] = direction
 
     # 2. 收集 intent 文件（下单前写入的意图记录，防同 cron 内重复）
+    # 卖出去重必须结合真实持仓：若手上还有货，不能被历史 intent 挡住
     intents = load_intent_files()
     for fname, intent in intents.items():
         intent_key = intent_to_dedup_key(intent)
+        code = intent_key[0]
+        direction = intent_key[2]  # '买入' 或 '卖出'
+
+        if direction == '卖出':
+            # 卖出去重：检查真实持仓，有货则不阻塞（允许再次卖出）
+            real_shares = pf_positions.get(code, {}).get("shares", 0)
+            intent_shares = intent.get("shares", 0)
+            if real_shares > 0:
+                # 当前仍有持仓，不能被历史 intent 挡住，跳过此条去重
+                print(f"[check_pending] intent 卖出去重跳过: {intent_key} "
+                      f"(来源:{fname}, 历史成交:{intent_shares}股, 当前持仓:{real_shares}股 > 0，允许再卖)")
+                continue
+            else:
+                # 持仓为0，确实已全部卖完，阻塞重复卖出
+                print(f"[check_pending] intent 去重: {intent_key} "
+                      f"(来源:{fname}, 历史成交:{intent_shares}股, 当前持仓:{real_shares}股，已清仓，阻塞)")
+        elif direction == '买入':
+            # 买入去重：若持仓数量与 intent 记录的成交数量一致，说明已买到，跳过
+            real_shares = pf_positions.get(code, {}).get("shares", 0)
+            intent_shares = intent.get("shares", 0)
+            if intent_shares > 0 and real_shares >= intent_shares:
+                print(f"[check_pending] intent 买入去重: {intent_key} "
+                      f"(来源:{fname}, 历史成交:{intent_shares}股, 当前持仓:{real_shares}股 >= 历史量，已买到，阻塞)")
+            else:
+                print(f"[check_pending] intent 去重: {intent_key} (来源:{fname})")
+        else:
+            print(f"[check_pending] intent 去重: {intent_key} (来源:{fname})")
+
         filled_codes.add(intent_key)
-        print(f"[check_pending] intent 去重: {intent_key} (来源:{fname})")
 
     return pending_map, filled_codes
 

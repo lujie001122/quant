@@ -1002,10 +1002,14 @@ class SignalExecutor:
 
     def _verify_order_via_entrust(self, code, direction, shares, since=None):
         """下单后通过 getEntrust 独立核验订单是否真实提交到券商。
-        不依赖 trade.py 返回码；接口查不到视为未知，不得当作成功。
+        区分三种情况：
+          a) 委托表查到该笔(时间窗口内、代码方向一致、数量容差≤100股) → 成功
+          b) 委托表返回有效数据但没有该笔 → 失败（真没下出去）
+          c) 委托表连续返回空/异常 → 未知（接口抖动，不能当失败，不能触发重下单）
 
-        轮询策略：最多8次，每次间隔3秒，匹配即返回成功；8次都未匹配则判失败。
-        接口返回异常(unknown err)时同样重试，8次后判失败。
+        轮询策略：最多8次，每次间隔3秒，匹配即返回成功。
+          若8次全部返回空/异常(情况c)，再额外查10次(约30秒)。
+          仍为空 → 返回unknown，由调用方查持仓变化做最终判定。
 
         匹配规则：
           - 代码 + 方向 必须完全匹配
@@ -1013,11 +1017,11 @@ class SignalExecutor:
           - 数量容差：只接受数量相等或差异不超过100股的记录；差异超过100股不算匹配
           - 委托表时间在第1列（格式 HH:MM:SS）
           - 状态含"成交"字样的记录优先匹配并在日志中标注
-          - 只有时间窗口内完全找不到满足数量容差的记录才返回失败
 
         返回:
-          (True, detail)   核验通过
-          (False, reason)   核验失败
+          ('success', detail)   情况a: 核验通过
+          ('failed', reason)    情况b: 委托表有效但无该笔
+          ('unknown', reason)   情况c: 委托表连续空/异常
         """
         # 统一方向为中文
         if direction in ('buy', 'Buy', 'BUY'):
@@ -1029,29 +1033,33 @@ class SignalExecutor:
         e = EvolvingSim()
 
         MAX_TRIES = 8
+        EXTRA_TRIES = 10  # 情况c: 额外再查10次(约30秒)
         last_ent = None
         last_rows = []
         last_reason = ''
+        ever_got_valid_data = False  # 是否曾拿到过有效委托表数据
 
-        for attempt in range(1, MAX_TRIES + 1):
+        total_tries = MAX_TRIES + EXTRA_TRIES
+        for attempt in range(1, total_tries + 1):
             time.sleep(3)
             try:
                 ent = e.getEntrust('today', False)
             except Exception as ex:
                 last_reason = f"getEntrust 调用异常(未知): {ex}"
-                print(f"  第{attempt}次查委托表，接口异常: {ex}，未匹配。")
+                print(f"  第{attempt}次查委托表，接口异常: {ex}，未匹配。(情况c: 接口抖动)")
                 last_ent = None
                 continue
 
             if not (isinstance(ent, dict) and ent.get('status') and ent.get('data')):
                 last_reason = f"getEntrust 返回异常(非有效数据): {ent}"
-                print(f"  第{attempt}次查委托表，返回非有效数据，未匹配。")
+                print(f"  第{attempt}次查委托表，返回非有效数据，未匹配。(情况c: 接口抖动)")
                 last_ent = ent
                 continue
 
             rows = ent['data']
             last_ent = ent
             last_rows = [str(r) for r in rows if r and len(r) >= 11]
+            ever_got_valid_data = True
             print(f"  第{attempt}次查委托表，共{len(last_rows)}条记录。")
 
             # 匹配：代码+方向+时间窗口+数量容差（≤100股）
@@ -1098,22 +1106,40 @@ class SignalExecutor:
                 filled_tag = '(已成交)' if best_filled else ''
                 shares_tag = '' if matched_shares == shares else f'(委托量={matched_shares}≠信号量={shares},差异{abs(matched_shares-shares)}股)'
                 since_tag = f' since>={since}' if since else ''
-                print(f"  第{attempt}次即匹配{filled_tag}: {code} {direction} 合同号={contract} {shares_tag}{since_tag}")
-                return True, f"{code} {direction} 合同号={contract}{filled_tag}{shares_tag}{since_tag}"
+                print(f"  [情况a:成功] 第{attempt}次即匹配{filled_tag}: {code} {direction} 合同号={contract} {shares_tag}{since_tag}")
+                return 'success', f"{code} {direction} 合同号={contract}{filled_tag}{shares_tag}{since_tag}"
 
             last_reason = f"委托表共{len(last_rows)}条，时间窗口内未找到 {code} {direction} 数量容差≤100股的有效记录"
+            # 拿到过有效数据但没匹配 → 情况b:失败（真没下出去）
+            print(f"  [情况b:失败] 第{attempt}次查到{len(last_rows)}条有效记录但无该笔: {code} {direction}")
+            reason_b = (
+                f"【核验失败·情况b】委托表有{len(last_rows)}条有效记录但未匹配: "
+                f"代码={code} 方向={direction} since={since} 依据={last_reason}\n"
+                f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
+                + ("\n  ..." if len(last_rows) > 30 else "")
+            )
+            return 'failed', reason_b
 
-        # 8次都未匹配 — 失败
-        reason = (
-            f"【核验失败】{MAX_TRIES}次轮询均未匹配: 代码={code} 方向={direction} since={since}\n"
-            f"  原始返回: {last_ent}\n"
-            f"  最后一次委托表条数: {len(last_rows)}条\n"
-            f"  最后一次判定依据: {last_reason}\n"
-            f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
-            + ("\n  ..." if len(last_rows) > 30 else "")
-            + "\n  ⚠️ 可能已下单但接口未刷新，请人工核对同花顺委托表"
-        )
-        return False, reason
+        # 全部轮询结束，区分情况b(曾拿到有效数据)与情况c(一直空/异常)
+        if ever_got_valid_data:
+            # 情况b: 拿到过有效数据但都没匹配（理论上上面循环内已返回，此处兜底）
+            reason = (
+                f"【核验失败·情况b】轮询{total_tries}次,曾拿到有效委托表但未匹配: "
+                f"代码={code} 方向={direction} since={since}\n"
+                f"  最后一次判定依据: {last_reason}\n"
+                f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
+                + ("\n  ..." if len(last_rows) > 30 else "")
+            )
+            return 'failed', reason
+        else:
+            # 情况c: 全程空/异常 → 未知，不下第二单，交由调用方查持仓
+            reason = (
+                f"【核验未知·情况c】轮询{total_tries}次全部返回空/异常,接口抖动: "
+                f"代码={code} 方向={direction} since={since}\n"
+                f"  最后一次原始返回: {last_ent}\n"
+                f"  ⚠️ 委托表全程无有效数据,不能判失败,需查持仓变化做最终判定"
+            )
+            return 'unknown', reason
 
     def execute_signals(self, result, mode=None):
         """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
@@ -1461,25 +1487,33 @@ class SignalExecutor:
                             print(f"  [stderr] {stderr_out.strip()}")
 
                         # ═══ 下单后强制核验（不依赖返回码，直接查委托表）═══
-                        # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
-                        _v_ok, _v_detail = self._verify_order_via_entrust(code, direction, shares, since=_order_since)
-                        if not _v_ok:
-                            print(f"  🚨 核验失败: {_v_detail}")
-                            # ═══ 防重复下单：核验失败后先查持仓，持仓已变则判定成功，不重试 ═══
-                            _abort_retry = False
+                        # 核验返回三种情况：
+                        #   'success' → 情况a: 委托表查到该笔，判定成功
+                        #   'failed'  → 情况b: 委托表有效数据但无该笔，真没下出去，判失败
+                        #   'unknown' → 情况c: 接口抖动全程空/异常，不能判失败，查持仓做最终判定
+                        _v_status, _v_detail = self._verify_order_via_entrust(code, direction, shares, since=_order_since)
+
+                        if _v_status == 'failed':
+                            # 情况b: 委托表有效但无该笔 → 真没下出去，报警，不重下单
+                            print(f"  🚨 [情况b] 核验失败(委托表有效但无该笔): {_v_detail}")
+                            print(f"  ❌ {code} {direction} {shares}股 委托表确认无此委托，判定失败，不重下单")
+                            final_error = f"委托表核验失败(情况b): {_v_detail}"
+                            final_error_type = "verify_failed"
+                            break
+
+                        elif _v_status == 'unknown':
+                            # 情况c: 接口抖动全程空 → 查持仓变化做最终判定，绝不重下单
+                            print(f"  ⚠️ [情况c] 委托表全程空/异常(接口抖动): {_v_detail}")
                             try:
                                 _pos_after = self._get_position_shares(code)
                                 _is_liquidate = (trade_type == "liquidate")
                                 if _is_liquidate and (_pos_after == 0 or _pos_after is None):
-                                    print(f"  ✅ 核验失败但持仓已归零 → 清仓已成交，判定成功，不重试")
-                                    _abort_retry = True
-                                    # 补充填充逻辑：视为成功
+                                    print(f"  ✅ [情况c→持仓归零] 清仓已成交，判定成功，不重下单")
                                     after_shares = 0
                                     success_count += 1
                                     success = True
                                     filled_codes.add((code, sig_mode, sig_direction))
                                     self._write_intent_for_sg(code, sig_mode, sig_direction)
-                                    # O4: 清仓成交确认后重置持仓状态（统一入口）
                                     try:
                                         from state_center import load_portfolio, save_portfolio, reset_signal_state_on_liquidate
                                         pf = load_portfolio()
@@ -1490,23 +1524,28 @@ class SignalExecutor:
                                     except Exception:
                                         pass
                                     break
-                                elif not _is_liquidate and _pos_after != before_shares:
-                                    print(f"  ✅ 核验失败但持仓已从{before_shares}→{_pos_after}股 → 判定成交，不重试")
-                                    _abort_retry = True
-                                    after_shares = _pos_after if _pos_after is not None else before_shares
+                                elif not _is_liquidate and _pos_after is not None and _pos_after != before_shares:
+                                    print(f"  ✅ [情况c→持仓变化] 持仓已从{before_shares}→{_pos_after}股，判定成交，不重下单")
+                                    after_shares = _pos_after
                                     success_count += 1
                                     success = True
                                     filled_codes.add((code, sig_mode, sig_direction))
                                     self._write_intent_for_sg(code, sig_mode, sig_direction)
                                     break
+                                else:
+                                    # 持仓未变或查不到 → 未知，报警要求人工核对，绝不重下单
+                                    _pos_desc = f"{_pos_after}股" if _pos_after is not None else "查不到"
+                                    print(f"  🚨 [情况c→持仓未变] 持仓={_pos_desc}，无法确认，判定未知，不重下单，需人工核对")
+                                    final_error = f"委托表全程空且持仓未变(情况c): {_v_detail}"
+                                    final_error_type = "verify_unknown"
+                                    break
                             except Exception as _chk_ex:
-                                print(f"  ⚠️ 持仓核查异常: {_chk_ex}")
-                            if _abort_retry:
+                                print(f"  ⚠️ [情况c] 持仓核查异常: {_chk_ex}，判定未知，不重下单，需人工核对")
+                                final_error = f"委托表全程空且持仓核查异常(情况c): {_chk_ex}"
+                                final_error_type = "verify_unknown"
                                 break
-                            print(f"  ❌ {code} {direction} {shares}股 委托表未确认且持仓未变，判定失败，不扣做T额度")
-                            final_error = f"委托表核验失败: {_v_detail}"
-                            final_error_type = "verify_failed"
-                            break
+
+                        # _v_status == 'success': 情况a，正常继续后续处理
                         print(f"  ✅ 核验通过: {_v_detail}")
 
                         # ═══ B4+: 成交后按实查持仓更新 portfolio.json，禁止写0 ═══
