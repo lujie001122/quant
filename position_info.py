@@ -213,11 +213,11 @@ class PositionInfo:
 
     def update_trailing_stop(self, price):
         if not self.has_position or self.avg_cost == 0: return
-        profit_pct = self.profit_pct(price)
+        profit_pct = self.profit_pct(price)  # 返回百分数，如 13.0 表示 13%
         # 从config读取trail_pct，统一使用
         trail_pct = _config.get('trail_pct', 0.12)
-        activation = trail_pct + 0.01
-        lockin = trail_pct + 0.08
+        activation = (trail_pct + 0.01) * 100   # 转为百分数，与 profit_pct 单位一致
+        lockin = (trail_pct + 0.08) * 100
         trail_mult = 1 - trail_pct
         if profit_pct >= activation - 0.0001 and not self.reached_8pct:
             self.reached_8pct = True

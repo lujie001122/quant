@@ -460,6 +460,36 @@ def reset_signal_state_on_liquidate(pf, code, date_str):
         print(f"  ⚠️ [reset_signal_state] {code} 重置失败: {_e}")
 
 
+def init_signal_state_on_entry(pf, code, price, date_str):
+    """
+    统一入口：新建仓（before_shares==0 → after_shares>0）时初始化 _signal_state[code] 的止盈止损字段。
+    清除历史遗留的 reached_8pct/reached_15pct/trailing_stop_price，以本次成交价为 peak_price。
+    保留与止盈止损无关的字段（prev_rsi, prev_macd_status, daily_trade_log 等）。
+    调用方须自行 save_portfolio(pf)。
+    """
+    try:
+        sig_state = pf.setdefault("_signal_state", {})
+        s = sig_state.get(code, {})
+        s["peak_price"] = price
+        s["reached_8pct"] = False
+        s["reached_15pct"] = False
+        s["trailing_stop_price"] = 0.0
+        s["stop_level"] = 0
+        s["breakeven_activated"] = False
+        s["add_count"] = 0
+        s["build_phase"] = 1
+        s["build_first_price"] = price
+        s["build_first_date"] = date_str
+        s["below_ma20_count"] = 0
+        s["reached_3pct"] = False
+        s["reached_5pct"] = False
+        s["reached_8pct_ladder"] = False
+        sig_state[code] = s
+        print(f"  🆕 [init_signal_state] {code} 建仓初始化: peak={price}, reached_8pct=False, reached_15pct=False, trailing=0")
+    except Exception as _e:
+        print(f"  ⚠️ [init_signal_state] {code} 初始化失败: {_e}")
+
+
 # ====================================================================
 # 三、订单管理（orders/ 目录）
 # ====================================================================

@@ -1574,6 +1574,16 @@ class SignalExecutor:
                         success_count += 1
                         success = True
 
+                        # ═══ 建仓初始化：before_shares==0 时重置止盈止损状态（防历史脏数据）═══
+                        if is_buy_direction and before_shares == 0:
+                            try:
+                                from state_center import load_portfolio, save_portfolio, init_signal_state_on_entry
+                                _pf = load_portfolio()
+                                init_signal_state_on_entry(_pf, code, price, today_str)
+                                save_portfolio(_pf)
+                            except Exception as _init_err:
+                                print(f"  [WARN] 建仓初始化失败: {_init_err}")
+
                         # ═══ 添加到 filled_codes ═══
                         filled_codes.add((code, sig_mode, sig_direction))
 
