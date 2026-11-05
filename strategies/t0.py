@@ -451,9 +451,17 @@ class T0Strategy(BaseStrategy):
                 return ("买入", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 
             elif "卖出" in t0_signal:
+                # ── 对称校验: 卖出腿必须检查可用股数 >= 卖出股数（T+1限制）──
+                avail_sell = available_shares if available_shares is not None else pos.shares
+                ratio = _CONF.get("t0", {}).get("t0_sell_ratio", _CONF.get("signal", {}).get("t0_sell_half_ratio", 0.1))
+                min_shares_cfg = _CONF.get("trade", {}).get("min_shares", 5000)
+                needed = max(int(pos.shares * ratio / 100) * 100, min_shares_cfg)
+                if avail_sell < needed:
+                    log.info(f"[T0] 可用股数{avail_sell} < 卖出股数{needed}，T+1限制，跳过本次做T")
+                    print(f"[T0] 可用股数{avail_sell} < 卖出股数{needed}，T+1限制，跳过本次做T")
+                    return None
                 if record_t0:
                     pos.record_t0(today_str)
-                ratio = _CONF.get("t0", {}).get("t0_sell_ratio", _CONF.get("signal", {}).get("t0_sell_half_ratio", 0.1))
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
                 if atr_5m and price > 0:
