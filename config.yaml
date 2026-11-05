@@ -167,7 +167,4 @@ database:
   max_overflow: 20
   pool_recycle: 3600
   pool_pre_ping: true
-entry_ma_filter:
-  enabled: false
-  ma_list: [5, 10, 20, 120, 250]
-  require_strict: true
+
