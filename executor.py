@@ -28,6 +28,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional
+from trade import is_filled_status
 
 
 # ═══════════════════════════════════════════════════════
@@ -1120,9 +1121,9 @@ class SignalExecutor:
                     continue
                 if abs(row_shares - shares) > 100:
                     continue
-                # 检查状态是否含"成交"
+                # 检查状态是否为全部成交
                 row_status = str(row[5]).strip() if len(row) > 5 else ''
-                is_filled = '成交' in row_status or '成交' in row_op
+                is_filled = is_filled_status(row_status)
                 if best_row is None or (is_filled and not best_filled):
                     best_row = row
                     best_filled = is_filled

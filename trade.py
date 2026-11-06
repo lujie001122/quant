@@ -135,6 +135,29 @@ def _fetch_contract(e, code, direction, price, shares):
     return 'pending'
 
 
+def is_filled_status(status_text: str) -> bool:
+    """判断委托状态是否为已全部成交。
+    规则：
+      "全部成交" / "已成交"  → True
+      "未成交"              → False（挂单待成交）
+      "已撤" / "废单"       → False
+      "部分成交"            → False（部分成交不等于全部成交）
+      其余含"成交"的文本    → False（保守处理）
+      空字符串              → False
+    """
+    s = str(status_text).strip()
+    if not s:
+        return False
+    if '未成交' in s:
+        return False
+    if '已撤' in s or '废单' in s:
+        return False
+    if '全部成交' in s or '已成交' in s:
+        return True
+    # 部分成交、其余含"成交"字样 → False
+    return False
+
+
 def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None):
     """下单后强制核验：查当日委托表，匹配 代码+方向 且拿到合同号才算成功。
     不允许用返回码为0当作成交依据。接口查不到视为未知，不得当作成功。
@@ -210,9 +233,9 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None)
                 continue
             if abs(row_shares - shares) > 100:
                 continue
-            # 检查状态是否含"成交"
+            # 检查状态是否为全部成交
             row_status = str(row[5]).strip() if len(row) > 5 else ''
-            is_filled = '成交' in row_status or '成交' in row_op
+            is_filled = is_filled_status(row_status)
             if best_row is None or (is_filled and not best_filled):
                 best_row = row
                 best_filled = is_filled
