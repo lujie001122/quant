@@ -915,13 +915,14 @@ class SignalExecutor:
         self._save_sell_chase_state(state)
         print(f"[SELL-CHASE] 记录追价 {_key}: contract={_contract} shares={shares}")
 
-    def _check_t0_buy_idempotent(self, code: str, shares: int) -> bool:
-        """做T买入下单前幂等检查（一次信号只允许下一单）。
+    def _check_t0_idempotent(self, code: str, action: str) -> bool:
+        """做T下单前幂等检查（一次信号只允许下一单，买入/卖出对称）。
 
         读取 orders/*.json 当日记录：
-          - 已存在 code + action=t0_buy 的订单（任意状态：filled/pending/failed/...）
+          - 已存在 code + action 的订单（任意状态：filled/pending/failed/...）
             则判定为今日已下过该单，返回 False（不允许再下）。
           - 否则返回 True。
+        action: 't0_buy' 或 't0_sell'
         核验失败/未知不在本方法处理，由后续 _verify_order_via_entrust 三态判定，
         无论如何不会在本方法触发重下单。
         """
@@ -935,11 +936,11 @@ class SignalExecutor:
         for fname, ord_data in today_orders.items():
             if ord_data.get('code') != code:
                 continue
-            if ord_data.get('action', '') != 't0_buy':
+            if ord_data.get('action', '') != action:
                 continue
             status = ord_data.get('status', '')
             # 任意已下单记录都视为今日已下过（filled/pending/partial/failed 均阻塞）
-            print(f"  [T0幂等] {code} 今日已有做T买入记录 {fname} status={status}，不允许重复下单")
+            print(f"  [T0幂等] {code} 今日已有{action}记录 {fname} status={status}，不允许重复下单")
             return False
         return True
 
@@ -1336,9 +1337,8 @@ class SignalExecutor:
                     continue
 
                 if "买入" in action:
-                    # ── 问题一修复: 做T买入下单前幂等检查，一次信号只允许下一单 ──
-                    _t0_buy_idempotent_ok = self._check_t0_buy_idempotent(code, pair_shares)
-                    if not _t0_buy_idempotent_ok:
+                    # ── 做T下单前幂等检查，一次信号只允许下一单（买入/卖出对称）──
+                    if not self._check_t0_idempotent(code, 't0_buy'):
                         print(f"  🚨 [T0幂等] {code} 今日做T买入已有挂单/成交记录，本次跳过，不重复下单")
                         skip_count += 1
                         continue
@@ -1346,6 +1346,11 @@ class SignalExecutor:
                            code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"]
                     label = f"做T买入 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
                 elif "卖出" in action:
+                    # ── 做T下单前幂等检查，一次信号只允许下一单（买入/卖出对称）──
+                    if not self._check_t0_idempotent(code, 't0_sell'):
+                        print(f"  🚨 [T0幂等] {code} 今日做T卖出已有挂单/成交记录，本次跳过，不重复下单")
+                        skip_count += 1
+                        continue
                     cmd = ["python3", trade_script, "t0_sell",
                            code, str(pair_shares), f"{price:.3f}", f"{pair_price:.3f}"]
                     label = f"做T卖出 {code} {pair_shares}股 @{price:.3f} (配对@{pair_price:.3f})"
@@ -1366,9 +1371,8 @@ class SignalExecutor:
                 shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 atr_5min = sig.get('atr_5min', 0)
                 if "买入" in action:
-                    # ── 问题一修复: 做T买入下单前幂等检查，一次信号只允许下一单 ──
-                    _t0_buy_idempotent_ok = self._check_t0_buy_idempotent(code, shares)
-                    if not _t0_buy_idempotent_ok:
+                    # ── 做T下单前幂等检查，一次信号只允许下一单（买入/卖出对称）──
+                    if not self._check_t0_idempotent(code, 't0_buy'):
                         print(f"  🚨 [T0幂等] {code} 今日做T买入已有挂单/成交记录，本次跳过，不重复下单")
                         skip_count += 1
                         continue
@@ -1377,6 +1381,11 @@ class SignalExecutor:
                            code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
                     label = f"做T买入 {code} {shares}股 @{price:.3f} (配对@{pair_price:.3f})"
                 elif "卖出" in action:
+                    # ── 做T下单前幂等检查，一次信号只允许下一单（买入/卖出对称）──
+                    if not self._check_t0_idempotent(code, 't0_sell'):
+                        print(f"  🚨 [T0幂等] {code} 今日做T卖出已有挂单/成交记录，本次跳过，不重复下单")
+                        skip_count += 1
+                        continue
                     pair_price = calc_t0_pair_price(price, shares, False, atr_5min=atr_5min)
                     cmd = ["python3", trade_script, "t0_sell",
                            code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
