@@ -18,15 +18,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 67.86,
+      "prev_rsi": 67.25,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-11-06": {
+        "2026-11-07": {
           "buy_count": 0,
-          "t0_count": 1
+          "t0_count": 0
         }
       },
       "trend_profit_trigger_date": null,
@@ -63,13 +63,13 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 57.68,
+      "prev_rsi": 56.4,
       "prev_macd_status": "绿柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-11-06": {
+        "2026-11-07": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -108,15 +108,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 58.99,
+      "prev_rsi": 58.0,
       "prev_macd_status": "金叉",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-11-06": {
+        "2026-11-07": {
           "buy_count": 0,
-          "t0_count": 1
+          "t0_count": 0
         }
       },
       "trend_profit_trigger_date": null,
@@ -172,11 +172,11 @@
     }
   },
   "account": {
-    "total_asset": 182531.88,
+    "total_asset": 182599.48,
     "cash": 90138.68,
-    "market_value": 92393.2
+    "market_value": 92460.8
   },
-  "last_updated": "2026-11-06 14:41",
+  "last_updated": "2026-11-07 08:00",
   "_today_open": {
     "date": "2026-11-04",
     "asset": 0.0
