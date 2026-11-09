@@ -170,6 +170,9 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None)
       - since: 下单时刻(HH:MM:SS)，委托时间早于该时刻的记录一律跳过（防误匹配同日旧单）
       - 数量容差：只接受数量相等或差异不超过100股的记录；差异超过100股不算匹配
       - 委托表时间在第1列（格式 HH:MM:SS）
+      - 委托日期[0]必须是今天（YYYYMMDD），排除昨日及更早的委托
+      - 合同号[10]必须不在 orders/ 历史文件已记录的合同号集合中
+      - 状态[5]只接受"未成交"或"全部成交"/"已成交"，"已撤"/"废单"直接跳过
       - 状态含"成交"字样的记录优先匹配并在日志中标注
       - 只有时间窗口内完全找不到满足数量容差的记录才返回失败
 
@@ -177,6 +180,28 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None)
       (True, contract, detail)   核验通过，contract为合同号
       (False, '', detail)         核验失败
     """
+    from datetime import datetime as _dt
+    today_str = _dt.now().strftime('%Y%m%d')
+
+    # 读取 orders/ 目录下所有已记录的历史合同号（复用与 _fetch_contract 相同的读取方式）
+    used_contracts = set()
+    orders_dir = os.path.join(SCRIPT_DIR, 'orders')
+    if os.path.isdir(orders_dir):
+        for fname in os.listdir(orders_dir):
+            if not fname.endswith('.json'):
+                continue
+            fpath = os.path.join(orders_dir, fname)
+            if os.path.isdir(fpath):
+                continue
+            try:
+                with open(fpath) as _f:
+                    _od = json.load(_f)
+                _c = str(_od.get('contract', '')).strip()
+                if _c and _c not in ('0', 'pending', ''):
+                    used_contracts.add(_c)
+            except Exception:
+                pass
+
     MAX_TRIES = 8
     last_ent = None
     last_rows = []
@@ -221,6 +246,17 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None)
             contract = str(row[10]).strip()
             if not contract or contract == '0':
                 continue
+            # 硬性过滤1：委托日期必须是今天
+            row_date = str(row[0]).strip().replace('-', '')
+            if row_date != today_str:
+                continue
+            # 硬性过滤2：合同号不能是历史已记录的合同号
+            if contract in used_contracts:
+                continue
+            # 硬性过滤3：状态必须是"未成交"或"全部成交"/"已成交"，排除"已撤"/"废单"
+            row_status = str(row[5]).strip() if len(row) > 5 else ''
+            if '已撤' in row_status or '废单' in row_status:
+                continue
             # 时间窗口：委托时间 >= since
             if since:
                 row_time = str(row[1]).strip()
@@ -234,7 +270,6 @@ def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None)
             if abs(row_shares - shares) > 100:
                 continue
             # 检查状态是否为全部成交
-            row_status = str(row[5]).strip() if len(row) > 5 else ''
             is_filled = is_filled_status(row_status)
             if best_row is None or (is_filled and not best_filled):
                 best_row = row
@@ -579,6 +614,10 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         print(f"  📤 重试后 EvolvingSim.{method} 原始返回: {result}")
     elif isinstance(result, tuple) and len(result) > 0 and not result[0]:
         print(f"  ⚠️ EvolvingSim 返回 status=False（同花顺拒单），原始返回: {result}")
+        print(f"  ❌ 下单被同花顺拒绝，未产生委托")
+        from state_center import write_intent_failed as _wif
+        _wif(code, action, shares, price, reason='同花顺拒单')
+        sys.exit(1)
 
     # ═══ 强制核验：查当日委托表，匹配 代码+方向+数量 且拿到合同号，才算成功 ═══
     # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
