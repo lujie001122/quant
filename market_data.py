@@ -51,9 +51,28 @@ def _safe_float(val, default=0.0):
         return default
 
 
-def fetch_realtime_quotes():
-    """获取ETF实时行情（Sina主源0.2s→akshare备用16s）"""
-    sina_url = "https://hq.sinajs.cn/list=" + ",".join(CODE_MAP.values())
+def fetch_realtime_quotes(codes=None):
+    """获取ETF实时行情（Sina主源0.2s→akshare备用16s）
+    codes=None: 取全部 ETFS（原有行为不变）
+    codes=list: 只取指定代码，支持不在 CODE_MAP 里的孤儿标的
+    返回字段新增 bid1（买一价）、ask1（卖一价）
+    """
+    # 构建本次请求的 code→sid 映射
+    if codes is None:
+        query_map = dict(CODE_MAP)  # {code: sid}
+    else:
+        query_map = {}
+        for code in codes:
+            if code in CODE_MAP:
+                query_map[code] = CODE_MAP[code]
+            elif code.startswith("5"):
+                query_map[code] = f"sh{code}"
+            elif code.startswith("1"):
+                query_map[code] = f"sz{code}"
+            else:
+                query_map[code] = f"sh{code}"  # 兜底
+
+    sina_url = "https://hq.sinajs.cn/list=" + ",".join(query_map.values())
 
     # 主数据源: Sina (单请求0.2秒)
     try:
@@ -70,7 +89,7 @@ def fetch_realtime_quotes():
             if idx == -1: continue
             parts = line[idx+1:line.rfind('"')].split(",")
             if len(parts) < 6: continue
-            for code, sid in CODE_MAP.items():
+            for code, sid in query_map.items():
                 if sid not in line: continue
                 try:
                     price = float(parts[3])
@@ -78,8 +97,17 @@ def fetch_realtime_quotes():
                 except ValueError:
                     continue  # 跳过异常数据行
                 pct = round((price - prev) / prev * 100, 2) if prev else 0
+                try:
+                    bid1 = float(parts[11]) if len(parts) > 11 and parts[11] else 0
+                except (ValueError, IndexError):
+                    bid1 = 0
+                try:
+                    ask1 = float(parts[21]) if len(parts) > 21 and parts[21] else 0
+                except (ValueError, IndexError):
+                    ask1 = 0
+                name = ETFS[code]["name"] if code in ETFS else code
                 result[code] = {
-                    "name": ETFS[code]["name"],
+                    "name": name,
                     "price": price,
                     "pct_change": pct,
                     "change": round(price - prev, 3),
@@ -89,15 +117,18 @@ def fetch_realtime_quotes():
                     "low": float(parts[5]),
                     "open": float(parts[1]),
                     "prev_close": prev,
+                    "bid1": bid1,
+                    "ask1": ask1,
                 }
         return result
     except Exception:
         pass
 
-    # 备用: akshare
+    # 备用: akshare（无盘口，bid1/ask1 给 0）
     df = _akshare_retry(ak.fund_etf_spot_em)
     result = {}
-    for code in ETFS:
+    target_codes = list(query_map.keys())
+    for code in target_codes:
         row = df[df["代码"] == code]
         if len(row) == 0:
             raise RuntimeError(f"未找到ETF {code} 的实时行情数据")
@@ -113,6 +144,8 @@ def fetch_realtime_quotes():
             "low": _safe_float(r["最低价"]),
             "open": _safe_float(r["开盘价"]),
             "prev_close": _safe_float(r["昨收"]),
+            "bid1": 0,
+            "ask1": 0,
         }
     return result
 

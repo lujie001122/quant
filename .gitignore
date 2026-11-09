@@ -9,3 +9,4 @@ plans/
 orders/
 .idea/
 .DS_Store
+.ths_cred*

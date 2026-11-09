@@ -679,7 +679,7 @@ class SignalExecutor:
                 from evolving.evolving import EvolvingSim
                 import time as _time
                 e = EvolvingSim()
-                res = e.revokeEntrust(revokeType='single', contractNo=contract)
+                res = e.revokeEntrust(revokeType='contractNo', contractNo=contract)
                 _time.sleep(1)
                 return res is not None
             except Exception as ex:
@@ -841,15 +841,24 @@ class SignalExecutor:
                 try:
                     from evolving.evolving import EvolvingSim
                     _e = EvolvingSim()
-                    _chk = _e.getEntrust(contractNo=contract)
+                    _ent_all = _e.getEntrust('today', False)
+                    _chk_row = None
+                    if isinstance(_ent_all, dict) and _ent_all.get('status') and _ent_all.get('data'):
+                        for _row in _ent_all['data']:
+                            if _row and len(_row) >= 11 and str(_row[10]).strip() == str(contract):
+                                _chk_row = _row
+                                break
+                    if _chk_row is None:
+                        print(f"[SELL-CHASE] {key} 合同号{contract}不在委托列表，已不可撤，跳过本次")
+                        continue
                     # 已成交则无需追价
-                    if _chk and str(_chk.get("status", "")).endswith("deal"):
+                    if str(_chk_row[5]).endswith("deal"):
                         print(f"[SELL-CHASE] {key} 旧单{contract}已成交，清除追价记录")
                         del state[key]
                         changed = True
                         continue
                     # 撤单失败不重复下单
-                    _revoke = _e.revokeEntrust(revokeType='single', contractNo=contract)
+                    _revoke = _e.revokeEntrust(revokeType='contractNo', contractNo=contract)
                     if _revoke is None:
                         print(f"[SELL-CHASE] {key} 旧单{contract}撤单失败，不重复下单，跳过本次")
                         continue
