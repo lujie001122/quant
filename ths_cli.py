@@ -219,15 +219,35 @@ def _ensure_login_ready():
     script = '''
 tell application "System Events"
     set theProcs to processes whose bundle identifier is "com.ths.lab"
+    if theProcs is {} then
+        set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
+    end if
     if theProcs is {} then return "no proc"
     set theProc to item 1 of theProcs
     set frontmost of theProc to true
-    delay 0.3
+    delay 0.5
+    set allWins to windows of theProc
+    if (count of allWins) = 0 then return "no windows"
+    set theWin to item 1 of allWins
+    set btnCount to count of buttons of theWin
+    -- 先打开交易面板（button 6）
+    if btnCount < 32 then
+        try
+            click button 6 of theWin
+            delay 2
+        end try
+    end if
+    -- 点模拟按钮（button 12 or by name）
     try
-        click (first button of theProc whose name is "模拟")
-        return "clicked"
+        click button 12 of theWin
+        return "clicked_b12"
     on error
-        return "not found"
+        try
+            click (first button of theWin whose name is "模拟")
+            return "clickedbyname"
+        on error
+            return "not found"
+        end try
     end try
 end tell'''
     subprocess.run(["osascript", "-e", script], timeout=10, capture_output=True, text=True)
@@ -288,27 +308,26 @@ def _get_field(row, *keys):
     return ""
 
 
-# ── 持仓字段编号映射（从 TQT OnTradeRsponceNotify: 协议响应反推）─────────────────
-# 已知真实值：159928/15100股, 512800/11500股, 512890/33200股
-# 字段编号通过 fetch_positions dump 验证后写入；首次以 adaptive 方式扫描
-#   2013 = 股票代码 (zqdm)
-#   2034 = 股票名称
-#   2038 = 持仓数量（总股数/股票余额）
-#   2039 = 可用数量
-#   2055 = 参考成本价
-#   2056 = 市值
-#   2060 = 盈亏额
-#   2066 = 盈亏比例
-#   2069 = 现价
-#   2070 = 交易市场/mkcode
-_POS_FIELD_CODE  = (2013, 2008)        # 股票代码
-_POS_FIELD_NAME  = (2034, 2003)        # 名称
-_POS_FIELD_QTY   = (2038, 2126)        # 持仓数量
-_POS_FIELD_AVAIL = (2039, 2040)        # 可用数量
-_POS_FIELD_COST  = (2055, 2054)        # 成本价
-_POS_FIELD_MV    = (2056, 2057)        # 市值
-_POS_FIELD_PRICE = (2069, 2068)        # 现价
-_POS_FIELD_MKT   = (2070, 2071)        # 市场
+# ── 持仓字段编号映射（从 TQT tableSourceData 实证确认）────────────────────────
+# 已实证字段（2026-11-10，3 只持仓真实数据验证）：
+#   2102 = 股票代码
+#   2103 = 股票名称
+#   2117 = 持仓数量（总股数）
+#   2164 = 可用数量
+#   2122 = 成本价
+#   2124 = 现价
+#   2125 = 市值
+#   2147 = 盈亏额
+#   2106 = 股东账户
+#   2108 = 交易市场
+_POS_FIELD_CODE  = (2102, 2013, 2008)      # 股票代码
+_POS_FIELD_NAME  = (2103, 2034, 2003)      # 名称
+_POS_FIELD_QTY   = (2117, 2038, 2126)      # 持仓数量
+_POS_FIELD_AVAIL = (2164, 2039, 2040)      # 可用数量
+_POS_FIELD_COST  = (2122, 2055, 2054)      # 成本价
+_POS_FIELD_MV    = (2125, 2056, 2057)      # 市值
+_POS_FIELD_PRICE = (2124, 2069, 2068)      # 现价
+_POS_FIELD_MKT   = (2108, 2070, 2071)      # 市场
 
 
 def _parse_pos_row(row):
@@ -327,51 +346,57 @@ def _parse_pos_row(row):
 
 
 def frida_positions(args):
-    """持仓查询：dispatch req_type=0x601 → TQT hook 缓存 → 解析协议响应行。
-    数据完全来自协议响应，不读 NSTableView / 视图树 / 屏幕。"""
-    resp = _call("fetch_positions")
-    result = _ok_or_die(resp)
+    """持仓查询：优先从 setTableSourceData: hook 缓存读取（新路径），
+    兜底旧路径。数据来自接口层 TQT 结构化出口，不读屏幕文字。"""
+    resp = _call("read_positions_direct")
+    result = resp.get("result", {}) if resp.get("ok") else {}
 
     if not result.get("ok"):
-        err = result.get("error", "unknown")
-        if args.json:
-            _json_out({"ok": False, "error": err,
-                       "cache_summary": result.get("cache_summary"),
-                       "send_detected": result.get("send_detected")})
+        # fallback: 旧路径 read_table_data
+        resp2 = _call("read_table_data")
+        result2 = resp2.get("result", {}) if resp2.get("ok") else {}
+        views = result2.get("views", [])
+        best_view = max(views, key=lambda v: v.get("row_count", 0)) if views else None
+        if views and best_view and best_view.get("row_count", 0) > 0:
+            raw_rows = best_view.get("rows", [])
+            source = "tqt_tableSourceData_fallback"
         else:
-            print(f"持仓查询失败: {err}", file=sys.stderr)
-            cs = result.get("cache_summary")
-            if cs:
-                for ntype, info in cs.items():
-                    print(f"  cache nType={ntype} count={info['count']} keys={info['first_keys']}")
-        return
-
-    raw_rows = result.get("rows", [])
-    source = result.get("source", "protocol_response")
-    send_detected = result.get("send_detected")
+            # 最终 fallback: fetch_positions
+            resp3 = _call("fetch_positions")
+            result3 = resp3.get("result", {}) if resp3.get("ok") else {}
+            raw_rows = result3.get("rows", []) if result3.get("ok") else []
+            source = result3.get("source", "fetch_positions_fallback")
+            if not raw_rows:
+                err = result3.get("error", result.get("error", "no positions data"))
+                if args.json:
+                    _json_out({"ok": False, "error": err})
+                else:
+                    print(f"持仓查询失败: {err}", file=sys.stderr)
+                return
+    else:
+        raw_rows = result.get("rows", [])
+        source = result.get("source", "setTableSourceData")
 
     parsed = [_parse_pos_row(r) for r in raw_rows]
-    # 过滤掉代码为空的行（可能是汇总行）
     parsed = [p for p in parsed if p["代码"].strip()]
 
     if not parsed:
-        # 打印原始 dump 供调试字段编号
-        print(f"持仓解析: 代码字段为空，原始 row[0] keys={list(raw_rows[0].keys()) if raw_rows else []}", file=sys.stderr)
         if args.json:
             _json_out({"ok": False, "error": "parsed 0 rows with non-empty code",
                        "raw_count": len(raw_rows),
                        "raw_row0": raw_rows[0] if raw_rows else None})
+        else:
+            print(f"持仓解析: 代码字段为空，raw_row0 keys={list(raw_rows[0].keys()) if raw_rows else []}", file=sys.stderr)
         return
 
     if args.json:
         _json_out({"ok": True, "count": len(parsed), "source": source,
-                   "send_detected": send_detected,
                    "rows": [{k: v for k, v in p.items() if k != "_raw"} for p in parsed]})
         return
 
     fmt = "{:<10} {:<10} {:>8} {:>8} {:>10} {:>14}"
     print(fmt.format("代码", "名称", "数量", "可用", "成本", "市值"))
-    print(f"  (source={source} send_detected={send_detected})")
+    print(f"  (source={source})")
     print("-" * 64)
     for p in parsed:
         print(fmt.format(p["代码"], p["名称"], p["数量"], p["可用"], p["成本"], p["市值"]))
@@ -431,29 +456,70 @@ def _parse_ord_row(row):
     }
 
 
-def frida_orders(args):
-    """委托查询：dispatch req_type=0x603 → TQT hook 缓存 → 解析协议响应行。
-    数据完全来自协议响应，不读 NSTableView / 视图树 / 屏幕。"""
-    resp = _call("fetch_orders")
-    result = _ok_or_die(resp)
+def _click_weituo_button():
+    """AppleScript 点一次委托按钮，让委托 TQT 加载进内存。"""
+    script = '''
+tell application "System Events"
+    set theProcs to processes whose name is "同花顺"
+    if theProcs is {} then return "no proc"
+    set theProc to item 1 of theProcs
+    set frontmost of theProc to true
+    delay 0.3
+    tell window 1 of theProc
+        set allBtns to every button whose name is "委托"
+        if allBtns is {} then return "no button"
+        click item 1 of allBtns
+    end tell
+    delay 2.5
+    return "clicked"
+end tell'''
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           timeout=10, capture_output=True, text=True)
+        return r.stdout.strip()
+    except Exception as e:
+        return f"ERR:{e}"
 
+
+def frida_orders(args):
+    """委托查询：先点委托按钮初始化委托 TQT，再调 readOrdersDirect
+    （调 TQT.requestByType:BeginDate:EndDate: + 轮询）。
+    0 行委托是合法结果（当天无委托）。支持 --date 查询历史日期委托。"""
+
+    # 构造 params：--date YYYY-MM-DD → beginDate/endDate YYYYMMDD
+    params = {}
+    if getattr(args, "date", None):
+        d = args.date.replace("-", "")
+        params = {"beginDate": d, "endDate": d}
+
+    # 先点委托按钮，确保委托 TQT（nType=1539）已初始化进堆
+    click_result = _click_weituo_button()
+    print(f"  [初始化委托 TQT: {click_result}]", file=sys.stderr)
+
+    # 调 read_orders_direct（内部会找 nType=1539 的 TQT 实例，
+    # 对它调 requestByType:BeginDate:EndDate: + 轮询 tableSourceData）
+    resp = _call("read_orders_direct", params if params else None)
+    result = resp.get("result", {}) if resp else {}
     if not result.get("ok"):
-        err = result.get("error", "unknown")
         if args.json:
-            _json_out({"ok": False, "error": err,
-                       "cache_summary": result.get("cache_summary"),
-                       "send_detected": result.get("send_detected")})
+            _json_out({"ok": False, "error": result.get("error", "委托查询失败")})
         else:
-            print(f"委托查询失败: {err}", file=sys.stderr)
-            cs = result.get("cache_summary")
-            if cs:
-                for ntype, info in cs.items():
-                    print(f"  cache nType={ntype} count={info['count']} keys={info['first_keys']}")
+            print(f"委托查询失败: {result.get('error', '')}", file=sys.stderr)
         return
 
     raw_rows = result.get("rows", [])
-    source = result.get("source", "protocol_response")
+    source = result.get("source", "read_orders_direct")
     send_detected = result.get("send_detected")
+    date_used = result.get("beginDate") or result.get("endDate")
+
+    if not raw_rows:
+        # 0 委托是合法结果（当天无委托记录）
+        if args.json:
+            _json_out({"ok": True, "count": 0, "source": source,
+                       "rows": [], "note": "no orders for date: " + (date_used or "today")})
+        else:
+            print(f"委托查询: 0 行  source={source}  date={date_used or 'today'}")
+        return
 
     parsed = [_parse_ord_row(r) for r in raw_rows]
 
@@ -584,7 +650,9 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("positions", help="持仓查询")
-    sub.add_parser("orders",    help="委托查询")
+    op = sub.add_parser("orders", help="委托查询")
+    op.add_argument("--date", default=None, metavar="YYYY-MM-DD",
+                    help="查询日期（默认今天），格式 YYYY-MM-DD，支持历史日期")
     sub.add_parser("account",   help="账户信息")
 
     cp = sub.add_parser("cancel", help="撤单")
@@ -598,7 +666,9 @@ def build_parser():
     sp.add_argument("code"); sp.add_argument("qty", type=int); sp.add_argument("price", type=float)
 
     # frida 兼容命令
-    sub.add_parser("start",   help="启动桥进程 (frida)")
+    sp_start = sub.add_parser("start", help="启动桥进程 (frida)")
+    sp_start.add_argument("--spawn", action="store_true",
+                          help="用 frida spawn 启动副本（推荐，hook 在 ObjC init 之前生效）")
     sub.add_parser("stop",    help="停止桥进程 (frida)")
     sub.add_parser("status",  help="桥状态 (frida)")
     sub.add_parser("ping",    help="ping agent (frida)")
@@ -643,13 +713,16 @@ def main():
             bridge = os.path.join(SCRIPT_DIR, "ths_bridge.py")
             venv_py = os.path.join(SCRIPT_DIR, ".venv/bin/python3")
             py = venv_py if os.path.isfile(venv_py) else sys.executable
+            spawn_flag = getattr(args, "spawn", False)
+            cmd = [py, bridge] + (["--spawn"] if spawn_flag else [])
             proc = subprocess.Popen(
-                [py, bridge],
+                cmd,
                 stdout=open("/tmp/ths_bridge.log", "a"),
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            print(f"桥已启动  pid={proc.pid}  log=/tmp/ths_bridge.log")
+            mode = "spawn" if spawn_flag else "attach"
+            print(f"桥已启动  mode={mode}  pid={proc.pid}  log=/tmp/ths_bridge.log")
         elif args.cmd == "stop":
             subprocess.run(["pkill", "-f", "ths_bridge.py"], check=False)
             print("已发送 SIGTERM 给 ths_bridge.py")

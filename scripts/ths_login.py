@@ -161,12 +161,17 @@ end tell""")
 
 def frida_check_login() -> bool:
     """用 Frida 确认 GetMoniUserArr count > 0 且 getActiveUser != nil。"""
-    # 用 pgrep -x 拿 PID（Frida 看到的进程名是「同花顺」不是 THSX）
+    # 进程名是「同花顺」（MacOS 显示二进制名），用 ps 拿 PID
     try:
-        pid_out = subprocess.check_output(["pgrep", "-x", "THSX"], text=True).strip()
+        pid_out = subprocess.check_output(
+            ["pgrep", "-f", "THSX.app/Contents/MacOS/同花顺"], text=True).strip()
     except subprocess.CalledProcessError:
-        print("Frida 检查失败: THSX 进程不存在", file=sys.stderr)
-        return False
+        try:
+            pid_out = subprocess.check_output(
+                ["pgrep", "-x", "同花顺"], text=True).strip()
+        except subprocess.CalledProcessError:
+            print("Frida 检查失败: 同花顺进程不存在", file=sys.stderr)
+            return False
     pid = int(pid_out.split()[0])
 
     # 把脚本写到临时文件，避免路径转义问题

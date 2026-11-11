@@ -151,7 +151,10 @@ def _count_windows() -> int:
     """用 AppleScript 读窗口数。"""
     script = '''
 tell application "System Events"
-    set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
+    set theProcs to processes whose bundle identifier is "com.ths.lab"
+    if theProcs is {} then
+        set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
+    end if
     if theProcs is {} then return 0
     return count of (windows of item 1 of theProcs)
 end tell'''
@@ -167,7 +170,10 @@ def _ensure_window():
     """如果没有窗口，用 AppleScript 激活 + Cmd+N。"""
     script = """
 tell application "System Events"
-    set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
+    set theProcs to processes whose bundle identifier is "com.ths.lab"
+    if theProcs is {} then
+        set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
+    end if
     if theProcs is {} then return
     set theProc to item 1 of theProcs
     set winCount to count of (windows of theProc)
@@ -215,6 +221,29 @@ class AgentSession:
             self._rpc     = script.exports_sync
             self._pid     = pid
             log.info("frida attached ok pid=%d", pid)
+
+    def spawn_connect(self):
+        """spawn 副本 → attach → load script → resume，确保 hook 在所有 ObjC init 之前生效。"""
+        with self._lock:
+            self._disconnect_locked()
+            dev = frida.get_local_device()
+            log.info("spawning %s", APP_BIN)
+            pid = dev.spawn([APP_BIN])
+            log.info("spawned pid=%d, attaching...", pid)
+            session = dev.attach(pid)
+            session.on("detached", self._on_detach)
+            js_src = open(AGENT_JS, encoding="utf-8").read()
+            script = session.create_script(js_src)
+            script.on("message", self._on_message)
+            script.load()
+            log.info("script loaded, resuming pid=%d", pid)
+            dev.resume(pid)
+            self._session = session
+            self._script  = script
+            self._rpc     = script.exports_sync
+            self._pid     = pid
+            log.info("frida spawn+attach ok pid=%d", pid)
+            return pid
 
     def _disconnect_locked(self):
         try:
@@ -296,6 +325,25 @@ ALLOWED_METHODS = {
     "ensure_ready",
     # 协议响应路径（不读视图树）
     "fetch_positions", "fetch_orders",
+    "dump_response_hooks",
+    # socket 层收包 hook + 类方法扫描
+    "scan_class_methods", "enable_recv", "recv_dump",
+    "register_delegate",
+    # 登录
+    "login",
+    # 通过 TQT 实例触发刷新 + dataSource 路径读委托
+    "refresh_tqt", "read_orders_via_data_source",
+    # setTableSourceData: hook 路径（主数据出口）
+    "read_positions_direct",
+    # 广谱 hook 诊断委托响应落点
+    "hook_tqt_callbacks", "dump_tqt_cb_log",
+    # 直接从内存读 TQT 实例 tableSourceData（不依赖网络响应 hook）
+    "read_tqt_direct",
+    "read_orders_direct",
+    # 测试 upRequestRangeDateForActiveUser 路径
+    "test_up_request",
+    # Interceptor.replace 覆盖路径，15s 轮询
+    "force_orders_fetch",
 }
 
 
@@ -366,17 +414,101 @@ def serve():
 
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
+def _prime_trade_panel():
+    """attach 成功后执行一次：设 frontmost → 点 button 6（交易）→ 等 4s → 点「模拟」→ 等 6s。
+    让面板在 hook 就位之后创建，使 setTableSourceData: hook 能捕捉到数据。"""
+    script = '''
+tell application "System Events"
+    set theProcs to processes whose name is "同花顺"
+    if theProcs is {} then return "no proc"
+    set theProc to item 1 of theProcs
+    set frontmost of theProc to true
+    delay 0.5
+    set allWins to windows of theProc
+    if (count of allWins) = 0 then return "no windows"
+    set theWin to item 1 of allWins
+    -- 点交易 tab（button 6）
+    try
+        click button 6 of theWin
+    on error errMsg
+        return "b6_err:" & errMsg
+    end try
+    delay 4
+    -- 点「模拟」按钮
+    try
+        click button "模拟" of theWin
+        return "ok_by_name"
+    on error
+    end try
+    try
+        click button 12 of theWin
+        return "ok_b12"
+    on error errMsg2
+        return "moni_err:" & errMsg2
+    end try
+end tell'''
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           timeout=15, capture_output=True, text=True)
+        result = r.stdout.strip()
+        log.info("prime_trade_panel: %s", result)
+        return result
+    except Exception as e:
+        log.warning("prime_trade_panel error: %s", e)
+        return f"ERR:{e}"
+
+
 def main():
     import argparse as _ap
     ap = _ap.ArgumentParser(description="ths_bridge — Frida agent bridge")
     ap.add_argument("--pid", type=int, default=None,
                     help="直接 attach 指定 pid，不自动启动/重启 app")
+    ap.add_argument("--spawn", action="store_true",
+                    help="用 frida spawn 启动副本，hook 在所有 ObjC init 之前生效（推荐）")
+    ap.add_argument("--no-prime", action="store_true",
+                    help="跳过 attach 后的自动点击「交易→模拟」流程")
     args = ap.parse_args()
 
     if not os.path.isfile(AGENT_JS):
         sys.exit(f"agent not found: {AGENT_JS}")
 
-    if args.pid:
+    _no_prime = getattr(args, "no_prime", False)
+
+    if args.spawn:
+        # spawn 模式：先杀已有副本，再 spawn+attach，确保 hook 最早生效
+        copy_pid = _get_copy_pid()
+        if copy_pid:
+            log.info("killing existing copy pid=%d before spawn", copy_pid)
+            os.kill(copy_pid, signal.SIGKILL)
+            time.sleep(1)
+        _ensure_plist_no_restore()
+        try:
+            _agent.spawn_connect()
+        except Exception as e:
+            log.error("spawn failed: %s", e)
+            sys.exit(1)
+        if not _no_prime:
+            threading.Thread(target=_prime_trade_panel, daemon=True).start()
+
+        def _spawn_reconnect():
+            while True:
+                time.sleep(5)
+                if not _agent.connected:
+                    log.warning("agent disconnected after spawn, re-spawning...")
+                    try:
+                        c = _get_copy_pid()
+                        if c:
+                            os.kill(c, signal.SIGKILL)
+                            time.sleep(1)
+                        _agent.spawn_connect()
+                        if not _no_prime:
+                            _prime_trade_panel()
+                    except Exception as e:
+                        log.error("re-spawn failed: %s", e)
+        t = threading.Thread(target=_spawn_reconnect, daemon=True)
+        t.start()
+
+    elif args.pid:
         # 直接 attach 模式：不调用 ensure_app，不自动重启
         log.info("direct-pid mode: attaching to pid=%d (no auto-restart)", args.pid)
         try:
@@ -384,6 +516,9 @@ def main():
         except Exception as e:
             log.error("attach failed: %s", e)
             sys.exit(1)
+        if not _no_prime:
+            threading.Thread(target=_prime_trade_panel, daemon=True).start()
+
         # 静态重连：只有 agent 断开才重连到同一 pid，不重启进程
         def _static_reconnect():
             while True:
@@ -392,17 +527,21 @@ def main():
                     log.warning("agent disconnected, re-attaching to pid=%d", args.pid)
                     try:
                         _agent.connect(args.pid)
+                        if not _no_prime:
+                            _prime_trade_panel()
                     except Exception as e:
                         log.error("re-attach failed: %s", e)
         t = threading.Thread(target=_static_reconnect, daemon=True)
         t.start()
     else:
-        # 原始自动模式（不传 --pid 时保留原逻辑，但本次任务不走这里）
+        # 原始自动模式（attach 已跑进程）
         try:
             pid = ensure_app()
             _agent.connect(pid)
         except Exception as e:
             log.error("initial connect failed: %s", e)
+        if not _no_prime:
+            threading.Thread(target=_prime_trade_panel, daemon=True).start()
 
         t = threading.Thread(target=reconnect_loop, daemon=True)
         t.start()

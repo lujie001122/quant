@@ -143,47 +143,47 @@
   "positions": {
     "159928": {
       "name": "消费ETF",
-      "shares": 26100,
-      "available": 14000,
-      "frozen": 12100,
-      "avg_cost": 0.702,
-      "current_price": 0.701,
-      "market_value": 18296.1,
-      "pnl": -36.61,
-      "pnl_pct": -0.2,
+      "shares": 15100,
+      "available": 15100,
+      "frozen": 0,
+      "avg_cost": 0.703,
+      "current_price": 0.693,
+      "market_value": 10464.3,
+      "pnl": -148.72,
+      "pnl_pct": -1.4,
       "base_price": 0.703
     },
     "512800": {
       "name": "银行ETF",
-      "shares": 14300,
-      "available": 14300,
+      "shares": 11500,
+      "available": 11500,
       "frozen": 0,
-      "avg_cost": 0.845,
+      "avg_cost": 0.835,
       "current_price": 0.885,
-      "market_value": 12655.5,
-      "pnl": 570.97,
-      "pnl_pct": 4.73,
+      "market_value": 10177.5,
+      "pnl": 574.42,
+      "pnl_pct": 5.98,
       "base_price": 0.865
     },
     "512890": {
       "name": "红利低波ETF",
-      "shares": 36800,
-      "available": 36800,
+      "shares": 33200,
+      "available": 33200,
       "frozen": 0,
-      "avg_cost": 1.213,
-      "current_price": 1.24,
-      "market_value": 45632.0,
-      "pnl": 986.82,
-      "pnl_pct": 2.21,
+      "avg_cost": 1.211,
+      "current_price": 1.234,
+      "market_value": 40968.8,
+      "pnl": 770.44,
+      "pnl_pct": 1.92,
       "base_price": 1.216
     }
   },
   "account": {
-    "total_asset": 199930.25,
+    "total_asset": 199240.65,
     "cash": 137903.05,
-    "market_value": 62027.2
+    "market_value": 61337.6
   },
-  "last_updated": "2026-11-09 17:02",
+  "last_updated": "2026-11-11 17:00",
   "_today_open": {
     "date": "2026-11-04",
     "asset": 0.0
