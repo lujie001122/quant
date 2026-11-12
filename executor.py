@@ -7,11 +7,18 @@ executor.py — 交易执行器
 架构:
   BaseBroker (抽象类)
   ├── SimBroker (回测用 — 模拟成交)
-  └── RealBroker (实盘用 — 封装 EvolvingSim)
+  ├── RealBroker (实盘下单 — 封装 EvolvingSim)
+  └── ThsBroker (broker_frida.py — 进程内数据接口：读持仓/委托/成交 + 撤单)
 
 通过 config.yaml 的 broker_type 选择:
   broker_type: "sim"  → SimBroker
   broker_type: "real" → RealBroker
+  broker_type: "ths"  → ThsBroker（下单仍委托 RealBroker）
+
+数据通道:
+  - 读（持仓/委托/成交）、撤单：优先 frida（App 内部数据对象，零点击）
+  - 资金：新接口无 account 命令，仍走 EvolvingSim.getAccountInfo
+  - 下单：本轮未迁移，仍走 EvolvingSim
 
 用法:
   from executor import get_broker
@@ -435,7 +442,13 @@ class RealBroker(BaseBroker):
             )
 
     def cancel(self, order: Order) -> bool:
-        """撤单"""
+        """撤单：优先 frida（合同号 → App 撤单方法），失败回退旧通道 revokeEntrust。"""
+        try:
+            from broker_frida import get_ths_broker
+            if get_ths_broker().cancel(order):
+                return True
+        except Exception as ex:
+            print(f"  ⚠️ frida 撤单失败: {ex} → 回退旧通道 revokeEntrust")
         self._ensure_tonghuashun_active()
         try:
             result = self._call_evolving("revokeEntrust", revokeType="contractNo", contractNo=order.broker_order_id)
@@ -444,7 +457,12 @@ class RealBroker(BaseBroker):
             return False
 
     def cancel_all(self) -> bool:
-        """全撤所有买卖委托"""
+        """全撤：优先 frida（遍历委托逐笔撤），失败回退旧通道 revokeEntrust。"""
+        try:
+            from broker_frida import get_ths_broker
+            return get_ths_broker().cancel_all()
+        except Exception as ex:
+            print(f"  ⚠️ frida 全撤失败: {ex} → 回退旧通道 revokeEntrust(allBuyAndSell)")
         self._ensure_tonghuashun_active()
         try:
             result = self._call_evolving("revokeEntrust", revokeType="allBuyAndSell")
@@ -453,7 +471,14 @@ class RealBroker(BaseBroker):
             return False
 
     def query(self, order: Order) -> Optional[Dict]:
-        """查询订单状态（通过 getEntrust）"""
+        """查询订单状态：优先 frida orders（含合同号），失败回退 getEntrust。"""
+        try:
+            from broker_frida import get_ths_broker
+            hit = get_ths_broker().query(order)
+            if hit:
+                return hit
+        except Exception as ex:
+            print(f"  ⚠️ frida 查询委托失败: {ex} → 回退旧通道 getEntrust")
         self._ensure_tonghuashun_active()
         try:
             result = self._call_evolving("getEntrust", "today", False)
@@ -480,7 +505,14 @@ class RealBroker(BaseBroker):
             return None
 
     def get_positions(self) -> Dict[str, Dict]:
-        """获取持仓（通过 getHoldingShares）"""
+        """获取持仓：优先 frida（App 内部持仓表），失败回退 getHoldingShares。"""
+        try:
+            from broker_frida import get_ths_broker
+            positions = get_ths_broker().get_positions()
+            print(f"  [通道] 持仓: frida 接口 ({len(positions)} 只)")
+            return positions
+        except Exception as ex:
+            print(f"  ⚠️ frida 持仓失败: {ex} → 回退旧通道 getHoldingShares")
         self._ensure_tonghuashun_active()
         try:
             h = self._call_evolving("getHoldingShares")
@@ -516,7 +548,11 @@ class RealBroker(BaseBroker):
             return {}
 
     def get_account(self) -> Dict:
-        """获取账户信息"""
+        """获取账户信息：⚠️ 仍走旧通道 EvolvingSim.getAccountInfo。
+
+        ths_cli 的 frida 引擎没有 account 命令（只有持仓/委托/成交），
+        资金字段暂无进程内接口，因此这里保持旧通道不改。
+        """
         self._ensure_tonghuashun_active()
         try:
             acct = self._call_evolving("getAccountInfo")
@@ -539,6 +575,21 @@ class RealBroker(BaseBroker):
             return {"total_asset": 0, "cash": 0, "market_value": 0}
         except Exception:
             return {"total_asset": 0, "cash": 0, "market_value": 0}
+
+    def get_execution_history(self) -> list:
+        """委托历史：来源 frida orders（含合同号/方向/状态/委托量/成交量）。
+
+        旧通道 EvolvingSim 只有 getEntrust 行数组、无此接口；这里直接用新通道。
+        失败返回空列表并打印原因，不伪造数据。
+        """
+        try:
+            from broker_frida import get_ths_broker
+            orders = get_ths_broker().get_orders()
+            print(f"  [通道] 委托: frida 接口 ({len(orders)} 行)")
+            return orders
+        except Exception as ex:
+            print(f"  ⚠️ frida 委托失败: {ex}")
+            return []
 
     def is_connected(self) -> bool:
         """检查同花顺连接状态"""
@@ -585,17 +636,31 @@ def get_broker() -> BaseBroker:
     """工厂函数: 根据 config.yaml 选择 broker
 
     broker_type: "sim"  → SimBroker (回测)
-    broker_type: "real" → RealBroker (实盘)
+    broker_type: "real" → RealBroker (实盘下单，读接口已优先走 frida)
+    broker_type: "ths"  → ThsBroker (进程内数据接口；下单仍委托 RealBroker)
     默认: SimBroker
     """
     config = _load_config()
     broker_type = config.get("broker_type", "sim")
 
+    if broker_type == "ths":
+        from broker_frida import get_ths_broker
+        return get_ths_broker()
     if broker_type == "real":
         return RealBroker()
     else:
         init_cash = float(config.get("total_fund", 220000))
         return SimBroker(initial_cash=init_cash)
+
+
+def get_data_broker():
+    """只读数据通道：ThsBroker（进程内接口）。
+
+    供 trade.py sync 等读持仓/委托/成交使用；失败由调用方回退旧通道，
+    因此这里不做任何吞异常处理，直接让 ThsCliError 上抛。
+    """
+    from broker_frida import get_ths_broker
+    return get_ths_broker()
 
 
 # ═══════════════════════════════════════════════════════
@@ -611,6 +676,61 @@ def get_default_broker() -> BaseBroker:
     if _broker is None:
         _broker = get_broker()
     return _broker
+
+
+# ═══════════════════════════════════════════════════════
+# 撤单 / 委托查询辅助（frida 优先，旧通道兜底）
+# ═══════════════════════════════════════════════════════
+
+def _cancel_contract(contract: str) -> bool:
+    """按合同号撤单：frida cancel --real 优先，失败回退 EvolvingSim.revokeEntrust。"""
+    if not contract or contract == 'pending':
+        return False
+    try:
+        from broker_frida import get_ths_broker
+        get_ths_broker().cancel_contract(contract, real=True)
+        print(f"  [通道] 撤单: frida 接口 合同号={contract}")
+        return True
+    except Exception as ex:
+        print(f"  ⚠️ frida 撤单失败: {ex} → 回退旧通道 revokeEntrust")
+    try:
+        from evolving.evolving import EvolvingSim
+        res = EvolvingSim().revokeEntrust(revokeType='contractNo', contractNo=contract)
+        time.sleep(1)
+        return res is not None
+    except Exception as ex:
+        print(f"  ⚠️ 旧通道撤单异常 contract={contract}: {ex}")
+        return False
+
+
+def _lookup_contract_status(contract: str):
+    """查合同号状态：frida orders 优先，失败回退 getEntrust。
+
+    返回 (status_text, filled)。status_text=None 表示查不到/查询失败。
+    """
+    frida_ok = False
+    try:
+        from broker_frida import get_ths_broker
+        o = get_ths_broker().query_contract(contract)
+        frida_ok = True
+        if o:
+            status = o.get('status', '')
+            return status, ('全部成交' in status)
+    except Exception as ex:
+        print(f"  ⚠️ frida 查委托失败: {ex} → 回退旧通道 getEntrust")
+    if frida_ok:
+        return None, False
+    try:
+        from evolving.evolving import EvolvingSim
+        ent = EvolvingSim().getEntrust('today', False)
+        if isinstance(ent, dict) and ent.get('status') and ent.get('data'):
+            for row in ent['data']:
+                if row and len(row) >= 11 and str(row[10]).strip() == str(contract):
+                    status = str(row[5])
+                    return status, status.endswith('deal')
+    except Exception as ex:
+        print(f"  ⚠️ 旧通道查委托异常 contract={contract}: {ex}")
+    return None, False
 
 
 # ═══════════════════════════════════════════════════════
@@ -673,18 +793,7 @@ class SignalExecutor:
                 return None
 
         def _cancel_fn(contract):
-            if not contract or contract == 'pending':
-                return False
-            try:
-                from evolving.evolving import EvolvingSim
-                import time as _time
-                e = EvolvingSim()
-                res = e.revokeEntrust(revokeType='contractNo', contractNo=contract)
-                _time.sleep(1)
-                return res is not None
-            except Exception as ex:
-                print(f"  ⚠️ cancel_fn 撤单异常 contract={contract}: {ex}")
-                return False
+            return _cancel_contract(contract)
 
         _script_dir = os.path.dirname(os.path.abspath(__file__))
         _trade_py = os.path.join(_script_dir, 'trade.py')
@@ -836,35 +945,21 @@ class SignalExecutor:
                 print(f"[SELL-CHASE] {key} 买一价无效(bid1={bid1})，跳过本次")
                 continue
 
-            # 撤旧单前确认旧单状态（沿用现有 revoke 语义）
+            # 撤旧单前确认旧单状态（frida orders 优先，失败回退 getEntrust）
             if contract and contract != "pending":
-                try:
-                    from evolving.evolving import EvolvingSim
-                    _e = EvolvingSim()
-                    _ent_all = _e.getEntrust('today', False)
-                    _chk_row = None
-                    if isinstance(_ent_all, dict) and _ent_all.get('status') and _ent_all.get('data'):
-                        for _row in _ent_all['data']:
-                            if _row and len(_row) >= 11 and str(_row[10]).strip() == str(contract):
-                                _chk_row = _row
-                                break
-                    if _chk_row is None:
-                        print(f"[SELL-CHASE] {key} 合同号{contract}不在委托列表，已不可撤，跳过本次")
-                        continue
-                    # 已成交则无需追价
-                    if str(_chk_row[5]).endswith("deal"):
-                        print(f"[SELL-CHASE] {key} 旧单{contract}已成交，清除追价记录")
-                        del state[key]
-                        changed = True
-                        continue
-                    # 撤单失败不重复下单
-                    _revoke = _e.revokeEntrust(revokeType='contractNo', contractNo=contract)
-                    if _revoke is None:
-                        print(f"[SELL-CHASE] {key} 旧单{contract}撤单失败，不重复下单，跳过本次")
-                        continue
-                    _time.sleep(1)
-                except Exception as ex:
-                    print(f"[SELL-CHASE] {key} 确认/撤单异常 contract={contract}: {ex}，跳过本次")
+                _status, _filled = _lookup_contract_status(contract)
+                if _status is None:
+                    print(f"[SELL-CHASE] {key} 合同号{contract}查不到或不在委托列表，已不可撤，跳过本次")
+                    continue
+                # 已成交则无需追价
+                if _filled:
+                    print(f"[SELL-CHASE] {key} 旧单{contract}已成交，清除追价记录")
+                    del state[key]
+                    changed = True
+                    continue
+                # 撤单失败不重复下单
+                if not _cancel_contract(contract):
+                    print(f"[SELL-CHASE] {key} 旧单{contract}撤单失败，不重复下单，跳过本次")
                     continue
 
             # 按对手价（买一价）重挂

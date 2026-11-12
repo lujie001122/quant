@@ -14,17 +14,20 @@ import logging
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
+from typing import Optional
 
 import frida
 
 # ── 路径 ─────────────────────────────────────────────────────────────────────
-AGENT_JS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ths_agent.js")
-SOCK_PATH = "/tmp/ths_bridge.sock"
-LOG_PATH  = "/tmp/ths_bridge.log"
+AGENT_JS   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ths_agent.js")
+SOCK_PATH  = "/tmp/ths_bridge.sock"
+LOG_PATH   = "/tmp/ths_bridge.log"
+FRAMES_DIR = "/tmp/ths_frames"
 APP_COPY  = "/tmp/ths_lab/THS.app"
 APP_BIN   = "/tmp/ths_lab/THS.app/Contents/MacOS/同花顺"
 APP_ORIG_NAME = "同花顺"
@@ -42,9 +45,239 @@ logging.basicConfig(
 log = logging.getLogger("ths_bridge")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 协议层 FrameSaver + 帧解析器
+# 职责：
+#   1. 保存 agent 通过 send({type:'sock_frame'}) 推来的原始字节到 /tmp/ths_frames/
+#   2. parse_frames(data) 解析同花顺协议帧 → 记录列表
+#      帧格式：FD FD FD FD + 8字节ASCII十六进制长度 + 0x09 + payload
+#      payload：TLV —— 字段键（十进制字符串或二进制）+ 长度 + 值
+# ══════════════════════════════════════════════════════════════════════════════
+
+FRAME_MAGIC = b'\xfd\xfd\xfd\xfd'
+FRAME_HDR_LEN = 4 + 8 + 1   # magic(4) + hex_len(8) + sep(1) = 13
+
+# 已确认字段号（持仓 / 委托 / 成交 通用）
+_FIELD_NAMES = {
+    2102: "代码",    2103: "名称",    2106: "股东账户", 2108: "市场",
+    2113: "合同号",  2117: "数量",    2119: "成交价",   2120: "成交量",
+    2121: "可用",    2122: "成本",    2124: "现价",     2125: "市值",
+    2126: "委托量",  2127: "委托价",  2135: "scdm",     2140: "时间",
+    2147: "当日盈亏", 2105: "状态",   4008: "方向",     2096: "时间2",
+    2109: "成交额",  2111: "成交量2",
+}
+
+
+class FrameSaver:
+    """线程安全的原始帧落盘管理器。"""
+
+    MAX_TOTAL = 32 * 1024 * 1024   # 32 MB 总缓存上限
+    MAX_FRAME = 256 * 1024          # 256 KB 单帧上限
+
+    def __init__(self, frames_dir: str = FRAMES_DIR):
+        self._dir = frames_dir
+        self._lock = threading.Lock()
+        self._total_bytes = 0
+        self._frame_count = 0
+        self._dropped = 0
+        os.makedirs(frames_dir, exist_ok=True)
+
+    def save(self, seq: int, data: Optional[bytes]) -> bool:
+        """保存一帧到磁盘。data 为 None 或超限时丢弃并计数。"""
+        if not data:
+            return False
+        n = len(data)
+        with self._lock:
+            if n > self.MAX_FRAME or self._total_bytes + n > self.MAX_TOTAL:
+                self._dropped += 1
+                log.debug("frame_saver: dropped frame seq=%d size=%d", seq, n)
+                return False
+            path = os.path.join(self._dir, f"frame_{seq:06d}.bin")
+            try:
+                with open(path, "wb") as f:
+                    f.write(data)
+                self._total_bytes += n
+                self._frame_count += 1
+                return True
+            except OSError as e:
+                log.warning("frame_saver: write error seq=%d: %s", seq, e)
+                return False
+
+    def save_named(self, filename: str, data: Optional[bytes]) -> bool:
+        """保存一帧到磁盘，文件名由调用方指定。"""
+        if not data:
+            return False
+        n = len(data)
+        with self._lock:
+            if n > self.MAX_FRAME or self._total_bytes + n > self.MAX_TOTAL:
+                self._dropped += 1
+                return False
+            path = os.path.join(self._dir, filename)
+            try:
+                with open(path, "wb") as f:
+                    f.write(data)
+                self._total_bytes += n
+                self._frame_count += 1
+                return True
+            except OSError as e:
+                log.warning("frame_saver: write error %s: %s", filename, e)
+                return False
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "frame_count": self._frame_count,
+                "total_bytes": self._total_bytes,
+                "dropped": self._dropped,
+                "dir": self._dir,
+            }
+
+    def list_frames(self) -> list:
+        """返回落盘文件列表（按名称排序）。"""
+        try:
+            return sorted(
+                f for f in os.listdir(self._dir) if f.startswith("frame_") and f.endswith(".bin")
+            )
+        except OSError:
+            return []
+
+    def read_frame(self, filename: str) -> Optional[bytes]:
+        """读取指定帧文件内容。"""
+        path = os.path.join(self._dir, filename)
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+
+
+_frame_saver = FrameSaver()
+
+
+def parse_tlv_payload(payload: bytes) -> list:
+    """
+    解析 TLV payload → list[dict]，每个 dict 是一条记录。
+    同花顺 TLV 格式（实测）：
+      字段键：4字节小端 int32（也可能是十进制字符串直到 '\\x00'）
+      长度：2字节小端 uint16
+      值：length 字节 UTF-8 字符串
+    多条记录：同一组字段号循环出现，按首个字段号的重复位置切分记录。
+    """
+    records = []
+    if not payload:
+        return records
+
+    i = 0
+    n = len(payload)
+    current: dict = {}
+    first_key = None
+    field_order = []
+
+    def flush():
+        nonlocal current, field_order
+        if current:
+            records.append(dict(current))
+        current = {}
+        field_order = []
+
+    while i < n:
+        # ── 读字段键（4字节小端 int，或跳过非结构字节）────────────────────
+        if i + 6 > n:  # 至少需要 key(4)+len(2)
+            break
+        key_raw = payload[i:i+4]
+        key = struct.unpack_from('<i', key_raw)[0]
+        i += 4
+
+        # 合法字段号范围大约 1000-9999，否则尝试跳过
+        if not (1000 <= key <= 99999):
+            # 退一步：尝试把 key 解读为其他格式，实际跳过 1 字节继续扫描
+            i -= 3  # 退回，只消耗1字节
+            continue
+
+        val_len = struct.unpack_from('<H', payload, i)[0]
+        i += 2
+        if i + val_len > n:
+            break
+
+        val_bytes = payload[i:i+val_len]
+        i += val_len
+        try:
+            val = val_bytes.decode('utf-8', errors='replace').rstrip('\x00')
+        except Exception:
+            val = val_bytes.hex()
+
+        # 检测记录边界：字段号与第一条记录中的 first_key 相同时，说明新记录开始
+        if first_key is None:
+            first_key = key
+        elif key == first_key and current:
+            flush()
+
+        current[key] = val
+        field_order.append(key)
+
+    flush()
+    return records
+
+
+def parse_frames(data: bytes) -> list:
+    """
+    在字节流 data 中扫描所有同花顺协议帧，解析并返回记录列表。
+    帧格式：FD FD FD FD + 8字节ASCII十六进制长度 + 0x09 + payload
+    返回：[{"frame_offset": int, "payload_len": int, "records": [...]}, ...]
+    """
+    results = []
+    i = 0
+    n = len(data)
+    while i <= n - FRAME_HDR_LEN:
+        idx = data.find(FRAME_MAGIC, i)
+        if idx < 0:
+            break
+        i = idx
+        # 读 8 字节 ASCII 十六进制长度
+        if i + FRAME_HDR_LEN > n:
+            break
+        hex_len_bytes = data[i+4:i+12]
+        sep = data[i+12]
+        try:
+            payload_len = int(hex_len_bytes, 16)
+        except ValueError:
+            i += 1
+            continue
+        if sep != 0x09:
+            i += 1
+            continue
+        payload_start = i + FRAME_HDR_LEN
+        if payload_start + payload_len > n:
+            # 帧不完整，停止扫描
+            break
+        payload = data[payload_start:payload_start + payload_len]
+        records = parse_tlv_payload(payload)
+        results.append({
+            "frame_offset": i,
+            "payload_len": payload_len,
+            "records": records,
+            "payload_hex_preview": payload[:200].hex() if payload else "",
+        })
+        i = payload_start + payload_len
+
+    return results
+
+
+def humanize_records(records: list) -> list:
+    """把字段号键替换为可读名称，不影响原始数据。"""
+    out = []
+    for rec in records:
+        h = {}
+        for k, v in rec.items():
+            name = _FIELD_NAMES.get(int(k) if str(k).lstrip('-').isdigit() else -1, str(k))
+            h[name] = v
+        out.append(h)
+    return out
+
+
 # ── 进程管理 ──────────────────────────────────────────────────────────────────
 
-def _get_copy_pid() -> int | None:
+def _get_copy_pid() -> Optional[int]:
     """返回副本 /tmp/thsx2.app 的 pid，没有返回 None。"""
     try:
         out = subprocess.check_output(["pgrep", "-x", APP_ORIG_NAME], text=True)
@@ -61,7 +294,7 @@ def _get_copy_pid() -> int | None:
     return None
 
 
-def _get_orig_pid() -> int | None:
+def _get_orig_pid() -> Optional[int]:
     """返回原版 /Applications/同花顺.app 的 pid，没有返回 None。"""
     try:
         out = subprocess.check_output(["pgrep", "-x", APP_ORIG_NAME], text=True)
@@ -266,6 +499,22 @@ class AgentSession:
     def _on_message(self, message, data):
         if message.get("type") == "error":
             log.error("agent JS error: %s\n%s", message.get("description"), message.get("stack"))
+        elif message.get("type") == "send":
+            payload = message.get("payload", {})
+            if isinstance(payload, dict) and payload.get("type") == "sock_frame":
+                # 协议层原始帧：落盘到 /tmp/ths_frames/<timestamp>-<seq>.bin
+                seq = payload.get("seq", 0)
+                ts = int(time.time() * 1000)
+                fname = f"{ts}-{seq:06d}.bin"
+                saved = _frame_saver.save_named(fname, data)
+                if saved and data:
+                    hex64 = data[:64].hex()
+                    log.info("sock_frame seq=%d len=%d file=%s hex64=%s",
+                             seq, len(data), fname, hex64)
+            elif isinstance(payload, dict) and payload.get("type") == "log":
+                log.info("agent: %s", payload.get("text", ""))
+            else:
+                log.debug("agent send message: %s", payload)
         else:
             log.debug("agent message: %s", message)
 
@@ -313,44 +562,119 @@ def reconnect_loop():
 # ── 请求处理 ──────────────────────────────────────────────────────────────────
 
 ALLOWED_METHODS = {
+    # 基础
     "ping", "state",
-    "read_table_data", "send_chedan",
-    "query_positions", "send_chedan_direct",
-    "read_ns_table_views", "read_positions", "read_orders",
-    "read_orders_from_table",
-    "open_window",
+    # 买卖
     "buy", "sell",
-    "capture_start", "capture_stop", "capture_dump",
-    "send_log",
-    "ensure_ready",
-    # 协议响应路径（不读视图树）
-    "fetch_positions", "fetch_orders",
-    "dump_response_hooks",
-    # socket 层收包 hook + 类方法扫描
-    "scan_class_methods", "enable_recv", "recv_dump",
-    "register_delegate",
     # 登录
     "login",
-    # 通过 TQT 实例触发刷新 + dataSource 路径读委托
-    "refresh_tqt", "read_orders_via_data_source",
-    # setTableSourceData: hook 路径（主数据出口）
+    # capture / sendLog（兼容）
+    "capture_start", "capture_stop", "capture_dump", "send_log",
+    # ── hook-free 新路径 ──────────────────────────────────────────────────────
+    "scan_instances",
+    "read_positions", "read_orders", "read_trades",
+    "send_chedan_by_index",
+    # ── 旧名兼容别名 ──────────────────────────────────────────────────────────
     "read_positions_direct",
-    # 广谱 hook 诊断委托响应落点
-    "hook_tqt_callbacks", "dump_tqt_cb_log",
-    # 直接从内存读 TQT 实例 tableSourceData（不依赖网络响应 hook）
-    "read_tqt_direct",
     "read_orders_direct",
-    # 测试 upRequestRangeDateForActiveUser 路径
-    "test_up_request",
-    # Interceptor.replace 覆盖路径，15s 轮询
-    "force_orders_fetch",
+    "read_trades_direct",
+    "fetch_positions",
+    "fetch_orders",
+    "read_table_data",
+    "ensure_ready",
+    "prime_cache",
+    "get_cache_status",
+    "ensure_query_templates",
+    "login_sim",
+    "request_query_direct",
 }
+
+
+# ── 本地方法表（不需要 agent RPC 的方法在这里直接处理）──────────────────────────
+
+def _handle_local(method: str, params: dict):
+    """返回 (handled, result)。若 handled=False 则交给 agent.call()。"""
+    if method == "get_frames_list":
+        return True, {"ok": True, "frames": _frame_saver.list_frames(), "stats": _frame_saver.stats()}
+    if method == "get_frames_stats":
+        return True, {"ok": True, **_frame_saver.stats()}
+    if method == "parse_frames_file":
+        # params: {"filename": "frame_000001.bin"} 或 {"filename": "latest"}
+        fname = params.get("filename", "latest")
+        if fname == "latest":
+            files = _frame_saver.list_frames()
+            if not files:
+                return True, {"ok": False, "error": "no frames saved yet"}
+            fname = files[-1]
+        data = _frame_saver.read_frame(fname)
+        if data is None:
+            return True, {"ok": False, "error": f"frame file not found: {fname}"}
+        frames = parse_frames(data)
+        # 汇总所有帧里的所有记录
+        all_records = []
+        for fr in frames:
+            all_records.extend(fr.get("records", []))
+        # 转换字段名
+        readable = humanize_records(all_records)
+        # 预览前 200 字节 hex
+        preview_hex = data[:200].hex()
+        return True, {
+            "ok": True,
+            "filename": fname,
+            "file_size": len(data),
+            "preview_hex": preview_hex,
+            "frame_count": len(frames),
+            "record_count": len(all_records),
+            "records": readable,
+            "raw_records": all_records,
+            "frames_meta": [{"offset": f["frame_offset"], "payload_len": f["payload_len"],
+                              "record_count": len(f["records"])} for f in frames],
+        }
+    if method == "parse_all_frames":
+        # 解析所有落盘帧，合并记录，按字段分类（orders/positions/trades）
+        files = _frame_saver.list_frames()
+        if not files:
+            return True, {"ok": False, "error": "no frames saved yet"}
+        all_records = []
+        for fname in files:
+            data = _frame_saver.read_frame(fname)
+            if not data:
+                continue
+            for fr in parse_frames(data):
+                all_records.extend(fr.get("records", []))
+        readable = humanize_records(all_records)
+        # 分类
+        orders, positions, trades = [], [], []
+        for rec in readable:
+            if "合同号" in rec and rec.get("合同号", ""):
+                if "成交额" in rec or "成交量" in rec:
+                    trades.append(rec)
+                else:
+                    orders.append(rec)
+            elif "成本" in rec or "市值" in rec:
+                positions.append(rec)
+        return True, {
+            "ok": True,
+            "total_records": len(all_records),
+            "orders": orders,
+            "positions": positions,
+            "trades": trades,
+            "stats": _frame_saver.stats(),
+        }
+    return False, None
 
 
 def handle_request(req: dict) -> dict:
     req_id = req.get("id", 0)
     method = req.get("method", "")
     params = req.get("params") or {}
+
+    # 本地帧解析方法（不需要 agent RPC）
+    LOCAL_METHODS = {"get_frames_list", "get_frames_stats", "parse_frames_file", "parse_all_frames"}
+    if method in LOCAL_METHODS:
+        handled, result = _handle_local(method, params)
+        if handled:
+            return {"id": req_id, "ok": True, "result": result}
 
     if method not in ALLOWED_METHODS:
         return {"id": req_id, "ok": False, "result": {"error": f"unknown method: {method}"}}
@@ -415,8 +739,8 @@ def serve():
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
 def _prime_trade_panel():
-    """attach 成功后执行一次：设 frontmost → 点 button 6（交易）→ 等 4s → 点「模拟」→ 等 6s。
-    让面板在 hook 就位之后创建，使 setTableSourceData: hook 能捕捉到数据。"""
+    """attach 成功后执行一次：找到含 button 6 的交易窗口 → 点交易 tab → 等 4s → 点「模拟」→ 等 6s。
+    同花顺可能有多个窗口（登录框 + 主窗口），交易按钮在主窗口，遍历所有窗口找到含 button 6 的那个。"""
     script = '''
 tell application "System Events"
     set theProcs to processes whose name is "同花顺"
@@ -425,8 +749,33 @@ tell application "System Events"
     set frontmost of theProc to true
     delay 0.5
     set allWins to windows of theProc
-    if (count of allWins) = 0 then return "no windows"
-    set theWin to item 1 of allWins
+    set winCount to count of allWins
+    if winCount = 0 then return "no windows"
+    -- 遍历所有窗口，找到含 button 6 的那个（主交易窗口）
+    set theWin to missing value
+    repeat with wIdx from 1 to winCount
+        set w to window wIdx of theProc
+        try
+            set dummy to button 6 of w
+            set theWin to w
+            exit repeat
+        end try
+    end repeat
+    if theWin is missing value then
+        -- 兜底：用按钮数最多的窗口
+        set maxBtns to 0
+        repeat with wIdx from 1 to winCount
+            set w to window wIdx of theProc
+            try
+                set bc to count of buttons of w
+                if bc > maxBtns then
+                    set maxBtns to bc
+                    set theWin to w
+                end if
+            end try
+        end repeat
+    end if
+    if theWin is missing value then return "no trading window"
     -- 点交易 tab（button 6）
     try
         click button 6 of theWin

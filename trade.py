@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-固化的下单工具 — 所有买卖操作统一接口（EvolvingSim 官方接口重构版）
+固化的下单工具 — 所有买卖操作统一接口
+
+数据通道:
+  - sync 读持仓/委托/成交: 优先 frida 进程内接口 (ths_cli --engine frida)，
+    失败才回退 EvolvingSim；资金仍走 EvolvingSim.getAccountInfo（新接口无 account）
+  - 下单 buy/sell/t0_*: 仍走 EvolvingSim（本轮未迁移）
 
 用法:
   python3 trade.py sync                          # 同步持仓到 portfolio.json
@@ -10,10 +15,10 @@
   python3 trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE] # 做T卖出配对：卖出+低位买入挂单
 
 铁律:
-  1. 只用 EvolvingSim 公开接口: getHoldingShares/getAccountInfo/buy/sell/getEntrust/revokeEntrust
+  1. 下单只用 EvolvingSim 公开接口: buy/sell；读接口见上（frida 优先）
   2. 数量必须是 100 整数倍，且不低于 5000 股
   3. 调 EvolvingSim 前先 open -a 同花顺 + sleep 1，调完后 sleep 2
-  4. 不用子进程 subprocess 包装 EvolvingSim
+  4. 不用子进程 subprocess 包装 EvolvingSim（frida 读通道经 ths_cli 子进程）
   5. 不调底层私有函数（issuingEntrust 等）
   6. AI Agent 只能通过 python3 trade.py 执行买卖，不得直接调 EvolvingSim
 """
@@ -360,127 +365,272 @@ def _validate_account_data(acct_data, pf_prev):
     return True, "ok"
 
 
-def sync():
-    """同步持仓到 portfolio.json"""
-    import time
-    time.sleep(15)  # 等待同花顺API就绪
-    h = _call_evolving('getHoldingShares')
-    acct = _call_evolving('getAccountInfo')
+def _positions_from_holding_rows(h):
+    """旧通道 getHoldingShares 行 → 统一持仓结构（字段与 frida 通道对齐）。
 
+    row: [0]代码 [1]名称 [2]现价 [3]盈亏额 [6]数量 [8]可用 [9]冻结 [10]成本 [11]市值
+    数量为 0 的行也保留，交给 sync 做清仓判定（与旧行为一致）。
+    """
+    out = {}
+    for row in (h or {}).get('data', []) or []:
+        if not row or len(row) < 12:
+            continue
+        code = row[0]
+        try:
+            shares_val = int(row[6])
+        except (ValueError, TypeError):
+            shares_val = 0
+        try:
+            available_val = int(row[8])
+        except (ValueError, TypeError):
+            available_val = 0
+        try:
+            frozen_val = int(row[9])
+        except (ValueError, TypeError):
+            frozen_val = 0
+        try:
+            cost = float(row[10])
+        except (ValueError, TypeError):
+            cost = 0.0
+        try:
+            cur_price = float(row[2])
+        except (ValueError, TypeError):
+            cur_price = 0.0
+        try:
+            market_value = float(row[11])
+        except (ValueError, TypeError):
+            market_value = 0.0
+        try:
+            pnl = float(row[3])
+        except (ValueError, TypeError):
+            pnl = 0.0
+        total_cost = cost * shares_val
+        out[code] = {
+            'name': row[1],
+            'shares': shares_val,
+            'available': available_val,
+            'frozen': frozen_val,
+            'avg_cost': cost,
+            'current_price': cur_price,
+            'market_value': market_value,
+            'pnl': pnl,
+            'pnl_pct': round(pnl / total_cost * 100, 2) if total_cost > 0 else 0,
+            'source': 'legacy',
+        }
+    return out
+
+
+def _sold_volumes_from_orders(orders):
+    """frida orders → 当日各代码卖出委托量 {code: vol}（委托量，不是成交量）。"""
+    sold = {}
+    for o in orders or []:
+        if o.get('direction') != '卖出':
+            continue
+        code = str(o.get('code', '')).strip()
+        if not code:
+            continue
+        sold[code] = sold.get(code, 0) + int(o.get('shares') or 0)
+    return sold
+
+
+def _sold_volumes_from_entrust(ent):
+    """旧通道 getEntrust 行 → 当日各代码卖出委托量 {code: vol}。"""
+    sold = {}
+    if not (isinstance(ent, dict) and ent.get('status')):
+        return sold
+    for er in ent.get('data', []) or []:
+        if er and len(er) > 6 and str(er[4]).strip() == '卖出':
+            try:
+                ec = str(er[2]).strip()
+                sold[ec] = sold.get(ec, 0) + int(er[6])
+            except (ValueError, TypeError):
+                pass
+    return sold
+
+
+def _apply_zero_position(pf, code, sold_volumes):
+    """持仓表返回 0 股/缺席时的清仓判定（原 sync 逻辑，抽成函数复用）。
+
+    - 当日卖出委托量 >= 原持仓 → 立即删（有委托证据）
+    - 否则连续 3 次返回 0 股才删（处理隔日清仓/数据异常）
+    """
+    if code not in pf.get('positions', {}):
+        return
+    old = pf['positions'][code].get('shares', 0)
+    zero_counts = pf.setdefault('_zero_share_count', {})
+    if old > 0 and (sold_volumes or {}).get(code, 0) >= old:
+        del pf['positions'][code]
+        zero_counts.pop(code, None)
+        from state_center import reset_signal_state_on_liquidate
+        reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
+        return
+    n = zero_counts.get(code, 0) + 1
+    zero_counts[code] = n
+    if n >= 3:
+        del pf['positions'][code]
+        zero_counts.pop(code, None)
+        print(f"[SYNC] {code} 连续3次返回0股，判定已清仓，删除持仓")
+        from state_center import reset_signal_state_on_liquidate
+        reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
+    else:
+        print(f"[SYNC] {code} 返回0股，第 {n} 次，保留原持仓 {old}股")
+
+
+def sync():
+    """同步持仓到 portfolio.json
+
+    数据通道（每段都打印实际来源）:
+      - 持仓/委托/成交: frida 接口（ths_cli --engine frida）→ 失败才回退 EvolvingSim
+      - 资金: 旧通道 EvolvingSim.getAccountInfo（frida 引擎没有 account 命令）
+    """
     if os.path.exists(PF_PATH):
         with open(PF_PATH) as f:
             pf = json.load(f)
     else:
         pf = {'positions': {}, 'account': {}}
 
-    # ── 账户数据一致性校验 ──────────────────────────────────
-    if isinstance(acct, dict) and acct.get('status'):
-        ok, reason = _validate_account_data(acct['data'], pf)
-        if not ok:
-            print(f"  🚨 sync 账户校验失败: {reason}")
-            print("  ⚠️  portfolio.json 保持原值，未写盘")
-            return
-    else:
-        print("  ⚠️ sync: getAccountInfo 无有效返回，跳过本次 sync")
-        return
-
     code_map = get_code_map()
 
-    if isinstance(h, dict) and h.get('status'):
-        data = h.get('data', [])
-        if not data:
-            print("  ⚠️ sync: getHoldingShares 返回空数据，跳过持仓同步")
-        else:
-            sold_volumes = None  # 懒加载: 当日各代码卖出委托量 {code: vol}
-            for row in data:
-                if not row or len(row) < 12:
-                    continue
-                code = row[0]
-                try:
-                    shares_val = int(row[6])   # 实际数量（总持股）
-                except (ValueError, TypeError):
-                    shares_val = 0
-                try:
-                    available_val = int(row[8])  # 可用余额
-                except (ValueError, TypeError):
-                    available_val = 0
-                try:
-                    frozen_val = int(row[9])     # 冻结数量
-                except (ValueError, TypeError):
-                    frozen_val = 0
-                try:
-                    cost = float(row[10])
-                except (ValueError, TypeError):
-                    cost = 0.0
-                if shares_val > 0:
-                    cur_price = float(row[2])
-                    name = row[1]
-                    # 优先从 etf_pool 取完整名称（API返回的名称经常截断）
-                    pool_name = code_map.get(code, {}).get('name')
-                    if pool_name:
-                        name = pool_name
-                    # 从 _signal_state 读取 base_price，回退到 avg_cost
-                    signal_state = pf.get('_signal_state', {}).get(code, {})
-                    base_price = signal_state.get('base_price') or cost
-                    pf['positions'][code] = {
-                        'name': name,
-                        'shares': shares_val,      # 总持股（实际数量，含冻结）
-                        'available': available_val, # 可用股数（做T/卖出时参考）
-                        'frozen': frozen_val,        # 冻结股数（已挂卖单等）
-                        'avg_cost': cost,
-                        'current_price': cur_price,
-                        'market_value': float(row[11]),
-                        'pnl': float(row[3]),  # 仅展示用
-                        'pnl_pct': round(float(row[3]) / (cost * shares_val) * 100, 2) if cost > 0 else 0,  # 仅展示用
-                        'base_price': base_price,
-                    }
-                    pf.get('_zero_share_count', {}).pop(code, None)
-                elif code in pf['positions']:
-                    # shares_val==0: 可能是同花顺数据异常(真实持仓被抹掉)，也可能是真清仓
-                    # 用 getEntrust('today') 交叉核对: 当日卖出量>=原持仓才算真清仓，否则保留原持仓
-                    # 另引入连续0股计数，连续3次则判定已清仓（处理隔日清仓场景）
-                    if sold_volumes is None:
-                        sold_volumes = {}
-                        try:
-                            ent = _call_evolving('getEntrust', 'today', False)
-                            if isinstance(ent, dict) and ent.get('status'):
-                                for er in ent.get('data', []) or []:
-                                    if er and len(er) > 6 and str(er[4]).strip() == '卖出':
-                                        try:
-                                            ec = str(er[2]).strip()
-                                            sold_volumes[ec] = sold_volumes.get(ec, 0) + int(er[6])
-                                        except (ValueError, TypeError):
-                                            pass
-                        except Exception as _ex:
-                            print(f"  ⚠️ sync: getEntrust 异常: {_ex}")
-                    old = pf['positions'][code].get('shares', 0)
-                    zero_counts = pf.setdefault('_zero_share_count', {})
-                    if old > 0 and sold_volumes.get(code, 0) >= old:
-                        # 当日委托证明已清仓，立即删除
-                        del pf['positions'][code]
-                        zero_counts.pop(code, None)
-                        from state_center import reset_signal_state_on_liquidate
-                        reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
-                    else:
-                        n = zero_counts.get(code, 0) + 1
-                        zero_counts[code] = n
-                        if n >= 3:
-                            del pf['positions'][code]
-                            zero_counts.pop(code, None)
-                            print(f"[SYNC] {code} 连续3次返回0股，判定已清仓，删除持仓")
-                            from state_center import reset_signal_state_on_liquidate
-                            reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
-                        else:
-                            print(f"[SYNC] {code} 返回0股，第 {n} 次，保留原持仓 {old}股")
+    try:
+        from executor import get_data_broker
+        broker = get_data_broker()
+    except Exception as ex:
+        broker = None
+        print(f"  ⚠️ 载入 frida 通道失败: {ex} → 全部回退旧通道")
 
-    # 写入账户数据（已通过一致性校验）
-    if isinstance(acct, dict) and acct.get('status'):
-        d = acct['data']
-        pf['account'] = {
-            'total_asset': float(d['总资产']),
-            'cash': float(d['可用金额']),
-            'market_value': float(d['总市值']),
-        }
+    # ── 1) 持仓 ────────────────────────────────────────────────────
+    positions = None
+    pos_src = None
+    if broker is not None:
+        try:
+            positions = broker.get_positions()
+            pos_src = 'frida'
+            print(f"  [通道] 持仓: frida 接口 (ths_cli positions)  {len(positions)} 只")
+        except Exception as ex:
+            print(f"  ⚠️ frida 持仓失败: {ex} → 回退旧通道 getHoldingShares")
+    if positions is None:
+        print("  ⏳ 旧通道等待同花顺 API 就绪 15s...")
+        time.sleep(15)
+        h = _call_evolving('getHoldingShares')
+        if isinstance(h, dict) and h.get('status'):
+            positions = _positions_from_holding_rows(h)
+            pos_src = 'legacy'
+            print(f"  [通道] 持仓: 旧通道 EvolvingSim.getHoldingShares  {len(positions)} 只")
+        else:
+            print("  🚨 sync: frida 与旧通道均未取到持仓，跳过本次 sync（不写盘）")
+            return
+
+    # ── 2) 委托 ────────────────────────────────────────────────────
+    orders = None
+    ord_src = None
+    sold_volumes = {}
+    if broker is not None:
+        try:
+            orders = broker.get_orders()
+            ord_src = 'frida'
+            sold_volumes = _sold_volumes_from_orders(orders)
+            print(f"  [通道] 委托: frida 接口 (ths_cli orders)  {len(orders)} 行")
+        except Exception as ex:
+            print(f"  ⚠️ frida 委托失败: {ex} → 回退旧通道 getEntrust")
+    if orders is None:
+        ent = _call_evolving('getEntrust', 'today', False)
+        if isinstance(ent, dict) and ent.get('status'):
+            ord_src = 'legacy'
+            sold_volumes = _sold_volumes_from_entrust(ent)
+            print(f"  [通道] 委托: 旧通道 EvolvingSim.getEntrust  {len(ent.get('data') or [])} 行")
+        else:
+            ord_src = 'unavailable'
+            print("  ⚠️ 委托两通道均失败，清仓核对退化为连续3次计数")
+
+    # ── 3) 成交（sync 不写成交，只做通道读数校验）──────────────────
+    trd_src = 'skipped'
+    if broker is not None:
+        try:
+            trades = broker.get_trades()
+            trd_src = 'frida'
+            print(f"  [通道] 成交: frida 接口 (ths_cli trades)  {len(trades)} 笔")
+        except Exception as ex:
+            trd_src = 'unavailable'
+            print(f"  ⚠️ frida 成交失败: {ex}（sync 不依赖成交，继续）")
+
+    # ── 4) 资金（frida 无 account → 旧通道）────────────────────────
+    acct_data = None
+    acct_src = None
+    if broker is not None:
+        try:
+            a = broker.get_account()
+            acct_data = {
+                '总资产': a['total_asset'],
+                '可用金额': a['cash'],
+                '总市值': a['market_value'],
+            }
+            acct_src = '旧通道 EvolvingSim.getAccountInfo'
+            print(f"  [通道] 资金: {acct_src}（frida 引擎无 account 命令）")
+        except Exception as ex:
+            print(f"  ⚠️ broker 取资金失败: {ex} → 回退直接调 getAccountInfo")
+    if acct_data is None:
+        acct = _call_evolving('getAccountInfo')
+        if isinstance(acct, dict) and acct.get('status'):
+            d = acct.get('data') or {}
+            try:
+                acct_data = {
+                    '总资产': float(d['总资产']),
+                    '可用金额': float(d['可用金额']),
+                    '总市值': float(d['总市值']),
+                }
+                acct_src = '旧通道 EvolvingSim.getAccountInfo'
+                print(f"  [通道] 资金: {acct_src}")
+            except (KeyError, TypeError, ValueError) as ex:
+                print(f"  ⚠️ 旧通道账户字段异常: {ex}")
+        else:
+            print("  ⚠️ 资金两通道均失败，保留 portfolio.json 上次账户数据")
+
+    # ── 持仓写盘 ───────────────────────────────────────────────────
+    if not positions:
+        print("  ⚠️ sync: 持仓数据为空，跳过持仓同步（保留原持仓）")
+    else:
+        for code, d in positions.items():
+            shares_val = int(d.get('shares') or 0)
+            if shares_val > 0:
+                cost = float(d.get('avg_cost') or 0)
+                # 优先从 etf_pool 取完整名称（API返回的名称经常截断）
+                name = code_map.get(code, {}).get('name') or d.get('name') or code
+                # 从 _signal_state 读取 base_price，回退到 avg_cost
+                signal_state = pf.get('_signal_state', {}).get(code, {})
+                base_price = signal_state.get('base_price') or cost
+                pf['positions'][code] = {
+                    'name': name,
+                    'shares': shares_val,                   # 总持股（实际数量，含冻结）
+                    'available': int(d.get('available') or 0),  # 可用股数（做T/卖出时参考）
+                    'frozen': int(d.get('frozen') or 0),        # 冻结股数（已挂卖单等）
+                    'avg_cost': cost,
+                    'current_price': float(d.get('current_price') or 0),
+                    'market_value': float(d.get('market_value') or 0),
+                    'pnl': float(d.get('pnl') or 0),       # 仅展示用
+                    'pnl_pct': float(d.get('pnl_pct') or 0),  # 仅展示用
+                    'base_price': base_price,
+                }
+                pf.get('_zero_share_count', {}).pop(code, None)
+            else:
+                _apply_zero_position(pf, code, sold_volumes)
+        # frida 持仓表不返回已清仓标的 → 缺席的原有持仓按 0 股走同一套清仓判定
+        if pos_src == 'frida':
+            for code in list(pf.get('positions', {}).keys()):
+                if code not in positions:
+                    _apply_zero_position(pf, code, sold_volumes)
+
+    # ── 账户写盘（校验通过才写）────────────────────────────────────
+    if acct_data is not None:
+        ok, reason = _validate_account_data(acct_data, pf)
+        if ok:
+            pf['account'] = {
+                'total_asset': float(acct_data['总资产']),
+                'cash': float(acct_data['可用金额']),
+                'market_value': float(acct_data['总市值']),
+            }
+        else:
+            print(f"  🚨 sync 账户校验失败: {reason}")
+            print("  ⚠️ 保留上次账户数据，持仓照常同步")
     # Bug N: 清理 _signal_state 中已清仓且不在ETF池中的标的
     signal_state = pf.get('_signal_state', {})
     if signal_state:
@@ -507,7 +657,9 @@ def sync():
     with open(PF_PATH, 'w') as f:
         json.dump(pf, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{pf['account']['total_asset']:.0f}")
+    total_asset = pf.get('account', {}).get('total_asset', 0)
+    print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{total_asset:.0f} | "
+          f"来源: 持仓={pos_src} 委托={ord_src} 成交={trd_src} 资金={acct_src or '保留上次'}")
 
 
 # ─── 连续竞价判断 ──────────────────────────────────────────────────────
