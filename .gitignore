@@ -10,3 +10,4 @@ orders/
 .idea/
 .DS_Store
 .ths_cred*
+*.bak_*
