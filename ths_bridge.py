@@ -573,6 +573,7 @@ ALLOWED_METHODS = {
     # ── hook-free 新路径 ──────────────────────────────────────────────────────
     "scan_instances",
     "read_positions", "read_orders", "read_trades",
+    "read_account_direct",
     "send_chedan_by_index",
     # ── 旧名兼容别名 ──────────────────────────────────────────────────────────
     "read_positions_direct",

@@ -664,6 +664,56 @@ def frida_orders(args):
                          p["合同号"], p["市场"]))
 
 
+# ── 资金字段（agent readAccountDirect 原名，值为两位小数字符串）─────────────────
+_ACCT_NUM_FIELDS = ("总资产", "总市值", "总盈亏", "当日盈亏",
+                    "资金余额", "可取金额", "可用金额", "冻结金额")
+
+
+def frida_account(args):
+    """账户资金：agent readAccountDirect（UserManager→activeUser→zichanData）。
+
+    纯 getter 链，不点界面、不依赖缓存、不需要 prime；agent 返回已格式化的
+    两位小数字符串，这里统一转 float 输出（资金账号保持字符串）。
+    """
+    resp = _call("read_account_direct")
+    if not resp or not resp.get("ok"):
+        err = (resp or {}).get("result", {})
+        if isinstance(err, dict):
+            err = err.get("error", str(err))
+        if args.json:
+            _json_out({"ok": False, "error": err})
+        else:
+            print(f"账户查询失败: {err}", file=sys.stderr)
+        sys.exit(1)
+
+    result = resp.get("result") or {}
+    if not result.get("ok"):
+        err = result.get("error", "no account data")
+        if args.json:
+            _json_out({"ok": False, "error": err, "fields": result})
+        else:
+            print(f"账户查询失败: {err}", file=sys.stderr)
+        sys.exit(1)
+
+    source = "read_account_direct"
+    acct = {}
+    for k in _ACCT_NUM_FIELDS:
+        v = str(result.get(k) or "").strip().replace(",", "")
+        acct[k] = float(v) if v else 0.0
+    acct["资金账号"] = str(result.get("资金账号") or "").strip()
+
+    if args.json:
+        _json_out({"ok": True, "source": source,
+                   "is_moni": result.get("is_moni"), **acct})
+        return
+
+    print(f"账户资金  (source={source}  is_moni={result.get('is_moni')})")
+    print("-" * 44)
+    for k in _ACCT_NUM_FIELDS:
+        print(f"  {k:<6} {acct[k]:>14,.2f}")
+    print(f"  {'资金账号':<6} {acct['资金账号']:>14}")
+
+
 def frida_cancel(args):
     """撤单：在委托缓存里按合同号（2135）定位行下标，调用 App 自己的
     -[TradeQueryTemplate sendChedanRequestByTableIndex:]，不自己拼 req_type/nsInsid。
@@ -1377,12 +1427,13 @@ def main():
     else:  # frida
         # ── 需要先 attach + login 检查的命令 ────────────────────────────────
         # orders/cancel/detail/trades 走纯 cache 或按需 TQT 路径，不强制 state 检查
-        NO_LOGIN_CHECK = ("orders", "cancel", "detail", "trades", "login", "prime",
+        NO_LOGIN_CHECK = ("account", "orders", "cancel", "detail", "trades", "login", "prime",
                           "start", "stop", "status", "state", "ping")
 
         frida_dispatch = {
             "positions": frida_positions,
             "orders":    frida_orders,
+            "account":   frida_account,
             "cancel":    frida_cancel,
             "trades":    frida_trades,
             "detail":    frida_detail,

@@ -11,6 +11,8 @@
  *   ping / state
  *   primeCache / getCacheStatus
  *   readPositionsDirect / readOrdersDirect / readTradesDirect
+ *   readAccountDirect   ← UserManager→getActiveUser→getUserInfo→zichanData
+ *                          （纯 getter，无 hook、无点击，资金九字段）
  *   sendChedanByIndex   ← 撤单只走 App 自己的 -[TradeQueryTemplate
  *                          sendChedanRequestByTableIndex:]，不手拼 req_type/nsInsid
  *   buy / sell / login / loginSim
@@ -803,10 +805,53 @@ rpc.exports = {
              note: '尚未捕获到成交 TQT 实例，请先在同花顺 UI 中打开一次「成交」页后再查询' };
   },
 
+  // ── readAccountDirect：UserManager → activeUser → userInfo → zichanData ──
+  // 纯 getter 链，不 hook、不点界面、不发请求；字段全是已格式化的 NSString
+  // （两位小数），原样返回，不在这里转数字。
+  // ★ -zichanData 内部有 dispatch_semaphore_wait，会短暂阻塞（不崩），可反复调用。
+  // ★ 不缓存 UserModel：切账户后是另一个对象，每次重新取。
+  readAccountDirect: function () {
+    try {
+      var umCls = cls('UserManager');
+      if (!umCls) return { ok: false, error: 'UserManager class not found' };
+      var um = msg0p(umCls, sel('shareInstance'));
+      if (!um || um.isNull()) return { ok: false, error: 'UserManager.shareInstance nil' };
+
+      var user = msg0p(um, sel('getActiveUser'));
+      if (!user || user.isNull()) return { ok: false, error: 'getActiveUser nil' };
+      var isMoni = null;
+      try { isMoni = (msg1i(user, sel('isMoniUser')) !== 0); } catch(e) {}
+
+      var info = msg0p(user, sel('getUserInfo'));
+      if (!info || info.isNull()) return { ok: false, error: 'getUserInfo nil' };
+
+      var zc = msg0p(info, sel('zichanData'));
+      if (!zc || zc.isNull()) return { ok: false, error: 'zichanData nil' };
+
+      var MAP = {
+        '总资产': 'strZzc', '总市值': 'strZsz', '总盈亏': 'strZyk', '当日盈亏': 'strDryk',
+        '资金余额': 'strZjye', '可取金额': 'strKqje', '可用金额': 'strKyje',
+        '资金账号': 'strZjzh', '冻结金额': 'strDjje'
+      };
+      var out = { ok: true, is_moni: isMoni };
+      for (var name in MAP) {
+        if (!MAP.hasOwnProperty(name)) continue;
+        var v = nsStr(msg0p(zc, sel(MAP[name])));
+        out[name] = (v === null) ? '' : v;
+      }
+      if (!out['总资产']) {
+        return { ok: false, error: 'zichanData.strZzc empty',
+                 fields: out, note: '资金数据未就绪，稍后重试' };
+      }
+      return out;
+    } catch(e) { return { ok: false, error: String(e) }; }
+  },
+
   // ── readPositions / readOrders / readTrades（别名）───────────────────────
   readPositions: function () { return rpc.exports.readPositionsDirect(); },
   readOrders:    function (p) { return rpc.exports.readOrdersDirect(p); },
   readTrades:    function (p) { return rpc.exports.readTradesDirect(p); },
+  read_account_direct: function () { return rpc.exports.readAccountDirect(); },
 
   // ── sendChedanByIndex：撤单只走 App 自己的方法（唯一正确路径）──────────────
   // 反编译依据：/tmp/ths_decomp2/functions/0x100b74864.c

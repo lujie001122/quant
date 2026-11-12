@@ -480,8 +480,7 @@ def sync():
     """同步持仓到 portfolio.json
 
     数据通道（每段都打印实际来源）:
-      - 持仓/委托/成交: frida 接口（ths_cli --engine frida）→ 失败才回退 EvolvingSim
-      - 资金: 旧通道 EvolvingSim.getAccountInfo（frida 引擎没有 account 命令）
+      - 持仓/委托/成交/资金: frida 接口（ths_cli --engine frida）→ 失败才回退 EvolvingSim
     """
     if os.path.exists(PF_PATH):
         with open(PF_PATH) as f:
@@ -553,7 +552,7 @@ def sync():
             trd_src = 'unavailable'
             print(f"  ⚠️ frida 成交失败: {ex}（sync 不依赖成交，继续）")
 
-    # ── 4) 资金（frida 无 account → 旧通道）────────────────────────
+    # ── 4) 资金（优先 frida account → 失败才回退旧通道）─────────────
     acct_data = None
     acct_src = None
     if broker is not None:
@@ -564,8 +563,8 @@ def sync():
                 '可用金额': a['cash'],
                 '总市值': a['market_value'],
             }
-            acct_src = '旧通道 EvolvingSim.getAccountInfo'
-            print(f"  [通道] 资金: {acct_src}（frida 引擎无 account 命令）")
+            acct_src = a.get('source') or 'frida 接口'
+            print(f"  [通道] 资金: {acct_src}")
         except Exception as ex:
             print(f"  ⚠️ broker 取资金失败: {ex} → 回退直接调 getAccountInfo")
     if acct_data is None:

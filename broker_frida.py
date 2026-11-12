@@ -12,11 +12,12 @@ broker_frida.py — 进程内数据通道 broker（同花顺 App 内部数据对
   orders     委托行（含合同号 2135/方向/状态/委托量/委托价/成交量/成交价）
   trades     成交明细（含合同号/成交价/成交量/成交金额）
   cancel <合同号> --real   真撤单，撤后 3s 从缓存复查状态
-  account    ⚠️ frida 引擎没有资金命令；资金仍走旧通道：
-             ths_cli.py --engine apple account → EvolvingSim.getAccountInfo（见 get_account）
+  account    资金：frida readAccountDirect（UserManager→activeUser→zichanData）
+             失败才回退旧通道 ths_cli.py --engine apple account（见 get_account）
 
 接口对齐：
   SimBroker.get_positions()  → {code: {shares, avg_cost, total_cost, current_price}}
+  SimBroker.get_account()    → {total_asset, cash, market_value}
   RealBroker.get_positions() → {code: {name, shares, avg_cost, current_price}}
   ThsBroker.get_positions()  = 二者超集，另加 available/frozen/market_value/pnl/pnl_pct
   trade.py sync 直接消费这份结构，字段名与 portfolio.json positions 一致。
@@ -38,7 +39,7 @@ VENV_PY = os.path.join(SCRIPT_DIR, ".venv/bin/python3")
 
 # 读接口超时：缓存空时 ths_cli 会自动 prime（可能点一次面板），给足时间
 READ_TIMEOUT = 120
-# 资金仍走旧通道（EvolvingSim），单次调用较慢
+# 资金：frida account 是纯 getter（快）；回退旧通道 EvolvingSim 时较慢
 ACCT_TIMEOUT = 120
 
 
@@ -258,15 +259,29 @@ class ThsBroker(BaseBroker):
         return self.get_orders()
 
     def get_account(self) -> Dict:
-        """账户资金：⚠️ 仍走旧通道，不是 frida。
+        """账户资金：优先 frida（ths_cli --engine frida account）。
 
-        frida 引擎没有 account 命令（`--engine frida account` 报未知命令）；
-        唯一可用来源是 EvolvingSim.getAccountInfo，经 ths_cli apple 引擎调用：
-          ths_cli.py --json --engine apple account
-        返回的 data 是中文键：总资产/可用金额/总市值。
-        本方法失败即抛错，由调用方（trade.py sync）保留上次落盘账户数据，
-        绝不用 0 覆盖。
+        字段名对齐 SimBroker.get_account()：total_asset / cash / market_value
+        （cash = 可用金额，market_value = 总市值）。frida 通道失败才回退旧通道
+        EvolvingSim.getAccountInfo；两路都失败即抛错，由调用方（trade.py sync）
+        保留上次落盘账户数据，绝不用 0 覆盖。
         """
+        try:
+            d = self._frida("account", timeout=ACCT_TIMEOUT)
+            total = _to_float(d.get("总资产"))
+            cash = _to_float(d.get("可用金额"))
+            mv = _to_float(d.get("总市值"))
+            if total <= 0:
+                raise ThsCliError(f"frida account 总资产={total} 异常")
+            return {
+                "total_asset": total,
+                "cash": cash,
+                "market_value": mv,
+                "source": "frida 接口",
+            }
+        except ThsCliError as ex:
+            print(f"  ⚠️ frida 资金失败: {ex} → 回退旧通道 getAccountInfo")
+
         data = self._cli("apple", "account", timeout=ACCT_TIMEOUT)
         if not data.get("status"):
             raise ThsCliError(f"旧通道 account 无有效返回: {data}")
@@ -282,7 +297,7 @@ class ThsBroker(BaseBroker):
             "total_asset": total,
             "cash": cash,
             "market_value": mv,
-            "source": "legacy_apple(EvolvingSim.getAccountInfo)",
+            "source": "旧通道 EvolvingSim.getAccountInfo",
         }
 
     # ── 撤单 ─────────────────────────────────────────────────────────
