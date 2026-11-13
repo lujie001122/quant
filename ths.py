@@ -297,17 +297,37 @@ class Ths:
         p = _parse_ord_row(row)
         return {k: v for k, v in p.items() if k != "_raw"}
 
+    def _avail(self, code):
+        """该代码当前可用股数（服务端口径）；未持有返回 None。"""
+        for q in self.positions():
+            if q["代码"] == str(code):
+                return int(q["可用"] or 0)
+        return None
+
     def cancel(self, contract, real=False):
         """按合同号定位委托行下标，调 App 自己的
         -[TradeQueryTemplate sendChedanRequestByTableIndex:]。
 
         real=False（默认）：只 probe 校验，不发请求，返回将发送的字段。
-        real=True：真发，随后带日期强制重查委托表（撤单实测 15~25s 才反映），
-        状态没变就换实例/重发，最多若干次；都没变抛 ThsError。
+        real=True：真发，随后强制重查委托表；卖单再以「可用股数恢复」核对。
         """
         contract = str(contract)
-        row_index, row, res = self._find_order(contract)
+        try:
+            row_index, row, res = self._find_order(contract)
+        except ThsError:
+            # 委托表还没刷新出来（App 重启后实测会空一段时间）→ 用旧通道按合同号撤，
+            # 否则刚报进去的单就撤不掉了。
+            if not real:
+                raise
+            from evolving.evolving import EvolvingSim
+            ok, msg = EvolvingSim().revokeEntrust(revokeType="contractNo", contractNo=contract)
+            return {"contract": contract, "via": "EvolvingSim.revokeEntrust",
+                    "new_status": "已撤单" if ok else None,
+                    "confirmed_cancelled": bool(ok), "raw": msg}
         p = _parse_ord_row(row)
+        avail0 = self._avail(p["代码"]) if (real and p["方向"] == "卖出") else None
+        frozen0 = (float(self.account().get("冻结金额") or 0)
+                   if (real and p["方向"] == "买入") else None)
         probe = self._call("send_chedan_by_index",
                            {"contract": contract, "probe": True})
         if not probe.get("ok"):
@@ -348,11 +368,13 @@ class Ths:
                 raise ThsError("send_chedan_by_index", r.get("error") or "撤单调用失败",
                                result=r)
             sent = r
-            deadline = time.time() + 20
+            # 委托表刷新靠 App 自己（实测撤单后 30~60s 才反映），观察窗放到 75s
+            deadline = time.time() + 75
             today = time.strftime("%Y-%m-%d")
             while time.time() < deadline:
-                time.sleep(4)
-                res2 = self._call("read_orders", {"beginDate": today, "endDate": today})
+                time.sleep(5)
+                res2 = self._call("read_orders", {"beginDate": today, "endDate": today,
+                                                  "force": True})
                 new_status = None
                 for row2 in res2.get("rows") or []:
                     if _get_field(row2, *_ORD_FIELD_HTBH) == contract:
@@ -369,6 +391,23 @@ class Ths:
             out["confirmed_cancelled"] = True
             out["note"] = "已从委托表移除"
             return out
+        if new_status == p["状态"] and p["方向"] == "卖出" and avail0 is not None:
+            # 委托表状态刷新靠 App 自己（实测撤单后 2~3 分钟才反映），
+            # 卖方撤单直接用「可用股数恢复」核对，服务端口径、立刻可见。
+            cur = self._avail(p["代码"])
+            if cur is not None and cur >= avail0 + int(float(p["委托量"])):
+                out["new_status"] = "已撤单（可用已恢复）"
+                out["confirmed_cancelled"] = True
+                out["avail"] = f"{avail0} → {cur}"
+                return out
+        if new_status == p["状态"] and p["方向"] == "买入" and frozen0 is not None:
+            # 买单撤掉后冻结资金回落，同样是服务端口径、立刻可见。
+            cur = float(self.account().get("冻结金额") or 0)
+            if cur <= frozen0 - float(p["委托量"]) * float(p["委托价"]) * 0.9:
+                out["new_status"] = "已撤单（冻结资金已回落）"
+                out["confirmed_cancelled"] = True
+                out["frozen"] = f"{frozen0} → {cur}"
+                return out
         if new_status == p["状态"]:
             raise ThsError("cancel", f"撤单后状态未变: {new_status}", result=out)
         out["confirmed_cancelled"] = ("撤" in new_status) or ("废" in new_status)
@@ -417,6 +456,35 @@ end tell
             time.sleep(2)
         return bool(self.state().get("mai_mai_view"))
 
+    @staticmethod
+    def _decode_trade_rsp(rsp):
+        """把 agent 抓到的柜台应答（hex）解成可读字段。errormsg 是 GBK。"""
+        def dec(h):
+            if not h:
+                return None
+            try:
+                return bytes.fromhex(h).decode("gb18030")
+            except ValueError:
+                return h
+        return {"reply_type": rsp.get("reply_type"),
+                "errorcode": dec(rsp.get("errorcode_hex")),
+                "errormsg": dec(rsp.get("errormsg_hex")),
+                "contract": dec(rsp.get("htbh_hex")),
+                "ts": rsp.get("ts")}
+
+    def _fresh_rsp(self, since_ms, want_type):
+        """取 since_ms 之后、方向匹配的柜台回单；没有则 None。
+
+        柜台回单是权威来源：App 重启后委托表可能长时间为空或滞后（实测），
+        只看委托表会把「已经报进去的单」误判成没发出去，也会把拒单原因丢掉。
+        """
+        rsp = self.state().get("last_trade_rsp")
+        if not rsp or (rsp.get("ts") or 0) < since_ms:
+            return None
+        if rsp.get("reply_type") != want_type:
+            return None
+        return self._decode_trade_rsp(rsp)
+
     def place(self, code, side, shares, price, wait=10.0):
         """下单并核验委托表。返回 {ok, contract, send_detected, status, via, raw}。"""
         side = str(side).lower()
@@ -427,16 +495,26 @@ end tell
 
         self._ensure_view()
         before = {p["合同号"] for p in self.orders()}
+        t0_ms = time.time() * 1000
         r = self._call("place_order", {"code": str(code), "side": side,
                                        "price": price, "shares": shares})
         if not r.get("ok"):
             raise ThsError("place_order", r.get("error") or "下单调用失败", result=r)
 
         want_dir = "买入" if side == "buy" else "卖出"
+        want_type = 0x102 if side == "buy" else 0x103
         deadline = time.time() + wait
         hit = None
+        counter_contract = None
         while time.time() < deadline:
             time.sleep(1.0)
+            rsp = self._fresh_rsp(t0_ms, want_type)
+            if rsp and rsp["errorcode"] not in (None, "", "0"):
+                raise ThsError("place_order",
+                               f"柜台拒单: {rsp['errormsg'] or '未知'}（errorcode={rsp['errorcode']}）",
+                               result={"place": r, "counter": rsp})
+            if rsp and rsp["contract"]:
+                counter_contract = counter_contract or rsp["contract"]
             for p in self.orders():
                 if p["合同号"] in before:
                     continue
@@ -450,14 +528,20 @@ end tell
                     continue
             if hit:
                 break
-        if not hit:
-            raise ThsError("place_order",
-                           f"已发送但委托表未出现该单（{code} {want_dir} {shares}@{price}）",
-                           result=r)
-        return {"ok": True, "contract": hit["合同号"], "status": hit["状态"],
-                "side": side, "code": str(code), "shares": int(shares), "price": price,
-                "send_detected": r.get("send_detected"), "via": r.get("via") or r.get("method"),
-                "raw": r}
+        if hit:
+            return {"ok": True, "contract": hit["合同号"], "status": hit["状态"],
+                    "side": side, "code": str(code), "shares": int(shares), "price": price,
+                    "send_detected": r.get("send_detected"), "via": r.get("via") or r.get("method"),
+                    "raw": r}
+        if counter_contract:
+            return {"ok": True, "contract": counter_contract, "status": "柜台已受理",
+                    "side": side, "code": str(code), "shares": int(shares), "price": price,
+                    "source": "counter_rsp",
+                    "send_detected": r.get("send_detected"), "via": r.get("via") or r.get("method"),
+                    "raw": r}
+        raise ThsError("place_order",
+                       f"已发送但既无柜台回单也无委托记录（{code} {want_dir} {shares}@{price}）",
+                       result=r)
 
     def buy(self, code, shares, price, wait=10.0):
         return self.place(code, "buy", shares, price, wait=wait)

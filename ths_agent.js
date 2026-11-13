@@ -438,6 +438,56 @@ var _maiMaiView = null;
   } catch (e) { send({ type: 'log', text: '[ths_agent] JYMaiMaiView hook error: ' + e }); }
 })();
 
+// ── 下单应答捕获（低频：只在柜台回单/拒单时触发一次）────────────────────────
+// 反编译依据：/tmp/ths_decomp2/functions/0x100aeba9c.c
+//   -[JYMaiMaiView OnTradeRsponceNotify:] 收到 C++ 应答包：
+//     reply_type 在 +0x4a（0x102 买 / 0x103 卖），errorcode/errormsg/htbh
+//     用 App 自己的 FUN_100a333fc 按 key 取（GBK 字符串，这里给 hex 由 Python 解码）。
+// 旁路只读：不改 App 状态、不额外发包。用途：柜台拒单时把真实原因带给调用方。
+var lastTradeRsp = null;
+(function hookTradeRsp() {
+  try {
+    var c = cls('JYMaiMaiView');
+    if (!c) return;
+    var m = _class_getInstanceMethod(c, sel('OnTradeRsponceNotify:'));
+    if (!m || m.isNull()) { send({ type: 'log', text: '[ths_agent] OnTradeRsponceNotify: not found' }); return; }
+    var base = null;
+    Process.enumerateModules().forEach(function (mod) {
+      if (!base && mod.name.indexOf('同花顺') >= 0) base = mod.base;
+    });
+    if (!base) base = Process.enumerateModules()[0].base;
+    var getField = new NativeFunction(base.add(0x100a333fc - 0x100000000), 'pointer', ['pointer', 'pointer']);
+    function fieldHex(resp, key) {
+      try {
+        var p = getField(resp, Memory.allocUtf8String(key));
+        if (!p || p.isNull()) return null;
+        var out = [];
+        for (var i = 0; i < 200; i++) {
+          var b = p.add(i).readU8();
+          if (b === 0) break;
+          out.push(('0' + b.toString(16)).slice(-2));
+        }
+        return out.join('');
+      } catch (e) { return null; }
+    }
+    Interceptor.attach(_method_getImplementation(m), {
+      onEnter: function (args) {
+        try {
+          var resp = args[2].add(0x60).readPointer();
+          lastTradeRsp = {
+            ts: Date.now(),
+            reply_type: resp.add(0x4a).readU16(),
+            errorcode_hex: fieldHex(resp, 'errorcode'),
+            errormsg_hex: fieldHex(resp, 'errormsg'),
+            htbh_hex: fieldHex(resp, 'htbh'),
+          };
+        } catch (e) {}
+      }
+    });
+    send({ type: 'log', text: '[ths_agent] trade response hook installed' });
+  } catch (e) { send({ type: 'log', text: '[ths_agent] trade rsp hook error: ' + e }); }
+})();
+
 // ── 活跃用户（仅用于交易派发，不在钩子里调用）──────────────────────────────
 function getActiveMoniUser() {
   var um = msg0p(cls('UserManager'), sel('shareInstance'));
@@ -624,7 +674,8 @@ rpc.exports = {
             return (tcm && !tcm.isNull()) ? tcm.toString() : null;
           } catch(e) { return null; }
         })(),
-        commu_send_count: commuSendCount, commu_last_req_type: commuLastReqType, mai_mai_view: (_maiMaiView && !_maiMaiView.isNull()) ? _maiMaiView.toString() : null};
+        commu_send_count: commuSendCount, commu_last_req_type: commuLastReqType, mai_mai_view: (_maiMaiView && !_maiMaiView.isNull()) ? _maiMaiView.toString() : null,
+        last_trade_rsp: lastTradeRsp};
     } catch(e) { return { ok: false, error: String(e) }; }
   },
 
@@ -861,11 +912,26 @@ rpc.exports = {
     };
   },
 
-  // ── readOrdersDirect：缓存优先；缓存空才派发查询 ─────────────────────────
+  // ── readOrdersDirect：缓存优先；缓存空或 params.force 才派发查询 ──────────
   readOrdersDirect: function (params) {
     var beginDate = (params && params.beginDate) ? String(params.beginDate) : null;
     var endDate   = (params && params.endDate)   ? String(params.endDate)   : null;
-    // ★ 缓存非空 → 直接返回已抓到的真实委托（不重新派发，避免空快照覆盖 9 条真实数据）
+    // ★ force：撤单后必须看真实状态，缓存是旧的（撤单核对专用）。
+    //   派发后拿到空快照而旧缓存非空时仍回旧缓存，避免空快照覆盖真实数据。
+    if (params && params.force && _cache.orders.rows.length >= 0) {
+      var prevRows = _cache.orders.rows, prevTs = _cache.orders.ts;
+      var fq = { types: ['orders'] };
+      if (beginDate) { fq.beginDate = beginDate; fq.endDate = endDate || beginDate; }
+      var fr = rpc.exports.requestQueryDirect(fq);
+      var fo = fr && fr.results && fr.results.orders;
+      if (fo && fo.ok && (fo.count > 0 || prevRows.length === 0)) return fo;
+      if (prevRows.length > 0) {
+        return { ok: true, source: 'cache', count: prevRows.length,
+                 rows: prevRows, ts: prevTs, note: 'force 查询返回空快照，回旧缓存' };
+      }
+      if (fo) return fo;
+    }
+    // ★ 缓存非空 → 直接返回已抓到的真实委托（不重新派发，避免空快照覆盖真实数据）
     if (_cache.orders.rows.length > 0) {
       return {
         ok: true, source: 'cache',
@@ -1446,6 +1512,7 @@ rpc.exports = {
   },
 
   // ── 兼容旧 RPC 名 ─────────────────────────────────────────────────────────
+  lastTradeRsp:     function ()  { return lastTradeRsp; },
   fetchPositions:   function ()  { return rpc.exports.readPositionsDirect(); },
   fetchOrders:      function (p) { return rpc.exports.readOrdersDirect(p); },
   read_positions:   function ()  { return rpc.exports.readPositionsDirect(); },
