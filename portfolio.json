@@ -26,7 +26,7 @@
       "daily_trade_log": {
         "2026-11-13": {
           "buy_count": 0,
-          "t0_count": 0,
+          "t0_count": 1,
           "trend_profit_count": 2,
           "ma5_sell_count": 2
         }
@@ -148,11 +148,11 @@
       "shares": 15100,
       "available": 15100,
       "frozen": 0,
-      "avg_cost": 0.703,
-      "current_price": 0.7,
-      "market_value": 10570.0,
-      "pnl": -45.29999999999927,
-      "pnl_pct": -0.43,
+      "avg_cost": 0.702,
+      "current_price": 0.702,
+      "market_value": 10600.2,
+      "pnl": 1.8189894035458565e-12,
+      "pnl_pct": 0.0,
       "base_price": 0.703
     },
     "512800": {
@@ -161,31 +161,31 @@
       "available": 11300,
       "frozen": 0,
       "avg_cost": 0.834,
-      "current_price": 0.894,
-      "market_value": 10102.2,
-      "pnl": 678.0000000000018,
-      "pnl_pct": 7.19,
+      "current_price": 0.897,
+      "market_value": 10136.1,
+      "pnl": 711.9000000000015,
+      "pnl_pct": 7.55,
       "base_price": 0.865
     },
     "159770": {
       "name": "机器人ETF",
       "shares": 24300,
-      "available": 0,
-      "frozen": 24300,
+      "available": 24300,
+      "frozen": 0,
       "avg_cost": 0.909,
-      "current_price": 0.903,
-      "market_value": 21942.9,
-      "pnl": -145.79999999999927,
-      "pnl_pct": -0.66,
+      "current_price": 0.888,
+      "market_value": 21578.4,
+      "pnl": -510.2999999999993,
+      "pnl_pct": -2.31,
       "base_price": 0.91
     }
   },
   "account": {
-    "total_asset": 199367.52,
-    "cash": 157107.32,
-    "market_value": 42260.2
+    "total_asset": 199428.02,
+    "cash": 157113.32,
+    "market_value": 42314.7
   },
-  "last_updated": "2026-11-13 14:39",
+  "last_updated": "2026-11-13 17:00",
   "_today_open": {
     "date": "2026-11-04",
     "asset": 0.0
