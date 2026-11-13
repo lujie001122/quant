@@ -1433,7 +1433,15 @@ class SignalExecutor:
                 pair_price = t0_pair.get("pair_price", 0)  # B5: 直接使用t0_pair中的固定价差
 
                 if pair_shares >= 100:
-                    print(f"[EXECUTE] {code} 做T配对价: 固定价差=150元, 当前价={price:.3f}, 股数={pair_shares}, 配对价={pair_price:.3f}")
+                    _sp = t0_pair.get("spread", 0)
+                    _note = " ⚠️ 被涨跌幅制约" if t0_pair.get("pair_clamped") else ""
+                    print(f"[EXECUTE] {code} 做T配对价: 目标价差={t0_pair.get('spread_target', 150):.0f}元, "
+                          f"当前价={price:.3f}, 股数={pair_shares}, 配对价={pair_price:.3f}, "
+                          f"实际价差={_sp:.0f}元{_note}")
+                    if t0_pair.get("pair_clamped"):
+                        print(f"[EXECUTE] {code} 配对价被界限制约: 目标价差{t0_pair.get('spread_target', 150):.0f}元 → "
+                              f"实际可挂{_sp:.0f}元（配对价{pair_price:.3f}, "
+                              f"跌停{t0_pair.get('limit_down', 0):.3f}, 涨停{t0_pair.get('limit_up', 0):.3f}）")
                 shares = pair_shares
 
                 if pair_shares < 100:
@@ -1466,7 +1474,7 @@ class SignalExecutor:
 
             # ── 做T信号(无配对挂单，自动计算配对价执行双边做T) ──
             elif trade_type == "t0" and not t0_pair:
-                from money_manager import calc_t0_pair_price
+                from money_manager import calc_t0_pair_plan
                 current_shares = self._get_position_shares(code)
                 if current_shares < 100:
                     print(f"[EXECUTE] ⚠️ {code} 做T但无持仓({current_shares}股)，跳过")
@@ -1475,13 +1483,22 @@ class SignalExecutor:
                 ratio = 0.20
                 shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 atr_5min = sig.get('atr_5min', 0)
+                prev_close = live.get("prev_close") if live else None
                 if "买入" in action:
                     # ── 做T下单前幂等检查，一次信号只允许下一单（买入/卖出对称）──
                     if not self._check_t0_idempotent(code, 't0_buy'):
                         print(f"  🚨 [T0幂等] {code} 今日做T买入已有挂单/成交记录，本次跳过，不重复下单")
                         skip_count += 1
                         continue
-                    pair_price = calc_t0_pair_price(price, shares, True, atr_5min=atr_5min)
+                    plan = calc_t0_pair_plan(price, shares, True, atr_5min=atr_5min,
+                                             prev_close=prev_close, code=code)
+                    if not plan["ok"]:
+                        print(f"[EXECUTE] ⛔ {code} 跳过买入做T: {plan['reason']}")
+                        fail_count += 1
+                        continue
+                    pair_price = plan["price"]
+                    if plan["clamped"]:
+                        print(f"[EXECUTE] ⚠️ {code} {plan['reason']}")
                     cmd = ["python3", trade_script, "t0_buy",
                            code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
                     label = f"做T买入 {code} {shares}股 @{price:.3f} (配对@{pair_price:.3f})"
@@ -1491,7 +1508,15 @@ class SignalExecutor:
                         print(f"  🚨 [T0幂等] {code} 今日做T卖出已有挂单/成交记录，本次跳过，不重复下单")
                         skip_count += 1
                         continue
-                    pair_price = calc_t0_pair_price(price, shares, False, atr_5min=atr_5min)
+                    plan = calc_t0_pair_plan(price, shares, False, atr_5min=atr_5min,
+                                             prev_close=prev_close, code=code)
+                    if not plan["ok"]:
+                        print(f"[EXECUTE] ⛔ {code} 跳过卖出做T: {plan['reason']}")
+                        fail_count += 1
+                        continue
+                    pair_price = plan["price"]
+                    if plan["clamped"]:
+                        print(f"[EXECUTE] ⚠️ {code} {plan['reason']}")
                     cmd = ["python3", trade_script, "t0_sell",
                            code, str(shares), f"{price:.3f}", f"{pair_price:.3f}"]
                     label = f"做T卖出 {code} {shares}股 @{price:.3f} (配对@{pair_price:.3f})"

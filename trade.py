@@ -694,6 +694,91 @@ def _get_baseline_shares(code):
 
 # ─── 统一买卖做T入口 ───────────────────────────────────────────────────
 
+_TICK = 0.001  # ETF 最小价位
+
+
+def _fetch_prev_close(code):
+    """取昨收价（用于算当日涨跌停）。取不到返回 0。"""
+    try:
+        from market_data import fetch_realtime_quotes
+        q = fetch_realtime_quotes([code])
+        return float((q.get(code) or {}).get("prev_close") or 0)
+    except Exception as ex:
+        print(f"  ⚠️ 取昨收失败({code}): {ex}")
+        return 0.0
+
+
+def _t0_pair_price_in_limit(code, shares, price, is_buy_t0, pair_price):
+    """做T配对价最后一道防线：必须落在当日涨跌幅区间且方向正确。
+
+    返回 (ok, pair_price, note)。ok=False 表示这笔做T不能下（连1个价位都凑不出）。
+    """
+    from money_manager import day_price_limits
+    limit_down, limit_up = day_price_limits(code, _fetch_prev_close(code), price)
+    if limit_up <= 0:
+        return False, 0.0, "拿不到昨收，无法确认当日涨跌停价"
+    # 方向必须正确：配对卖 > 主腿买价，配对买 < 主腿卖价
+    if (is_buy_t0 and float(pair_price) <= price) or (not is_buy_t0 and float(pair_price) >= price):
+        return False, 0.0, (f"配对价方向错误(主腿{price:.3f}, 配对{pair_price:.3f})，"
+                            f"这笔做T没有价差，不做")
+    if is_buy_t0:
+        lo, hi = round(price + _TICK, 3), limit_up
+    else:
+        lo, hi = limit_down, round(price - _TICK, 3)
+    if hi < lo:
+        return False, 0.0, (f"当日涨跌幅内无合法配对价(现价{price:.3f}, "
+                            f"跌停{limit_down:.3f}, 涨停{limit_up:.3f})")
+    px = round(min(max(float(pair_price), lo), hi), 3)
+    actual_yuan = abs(px - price) * shares
+    if actual_yuan < _TICK * shares - 1e-9:
+        return False, 0.0, (f"界内最大价差{abs((hi if is_buy_t0 else lo) - price) * shares:.0f}元 "
+                            f"< 1个价位的最小价差{_TICK * shares:.0f}元")
+    note = ""
+    if abs(px - float(pair_price)) > 1e-9:
+        note = (f"配对价被界限制约：目标价差{abs(float(pair_price) - price) * shares:.0f}元 → "
+                f"实际可挂{actual_yuan:.0f}元（配对价{px:.3f}, 跌停{limit_down:.3f}, 涨停{limit_up:.3f}）")
+    return True, px, note
+
+
+def _t0_suggest_price(code, is_buy, fallback):
+    """单边未配对时的补挂建议价：买入参考卖一，卖出参考买一。"""
+    try:
+        from market_data import fetch_realtime_quotes
+        q = (fetch_realtime_quotes([code]) or {}).get(code, {})
+        best = float((q.get("ask1") if is_buy else q.get("bid1")) or 0)
+        last = float(q.get("price") or 0)
+        for v in (best, last, float(fallback or 0)):
+            if v and v > 0:
+                return round(v, 3)
+    except Exception:
+        pass
+    return round(float(fallback or 0), 3)
+
+
+def _alert_t0_single_leg(code, name, action, shares, price, pair_price, detail, pair_is_buy):
+    """主腿已发出、配对腿没挂上 → 单边暴露告警（打印 + 落 logs/alerts）。"""
+    suggest = _t0_suggest_price(code, pair_is_buy, pair_price or price)
+    side = "卖出" if action == 't0_sell' else "买入"
+    pair_side = "买入" if pair_is_buy else "卖出"
+    msg = (f"{name}({code}) 做T{side} {shares:,}股 @{price:.3f} 已发出，"
+           f"配对{pair_side} @{pair_price:.3f} 挂不上｜原因: {detail}｜"
+           f"建议补挂价 {suggest:.3f}｜请立即人工补挂，否则 14:50 尾盘平仓兜底")
+    print("")
+    print("  " + "!" * 70)
+    print(f"  ⚠️ T0 单边未配对 — {name}({code})")
+    print(f"  主腿: 做T{side} {shares:,}股 @{price:.3f}（已发出，合同号见上）")
+    print(f"  配对腿: {pair_side} {shares:,}股 @{pair_price:.3f} 未挂上")
+    print(f"  原因: {detail}")
+    print(f"  ➡️ 建议补挂价: {suggest:.3f}（{pair_side}），或 14:50 尾盘平仓兜底")
+    print("  " + "!" * 70)
+    print("")
+    try:
+        from core.alert import get_alert_manager
+        get_alert_manager().critical("T0 单边未配对", msg, dedup_key=f"t0_single_leg:{code}")
+    except Exception as ex:
+        print(f"  ⚠️ 告警写入失败: {ex}")
+
+
 def _place_order(method, code, shares, price, e=None):
     """买/卖：先走 frida 接口（App 自己的下单方法），失败回退 EvolvingSim 界面自动化。
 
@@ -742,6 +827,17 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     shares = _validate_shares(shares)
     is_t0 = action in ('t0_buy', 't0_sell')
     amount = shares * price
+
+    if is_t0:
+        # 配对价必须落在当日涨跌幅区间内：越界按界内降级，连1个价位都凑不出就整笔不做。
+        # 放在最前面判定，取消时不留 intent/订单痕迹，不影响后续重试。
+        ok_price, pair_price, note = _t0_pair_price_in_limit(
+            code, shares, price, action == 't0_buy', float(pair_price or 0))
+        if not ok_price:
+            print(f"⛔ {code} 做T取消，不下任何单: {note}")
+            return False
+        if note:
+            print(f"  ⚠️ {note}")
 
     # ETF名称
     name = CODE_MAP.get(code, {}).get('name', code)
@@ -796,6 +892,9 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         time.sleep(2)
         ok_pair, contract_pair, detail_pair = _place_order(pair_method, code, shares, pair_price, e)
         if not ok_pair:
+            # 主腿已发出、配对腿没挂上 → 立刻告警并给补挂价，别静默留单边
+            _alert_t0_single_leg(code, name, action, shares, price, pair_price,
+                                 detail_pair, pair_is_buy=(pair_method == 'buy'))
             print(f"  ❌ 配对单下单失败: {detail_pair}")
             sys.exit(1)
         print(f"  ✅ 配对单核验通过: {detail_pair}")

@@ -104,6 +104,7 @@ t0:
   min_spread_pct: 0.0035
   pair_atr_multiplier: 1.1
   pair_ratio: 0.3
+  price_limit_pct: 0.10          # 配对价硬边界：当日涨跌幅（科创板ETF 588/589 自动按20%）
   rsi_buy_max: 50
   rsi_extreme_buy: 25
   rsi_extreme_sell: 75

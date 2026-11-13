@@ -75,8 +75,10 @@ def evaluate_t0(t, pos, price, today_str, atr_pct):
     return _t0_strategy.evaluate_t0(t, pos, price, today_str, atr_pct)
 
 
-def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True, available_shares=None):
-    return _t0_strategy.evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0, available_shares=available_shares)
+def evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0=True, available_shares=None,
+                        prev_close=None, code=None):
+    return _t0_strategy.evaluate_t0_execute(result, t, pos, price, today_str, atr_pct, record_t0,
+                                            available_shares=available_shares, prev_close=prev_close, code=code)
 
 # ── 状态中心（执行层已迁移到 executor.py，此文件仅保留需要的导入） ──
 
@@ -784,13 +786,13 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # available_shares: 复用已加载的 pf_data（行163），不重复读文件；取不到时为 None
         _available_shares = pf_data.get("positions", {}).get(code, {}).get("available")
         if action == "持有":
-            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False, available_shares=_available_shares)
+            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False, available_shares=_available_shares, prev_close=r.get("prev_close"), code=code)
             if t0_exec is not None:
                 action, position_ratio, trade_type, reason = t0_exec[:4]
                 t0_pair = t0_exec[4] if len(t0_exec) > 4 else None
         elif buy_score >= 2 and pos.has_position and pos.can_t0_today(today_str, atr_pct):
             # 其他 action 被优先级1抢占时(如趋势止盈卖10%)，T0买入信号仍应生成配对挂单
-            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False, available_shares=_available_shares)
+            t0_exec = evaluate_t0_execute(t0_result, t, pos, price, today_str, atr_pct, record_t0=False, available_shares=_available_shares, prev_close=r.get("prev_close"), code=code)
             if t0_exec is not None:
                 t0_pair = t0_exec[4] if len(t0_exec) > 4 else None
                 # 将配对挂单信息附加到 reason 中

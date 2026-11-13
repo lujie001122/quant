@@ -12,7 +12,7 @@ from strategies.base import BaseStrategy
 from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time
 from position_info import TOTAL_FUND
 from position_info import MAX_POSITION_RATIO
-from money_manager import calc_t0_pair_price
+from money_manager import calc_t0_pair_plan
 
 import os, json, yaml
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.yaml')
@@ -389,11 +389,13 @@ class T0Strategy(BaseStrategy):
 
         return result
 
-    def evaluate_t0_execute(self, result, t, pos, price, today_str, atr_pct, record_t0=True, available_shares=None):
+    def evaluate_t0_execute(self, result, t, pos, price, today_str, atr_pct, record_t0=True,
+                            available_shares=None, prev_close=None, code=None):
         """从 evaluate_t0 结果中解析出具体的执行动作
 
         available_shares: 可用股数（不含冻结）。卖出路径用此值限制卖出量；
                           传 None 时退回 pos.shares（向后兼容）。
+        prev_close: 昨收价。用于算当日涨跌停，配对价越界时按界内降级；缺失则按现价±限制比例兜底。
         返回: (action, position_ratio, trade_type, reason, t0_pair) 或 None
         """
         buy_score = result["buy_score"]
@@ -423,31 +425,60 @@ class T0Strategy(BaseStrategy):
                     pos.record_t0(today_str)
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
-                if atr_5m and price > 0:
+                if price > 0:
                     pair_shares = max(int(pos.shares * ratio / 100) * 100, min_shares_cfg)
-                    pair_price = calc_t0_pair_price(price, pair_shares, True, atr_5min=atr_5m)  # Bug D: 传入ATR
-                    if pair_shares >= 100 and pair_price > 0:
-                        spread = abs(pair_price - price) * pair_shares
-                        buy_amount = price * pair_shares
-                        min_abs = _CONF.get("t0", {}).get("min_spread_abs", 120)
-                        min_pct = _CONF.get("t0", {}).get("min_spread_pct", 0.0035)
-                        min_required = max(min_abs, min_pct * buy_amount)
-                        spread_pct = spread / buy_amount if buy_amount > 0 else 0
-                        log.info(f"[T0] 买入做T 价差={spread:.2f}元 占买入金额={spread_pct*100:.3f}% "
-                                 f"门槛=max({min_abs}元,{min_pct*100:.2f}%×{buy_amount:.0f}元)={min_required:.2f}元")
-                        if spread >= min_required:
-                            t0_pair = {
-                                "trade_type": "t0_pair",
-                                "action": "卖出(配对挂单)",
-                                "price": price,
-                                "pair_price": pair_price,
-                                "shares": pair_shares,
-                                "spread": round(spread, 2),
-                                "reason": f"做T买入后高位卖出: 动态价差门槛={min_required:.2f}元"
-                                          f"(=max({min_abs}元,{min_pct*100:.2f}%×{buy_amount:.0f}元)), 挂单价={pair_price:.3f}",
-                            }
-                        else:
-                            log.info(f"[T0] 价差不足, 买入做T配对单不下发(t0_pair=None)")
+                    plan = calc_t0_pair_plan(price, pair_shares, True, atr_5min=atr_5m,
+                                             prev_close=prev_close, code=code)
+                    if pair_shares < 100 or not plan["ok"]:
+                        # 配对价落不进当日涨跌幅区间 → 整笔做T不发（禁止单边裸单）
+                        msg = f"跳过买入做T: {plan['reason'] or f'股数不足({pair_shares})'}"
+                        log.info(f"[T0] {code} {msg}")
+                        print(f"[T0] ⛔ {code} {msg}")
+                        return None
+                    pair_price = plan["price"]
+                    if plan["clamped"]:
+                        log.info(f"[T0] {code} {plan['reason']}")
+                        print(f"[T0] ⚠️ {code} {plan['reason']}")
+                    spread = plan["actual_spread_yuan"]
+                    buy_amount = price * pair_shares
+                    min_abs = _CONF.get("t0", {}).get("min_spread_abs", 120)
+                    min_pct = _CONF.get("t0", {}).get("min_spread_pct", 0.0035)
+                    # 门槛不能高过目标价差，否则永远不可能满足（会把整笔做T永久掐死）
+                    min_required = min(max(min_abs, min_pct * buy_amount), plan["target_spread"])
+                    spread_pct = spread / buy_amount if buy_amount > 0 else 0
+                    log.info(f"[T0] 买入做T 价差={spread:.2f}元 占买入金额={spread_pct*100:.3f}% "
+                             f"门槛=max({min_abs}元,{min_pct*100:.2f}%×{buy_amount:.0f}元)={min_required:.2f}元")
+                    if spread >= min_required:
+                        pass
+                    elif plan["clamped"] and spread >= plan["min_spread_yuan"]:
+                        # 被涨跌幅压到价差不够门槛，但界内还有有效价差 → 降级照做，明确打印不静默
+                        msg = (f"价差被界限制约，降级执行: 实际{spread:.0f}元 < 门槛{min_required:.0f}元 "
+                               f"(配对价{pair_price:.3f}, 跌停{plan['limit_down']:.3f}, 涨停{plan['limit_up']:.3f})")
+                        log.info(f"[T0] {code} {msg}")
+                        print(f"[T0] ⚠️ {code} {msg}")
+                    else:
+                        # 界内连最小有效价差都凑不出 → 整笔做T不发，避免单边
+                        msg = (f"实际价差{spread:.0f}元 < 门槛{min_required:.0f}元，"
+                               f"跳过整笔做T(不发单边)")
+                        log.info(f"[T0] {code} {msg}")
+                        print(f"[T0] ⛔ {code} {msg}")
+                        return None
+                    t0_pair = {
+                        "trade_type": "t0_pair",
+                        "action": "卖出(配对挂单)",
+                        "price": price,
+                        "pair_price": pair_price,
+                        "shares": pair_shares,
+                        "spread": round(spread, 2),
+                        "spread_target": plan["target_spread"],
+                        "pair_clamped": plan["clamped"],
+                        "limit_up": plan["limit_up"],
+                        "limit_down": plan["limit_down"],
+                        "reason": f"做T买入后高位卖出: 动态价差门槛={min_required:.2f}元"
+                                  f"(=max({min_abs}元,{min_pct*100:.2f}%×{buy_amount:.0f}元)), "
+                                  f"挂单价={pair_price:.3f}(目标价差{plan['target_spread']:.0f}元,"
+                                  f"实际{spread:.0f}元)",
+                    }
                 return ("买入", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 
             elif "卖出" in t0_signal:
@@ -464,7 +495,7 @@ class T0Strategy(BaseStrategy):
                     pos.record_t0(today_str)
                 atr_5m = t.get("atr_5min")
                 t0_pair = None
-                if atr_5m and price > 0:
+                if price > 0:
                     min_shares = _CONF.get("trade", {}).get("min_shares", 5000)
                     # 卖出腿以可用股数为上限（available_shares=None 时退回 pos.shares 保持向后兼容）
                     avail = available_shares if available_shares is not None else pos.shares
@@ -474,29 +505,58 @@ class T0Strategy(BaseStrategy):
                         print(f"[T0] 可用股数{avail}不足最小交易单位{min_shares}，跳过本次做T")
                         return None
                     pair_shares = min(max(int(pos.shares * ratio / 100) * 100, min_shares), sell_cap)
-                    pair_price = calc_t0_pair_price(price, pair_shares, False, atr_5min=atr_5m)  # Bug D: 传入ATR
-                    if pair_shares >= 100 and pair_price > 0:
-                        spread = abs(price - pair_price) * pair_shares
-                        sell_amount = price * pair_shares
-                        min_abs = _CONF.get("t0", {}).get("min_spread_abs", 120)
-                        min_pct = _CONF.get("t0", {}).get("min_spread_pct", 0.0035)
-                        min_required = max(min_abs, min_pct * sell_amount)
-                        spread_pct = spread / sell_amount if sell_amount > 0 else 0
-                        log.info(f"[T0] 卖出做T 价差={spread:.2f}元 占金额={spread_pct*100:.3f}% "
-                                 f"门槛=max({min_abs}元,{min_pct*100:.2f}%×{sell_amount:.0f}元)={min_required:.2f}元")
-                        if spread >= min_required:
-                            t0_pair = {
-                                "trade_type": "t0_pair",
-                                "action": "买入(配对挂单)",
-                                "price": price,
-                                "pair_price": pair_price,
-                                "shares": pair_shares,
-                                "spread": round(spread, 2),
-                                "reason": f"做T卖出后低位接回: 动态价差门槛={min_required:.2f}元"
-                                          f"(=max({min_abs}元,{min_pct*100:.2f}%×{sell_amount:.0f}元)), 挂单价={pair_price:.3f}",
-                            }
-                        else:
-                            log.info(f"[T0] 价差不足, 卖出做T配对单不下发(t0_pair=None)")
+                    plan = calc_t0_pair_plan(price, pair_shares, False, atr_5min=atr_5m,
+                                             prev_close=prev_close, code=code)
+                    if pair_shares < 100 or not plan["ok"]:
+                        # 配对价落不进当日涨跌幅区间 → 整笔做T不发（禁止单边裸卖）
+                        msg = f"跳过卖出做T: {plan['reason'] or f'股数不足({pair_shares})'}"
+                        log.info(f"[T0] {code} {msg}")
+                        print(f"[T0] ⛔ {code} {msg}")
+                        return None
+                    pair_price = plan["price"]
+                    if plan["clamped"]:
+                        log.info(f"[T0] {code} {plan['reason']}")
+                        print(f"[T0] ⚠️ {code} {plan['reason']}")
+                    spread = plan["actual_spread_yuan"]
+                    sell_amount = price * pair_shares
+                    min_abs = _CONF.get("t0", {}).get("min_spread_abs", 120)
+                    min_pct = _CONF.get("t0", {}).get("min_spread_pct", 0.0035)
+                    # 门槛不能高过目标价差，否则永远不可能满足（会把整笔做T永久掐死）
+                    min_required = min(max(min_abs, min_pct * sell_amount), plan["target_spread"])
+                    spread_pct = spread / sell_amount if sell_amount > 0 else 0
+                    log.info(f"[T0] 卖出做T 价差={spread:.2f}元 占金额={spread_pct*100:.3f}% "
+                             f"门槛=max({min_abs}元,{min_pct*100:.2f}%×{sell_amount:.0f}元)={min_required:.2f}元")
+                    if spread >= min_required:
+                        pass
+                    elif plan["clamped"] and spread >= plan["min_spread_yuan"]:
+                        # 被涨跌幅压到价差不够门槛，但界内还有有效价差 → 降级照做，明确打印不静默
+                        msg = (f"价差被界限制约，降级执行: 实际{spread:.0f}元 < 门槛{min_required:.0f}元 "
+                               f"(配对价{pair_price:.3f}, 跌停{plan['limit_down']:.3f}, 涨停{plan['limit_up']:.3f})")
+                        log.info(f"[T0] {code} {msg}")
+                        print(f"[T0] ⚠️ {code} {msg}")
+                    else:
+                        # 界内连最小有效价差都凑不出 → 整笔做T不发，避免单边
+                        msg = (f"实际价差{spread:.0f}元 < 门槛{min_required:.0f}元，"
+                               f"跳过整笔做T(不发单边)")
+                        log.info(f"[T0] {code} {msg}")
+                        print(f"[T0] ⛔ {code} {msg}")
+                        return None
+                    t0_pair = {
+                        "trade_type": "t0_pair",
+                        "action": "买入(配对挂单)",
+                        "price": price,
+                        "pair_price": pair_price,
+                        "shares": pair_shares,
+                        "spread": round(spread, 2),
+                        "spread_target": plan["target_spread"],
+                        "pair_clamped": plan["clamped"],
+                        "limit_up": plan["limit_up"],
+                        "limit_down": plan["limit_down"],
+                        "reason": f"做T卖出后低位接回: 动态价差门槛={min_required:.2f}元"
+                                  f"(=max({min_abs}元,{min_pct*100:.2f}%×{sell_amount:.0f}元)), "
+                                  f"挂单价={pair_price:.3f}(目标价差{plan['target_spread']:.0f}元,"
+                                  f"实际{spread:.0f}元)",
+                    }
                 return ("卖出", f"{ratio*100:.0f}%", "t0", t0_signal + "(量比)", t0_pair)
 
         return None
