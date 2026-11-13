@@ -3,9 +3,10 @@
 固化的下单工具 — 所有买卖操作统一接口
 
 数据通道:
-  - sync 读持仓/委托/成交: 优先 frida 进程内接口 (ths_cli --engine frida)，
-    失败才回退 EvolvingSim；资金仍走 EvolvingSim.getAccountInfo（新接口无 account）
-  - 下单 buy/sell/t0_*: 仍走 EvolvingSim（本轮未迁移）
+  - sync 读持仓/委托/成交/资金: 优先 frida 进程内接口 (ths_cli --engine frida)，
+    失败才回退 EvolvingSim
+  - 下单 buy/sell/t0_*: 优先 frida 接口（ths.place → App 自己的 sendWeituoRequest），
+    失败才回退 EvolvingSim 界面自动化；两条路径都打印实际通道
 
 用法:
   python3 trade.py sync                          # 同步持仓到 portfolio.json
@@ -15,9 +16,10 @@
   python3 trade.py t0_sell CODE SHARES PRICE [PAIR_PRICE] # 做T卖出配对：卖出+低位买入挂单
 
 铁律:
-  1. 下单只用 EvolvingSim 公开接口: buy/sell；读接口见上（frida 优先）
-  2. 数量必须是 100 整数倍，且不低于 5000 股
-  3. 调 EvolvingSim 前先 open -a 同花顺 + sleep 1，调完后 sleep 2
+  1. 下单先走 frida 接口（不点界面、锁屏可用）；只有在 frida 未把单发出去时才回退
+     EvolvingSim.buy/sell，已发出的单禁止回退（防重复下单）
+  2. 数量必须是 100 整数倍，且不低于 config.yaml trade.min_shares
+  3. 回退 EvolvingSim 时才需要 open -a 同花顺 + sleep 1，调完后 sleep 2
   4. 不用子进程 subprocess 包装 EvolvingSim（frida 读通道经 ths_cli 子进程）
   5. 不调底层私有函数（issuingEntrust 等）
   6. AI Agent 只能通过 python3 trade.py 执行买卖，不得直接调 EvolvingSim
@@ -692,6 +694,49 @@ def _get_baseline_shares(code):
 
 # ─── 统一买卖做T入口 ───────────────────────────────────────────────────
 
+def _place_order(method, code, shares, price, e=None):
+    """买/卖：先走 frida 接口（App 自己的下单方法），失败回退 EvolvingSim 界面自动化。
+
+    返回 (ok, contract, detail)。ok=True 表示委托表里确认到了这笔单，
+    contract 交给 write_order 落盘，配对/撤单逻辑直接用它。
+    """
+    try:
+        from broker_frida import ThsBroker
+        r = ThsBroker().place(method, code, shares, price)
+        print(f"  [通道] 下单: frida 接口（{r.get('via')}）  合同号={r['contract']}  状态={r['status']}")
+        return True, r["contract"], f"frida 委托表 合同号={r['contract']} 状态={r['status']}"
+    except Exception as ex:
+        # 单已发给柜台、只是委托表没确认 → 不许回退，否则同一笔下两次
+        if '已发送' in str(ex) or '未拿到合同号' in str(ex):
+            print(f"  ⚠️ frida 已发送但委托表未确认: {ex}")
+            return False, None, f"frida 已发送未确认，禁止回退重下，请人工核对委托表: {ex}"
+        print(f"  ⚠️ frida 接口下单失败: {ex}")
+
+    print(f"  [通道] 下单: 旧通道 EvolvingSim.{method}（界面自动化）")
+    since = time.strftime("%H:%M:%S")
+    time.sleep(2)
+    result = _call_evolving(method, code, shares, price, e=e)
+    print(f"  📤 EvolvingSim.{method} 原始返回: {result}")
+    if result is None:
+        print(f"  ⚠️ EvolvingSim 返回 None，重启同花顺后重试一次")
+        try:
+            os.system("pkill -9 -x 同花顺")
+            time.sleep(3)
+            os.system("open -a /Applications/同花顺.app")
+            time.sleep(5)
+        except Exception:
+            pass
+        since = time.strftime("%H:%M:%S")
+        result = _call_evolving(method, code, shares, price, e=e)
+        print(f"  📤 重试后 EvolvingSim.{method} 原始返回: {result}")
+    elif isinstance(result, tuple) and len(result) > 0 and not result[0]:
+        return False, None, f"同花顺拒单（EvolvingSim 返回 {result}）"
+
+    direction = '买入' if 'buy' in method else '卖出'
+    ok, contract, detail = _verify_order_in_entrust(e, code, direction, shares, price, since=since)
+    return ok, contract, detail
+
+
 def _unified_trade(action, code, shares, price, pair_price=None):
     """统一买卖做T流程。"""
     shares = _validate_shares(shares)
@@ -728,12 +773,7 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     else:
         method, pair_method, pair_action = 'sell', 'buy', 't0_buy'
 
-    # 下单前记录当前时刻，核验时只认 >= 该时刻的委托记录（防误匹配同日旧单）
-    _order_since = time.strftime("%H:%M:%S")
-    # 下单
-    time.sleep(2)
-    result = _call_evolving(method, code, shares, price, e=e)
-
+    # 下单意图日志
     if is_t0:
         spread = (pair_price - price) / price * 100 if action == 't0_buy' else (price - pair_price) / price * 100
         print(f"🔁 做T{'买入' if 'buy' in action else '卖出'} {name}({code}) {shares:,}股 @{price} → 挂{'卖' if 'buy' in action else '买'}@{pair_price}  价差{spread:+.1f}%  金额¥{amount:,.0f}")
@@ -742,59 +782,21 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     else:
         print(f"📊 卖出 {name}({code}) {shares:,}股 @{price}  金额¥{amount:,.0f}")
 
-    # 打印原始返回值（issuingEntrust 返回 (status, contractNo)，核验失败时用于诊断）
-    print(f"  📤 EvolvingSim.{method} 原始返回: {result}")
-
-    # 返回值解析：None=调用异常; (False,None)=同花顺拒单; (True,contractNo)=已发送
-    if result is None:
-        print(f"  ⚠️ EvolvingSim 调用异常返回 None，尝试重启同花顺后重试...")
-        try:
-            from evolving import ascmds
-            raw = os.popen(ascmds.asissuingEntrustSim + ' ' + method + ' stock ' + code + ' ' + str(price) + ' ' + str(shares)).read().strip()
-            if raw and 'Begin failed' in raw:
-                print(f"  🔄 Begin failed，重启同花顺...")
-                os.system("pkill -9 -x 同花顺")
-                time.sleep(3)
-                os.system("open -a /Applications/同花顺.app")
-                time.sleep(5)
-        except Exception:
-            pass
-        # 重启后重试一次
-        time.sleep(2)
-        result = _call_evolving(method, code, shares, price, e=e)
-        print(f"  📤 重试后 EvolvingSim.{method} 原始返回: {result}")
-    elif isinstance(result, tuple) and len(result) > 0 and not result[0]:
-        print(f"  ⚠️ EvolvingSim 返回 status=False（同花顺拒单），原始返回: {result}")
-        print(f"  ❌ 下单被同花顺拒绝，未产生委托")
-        from state_center import write_intent_failed as _wif
-        _wif(code, action, shares, price, reason='同花顺拒单')
-        sys.exit(1)
-
-    # ═══ 强制核验：查当日委托表，匹配 代码+方向+数量 且拿到合同号，才算成功 ═══
-    # 不允许用返回码为0当作成交依据；接口查不到视为未知，不得当作成功
-    direction_main = '买入' if 'buy' in action else '卖出'
-    ok_main, contract_main, detail_main = _verify_order_in_entrust(e, code, direction_main, shares, price, since=_order_since)
+    ok_main, contract_main, detail_main = _place_order(method, code, shares, price, e)
     if not ok_main:
-        print(f"  🚨 核验失败: {code} {direction_main} {shares}股 未在委托表确认")
-        print(f"     原始返回: {result}")
-        print(f"     判定依据: {detail_main}")
-        print(f"  ❌ 下单失败，退出(非零退出码)，不扣做T额度、不写成交记录")
+        from state_center import write_intent_failed as _wif
+        _wif(code, action, shares, price, reason='委托表未确认')
+        print(f"  ❌ 下单失败: {detail_main}")
         sys.exit(1)
     print(f"  ✅ 核验通过: {detail_main}")
     write_order(code, action, shares, price, contract_main, status='pending', baseline_shares=baseline_shares)
 
     # T0 配对单
     if is_t0 and pair_price is not None:
-        time.sleep(5)
-        pair_result = _call_evolving(pair_method, code, shares, pair_price, e=e)
-        print(f"  📤 配对单 EvolvingSim.{pair_method} 原始返回: {pair_result}")
-        direction_pair = '卖出' if 'buy' in action else '买入'
-        ok_pair, contract_pair, detail_pair = _verify_order_in_entrust(e, code, direction_pair, shares, pair_price, since=_order_since)
+        time.sleep(2)
+        ok_pair, contract_pair, detail_pair = _place_order(pair_method, code, shares, pair_price, e)
         if not ok_pair:
-            print(f"  🚨 配对单核验失败: {code} {direction_pair} {shares}股 未在委托表确认")
-            print(f"     原始返回: {pair_result}")
-            print(f"     判定依据: {detail_pair}")
-            print(f"  ❌ 配对单下单失败，退出(非零退出码)")
+            print(f"  ❌ 配对单下单失败: {detail_pair}")
             sys.exit(1)
         print(f"  ✅ 配对单核验通过: {detail_pair}")
         write_order(code, pair_action, shares, pair_price, contract_pair, status='pending', baseline_shares=baseline_shares)

@@ -38,6 +38,9 @@ var msg1i = new NativeFunction(_objc_msgSend, 'int',     ['pointer','pointer','p
 var msg0u = new NativeFunction(_objc_msgSend, 'uint64',  ['pointer','pointer']);
 var msgSetInt     = new NativeFunction(_objc_msgSend, 'pointer', ['pointer','pointer','pointer','int64']);
 var msgSetNsInsid = new NativeFunction(_objc_msgSend, 'void',    ['pointer','pointer','int64']);
+// 单 int 参数（-[UserModel SetType:(int)]）—— 注意 msgSetInt 是 2 参数的，
+// 拿它调 SetType: 会把 int 塞进错误寄存器，等于什么都没设。
+var msg1int = new NativeFunction(_objc_msgSend, 'pointer', ['pointer','pointer','int']);
 
 // ── class / selector caches ──────────────────────────────────────────────────
 var _clsCache = {}, _selCache = {};
@@ -69,6 +72,27 @@ function nsStr(p) {
     if (!utf8 || utf8.isNull()) return null;
     return utf8.readUtf8String();
   } catch(e) { return null; }
+}
+function className(p) {
+  try {
+    var c = _object_getClass(p);
+    if (!c || c.isNull()) return '?';
+    var nm = _class_getName(c);
+    if (!nm || nm.isNull()) return '?';
+    return String(nm.readUtf8String());
+  } catch (e) { return '?'; }
+}
+var _class_getSuperclass = new NativeFunction(libobjc.getExportByName('class_getSuperclass'), 'pointer', ['pointer']);
+function isKindOfClassName(p, want) {
+  try {
+    var c = _object_getClass(p);
+    while (c && !c.isNull()) {
+      var nm = _class_getName(c);
+      if (nm && !nm.isNull() && String(nm.readUtf8String()) === want) return true;
+      c = _class_getSuperclass(c);
+    }
+  } catch (e) {}
+  return false;
 }
 function nsIntVal(p) {
   if (!p || p.isNull()) return null;
@@ -157,6 +181,18 @@ var _tqtInst = {
   orders:    null,
   trades:    null,
 };
+// 所有见过的「委托」TQT 实例（同一窗口/新窗口会各有一个，tableSourceData 各自独立）。
+// 撤单按合同号在这些实例里找行，避免用到那个 0 行的旧实例。
+var _tqtOrdersList = [];
+function _rememberOrdersInst(p) {
+  if (!p || p.isNull()) return;
+  var key = p.toString();
+  for (var i = 0; i < _tqtOrdersList.length; i++) {
+    if (_tqtOrdersList[i].toString() === key) return;
+  }
+  _tqtOrdersList.push(p);
+  if (_tqtOrdersList.length > 8) _tqtOrdersList.shift();
+}
 
 // ── 待归属分类（确定性归属，主判据）────────────────────────────────────────────
 // requestQueryDirect 派发前设置，hook 收到快照时优先用这个分类登记实例。
@@ -308,6 +344,7 @@ var _hookInProgress = false;
           if (pendingSnapshot && _cache[pendingSnapshot] !== undefined) {
             if (instPtr && !instPtr.isNull()) {
               _tqtInst[pendingSnapshot] = instPtr;
+              if (pendingSnapshot === 'orders') _rememberOrdersInst(instPtr);
             }
             // 只有当前缓存本身为空时才写空快照（更新 ts 供轮询感知）
             if (_cache[pendingSnapshot].rows.length === 0) {
@@ -341,6 +378,7 @@ var _hookInProgress = false;
           // 保存真实 NativePointer 供 requestQueryDirect 使用
           if (instPtr && !instPtr.isNull()) {
             _tqtInst[category] = instPtr;
+            if (category === 'orders') _rememberOrdersInst(instPtr);
           }
         }
       } catch(outer) {
@@ -352,6 +390,52 @@ var _hookInProgress = false;
   });
 
   send({ type: 'log', text: '[ths_agent] single hook installed: -[TradeQueryTemplate setTableSourceData:]' });
+})();
+
+// ── 诊断：交易请求真正下发到 commumodule 的次数（低频，仅下单/撤单时触发）─────
+// -[commumodule kQvYehFExlWUHfgW:] 见 /tmp/ths_decomp2/functions/0x100adc6d0.c
+var commuSendCount = 0;
+var commuLastReqType = null;
+(function hookCommuSend() {
+  try {
+    var c = cls('commumodule');
+    if (!c) return;
+    var m = _class_getInstanceMethod(c, sel('kQvYehFExlWUHfgW:'));
+    if (!m || m.isNull()) return;
+    Interceptor.attach(_method_getImplementation(m), {
+      onEnter: function (args) {
+        commuSendCount++;
+        try { commuLastReqType = nsStr(msg0p(args[2], sel('getReqTypeString'))); } catch (e) {}
+      }
+    });
+    send({ type: 'log', text: '[ths_agent] commumodule send hook installed' });
+  } catch (e) { send({ type: 'log', text: '[ths_agent] commu hook error: ' + e }); }
+})();
+
+// ── 捕获 JYMaiMaiView 实例（低频：视图创建时一次）──────────────────────────
+// 反编译依据：/tmp/ths_decomp2/functions/0x100ae7278.c -[JYMaiMaiView onTrade:]
+//   写入 mmParam(strCode/strPrice/strAmount/strSetCode/strGdzh/nReqType)
+//   → -[JYMaiMaiView sendWeituoRequest] → _sendWeituoRequestWithParams:
+//   → TradeRequest + -[UserModel XIXBiQhWtIEfT_DW:]
+// 我们只捕获实例指针，绝不遍历视图树、不改 App 状态。
+var _maiMaiView = null;
+(function hookMaiMaiView() {
+  try {
+    var c = cls('JYMaiMaiView');
+    if (!c) { send({ type: 'log', text: '[ths_agent] JYMaiMaiView not found, view hook skipped' }); return; }
+    ['initWithCoder:', 'initWithFrame:'].forEach(function (selName) {
+      var m = _class_getInstanceMethod(c, sel(selName));
+      if (!m || m.isNull()) return;
+      Interceptor.attach(_method_getImplementation(m), {
+        onEnter: function (args) { this._self = args[0]; },
+        onLeave: function () {
+          if (this._self && !this._self.isNull() && isKindOfClassName(this._self, 'JYMaiMaiView'))
+            _maiMaiView = this._self;
+        }
+      });
+    });
+    send({ type: 'log', text: '[ths_agent] JYMaiMaiView hook installed' });
+  } catch (e) { send({ type: 'log', text: '[ths_agent] JYMaiMaiView hook error: ' + e }); }
 })();
 
 // ── 活跃用户（仅用于交易派发，不在钩子里调用）──────────────────────────────
@@ -391,7 +475,7 @@ function buildTradeRequest(reqType, p) {
   if (!trCls) return { error: 'TradeRequest class not found' };
   var req = msg0p(msg0p(trCls, sel('alloc')), sel('init'));
   if (!req || req.isNull()) return { error: 'TradeRequest alloc/init failed' };
-  msgSetNsInsid(req, sel('setNsInsid:'), 0x186eb);
+  msgSetNsInsid(req, sel('setNsInsid:'), (p.nsInsid ? Number(p.nsInsid) : 0x186eb));
   msg1p(req, sel('setDelegate:'), ptr(0));
   var sc  = p.stockcode || '';
   var mk  = p.mkcode    || '1';
@@ -405,7 +489,10 @@ function buildTradeRequest(reqType, p) {
   msg2p(req, sel('setRequestParamStr:Value:'), cStr('wtsl'),      cStr(qty));
   msg2p(req, sel('setRequestParamStr:Value:'), cStr('price'),     cStr(prc));
   msg2p(req, sel('setRequestParamStr:Value:'), cStr('wtjg'),      cStr(prc));
-  msg2p(req, sel('setRequestParamStr:Value:'), cStr('interact'),  cStr('1'));
+  msg2p(req, sel('setRequestParamStr:Value:'), cStr('interact'),  cStr(p.interact === undefined ? '1' : String(p.interact)));
+  if (p.gdzh) {
+    msg2p(req, sel('setRequestParamStr:Value:'), cStr('gdzh'), cStr(String(p.gdzh)));
+  }
   msgSetInt(req, sel('setRequestParamInteger:Value:'), jsStr('req_type'), reqType);
   if (p.extra) {
     for (var k in p.extra)
@@ -442,6 +529,41 @@ function _order(reqType, params) {
       }, 350);
     });
   } catch(e) { return { ok: false, error: String(e) }; }
+}
+
+// ── 市场/股东账户解析（App 自己维护的 UserInfoModel.marketArray）──────────────
+// 反编译依据：/tmp/ths_decomp2/functions/0x100b862d4.c
+//   -[UserInfoModel getGdzhBySetCode:] → findMarket: → getOneAccount → 账户号
+//   -[AccountModel strAccount] 就是 2106/2105 里那个股东账户（上海 A481535989，深圳 00105815865）
+// mkcode：1=深圳Ａ股 2=上海Ａ股 8=沪HK 9=深HK :＝北京Ａ股（App 原始市场码）
+function _marketCodeFor(code) {
+  var c = String(code || '');
+  if (/^(5|6|9)/.test(c)) return '2';   // 沪市（5xxxxx/6xxxxx；9 为沪 B）
+  if (/^(0|1|2|3)/.test(c)) return '1'; // 深市
+  if (/^(4|8)/.test(c)) return ':';     // 北交所
+  return '1';
+}
+
+function _accountForMarket(mkcode) {
+  var um = msg0p(cls('UserManager'), sel('shareInstance'));
+  if (!um || um.isNull()) return null;
+  var user = msg0p(um, sel('getActiveUser'));
+  if (!user || user.isNull()) return null;
+  var info = msg0p(user, sel('getUserInfo'));
+  if (!info || info.isNull()) return null;
+  var arr = msg0p(info, sel('marketArray'));
+  if (!arr || arr.isNull()) return null;
+  var n = Number(msg0u(arr, sel('count')));
+  for (var i = 0; i < n; i++) {
+    var m = msg1p(arr, sel('objectAtIndex:'), ptr(i));
+    var mc = nsStr(msg0p(m, sel('strMarketCode')));
+    if (mc !== mkcode) continue;
+    var accs = msg0p(m, sel('accArray'));
+    if (!accs || accs.isNull() || msg0u(accs, sel('count')) === 0) continue;
+    var a = msg1p(accs, sel('objectAtIndex:'), ptr(0));
+    return nsStr(msg0p(a, sel('strAccount')));
+  }
+  return null;
 }
 
 // ── 浅合并（避免 ES6 对象展开，QuickJS 下更稳）───────────────────────────────
@@ -489,11 +611,11 @@ rpc.exports = {
         send_counter: sendCounter,
         active_is_disconnect: (function() {
           if (!active || active.isNull()) return null;
-          try { return msg1i(active, sel('isDisconnect')) !== 0; } catch(e) { return null; }
+          try { return msg0i(active, sel('isDisconnect')) !== 0; } catch(e) { return null; }
         })(),
         active_is_user_login: (function() {
           if (!active || active.isNull()) return null;
-          try { return msg1i(active, sel('isUserLogin')) !== 0; } catch(e) { return null; }
+          try { return msg0i(active, sel('isUserLogin')) !== 0; } catch(e) { return null; }
         })(),
         active_trade_commu_model: (function() {
           if (!active || active.isNull()) return null;
@@ -502,7 +624,7 @@ rpc.exports = {
             return (tcm && !tcm.isNull()) ? tcm.toString() : null;
           } catch(e) { return null; }
         })(),
-      };
+        commu_send_count: commuSendCount, commu_last_req_type: commuLastReqType, mai_mai_view: (_maiMaiView && !_maiMaiView.isNull()) ? _maiMaiView.toString() : null};
     } catch(e) { return { ok: false, error: String(e) }; }
   },
 
@@ -820,7 +942,7 @@ rpc.exports = {
       var user = msg0p(um, sel('getActiveUser'));
       if (!user || user.isNull()) return { ok: false, error: 'getActiveUser nil' };
       var isMoni = null;
-      try { isMoni = (msg1i(user, sel('isMoniUser')) !== 0); } catch(e) {}
+      try { isMoni = (msg0i(user, sel('isMoniUser')) !== 0); } catch(e) {}
 
       var info = msg0p(user, sel('getUserInfo'));
       if (!info || info.isNull()) return { ok: false, error: 'getUserInfo nil' };
@@ -838,6 +960,20 @@ rpc.exports = {
         if (!MAP.hasOwnProperty(name)) continue;
         var v = nsStr(msg0p(zc, sel(MAP[name])));
         out[name] = (v === null) ? '' : v;
+      }
+      // App 的 strDryk 要等持仓行情推送才算；持仓表每行 2147 就是当日盈亏，
+      // 缓存里有行时直接汇总，避免「当日盈亏」恒为空。
+      if (!out['当日盈亏']) {
+        try {
+          var sum = 0, got = false, rows = _cache.positions.rows;
+          for (var i = 0; i < rows.length; i++) {
+            var raw = rows[i]['2147'];
+            if (raw === undefined || raw === null || raw === '') continue;
+            var f = parseFloat(String(raw).replace(/,/g, ''));
+            if (!isNaN(f)) { sum += f; got = true; }
+          }
+          if (got) { out['当日盈亏'] = sum.toFixed(2); out['当日盈亏来源'] = '持仓表2147汇总'; }
+        } catch (e) {}
       }
       if (!out['总资产']) {
         return { ok: false, error: 'zichanData.strZzc empty',
@@ -865,91 +1001,169 @@ rpc.exports = {
   // params: { rowIndex: number, contract?: string(校验用), probe?: true=只校验不发送 }
   sendChedanByIndex: function (params) {
     try {
-      if (!params) return { ok: false, error: 'need params.rowIndex' };
-      var rowIndex = Number(params.rowIndex);
-      if (!isFinite(rowIndex) || rowIndex < 0 || Math.floor(rowIndex) !== rowIndex)
-        return { ok: false, error: 'bad rowIndex: ' + params.rowIndex };
+      if (!params) return { ok: false, error: 'need params' };
+      var expect = (params.contract !== undefined && params.contract !== null)
+                   ? String(params.contract) : '';
+      if (!expect) return { ok: false, error: 'need contract' };
 
-      var inst = _tqtInst.orders;
-      if (!inst || inst.isNull())
+      // 所有见过「委托」TQT 实例的 tableSourceData 各自独立，撤单必须用
+      // 「表里确实有这笔委托」的那个实例；实例可能不止一个，逐个尝试。
+      var cands = [];
+      for (var i = 0; i < _tqtOrdersList.length; i++) cands.push(_tqtOrdersList[i]);
+      if (_tqtInst.orders && !_tqtInst.orders.isNull()) {
+        var dup = false;
+        for (var j = 0; j < cands.length; j++) if (cands[j].equals(_tqtInst.orders)) { dup = true; break; }
+        if (!dup) cands.push(_tqtInst.orders);
+      }
+      if (cands.length === 0)
         return { ok: false, error: 'no_orders_tqt_instance',
                  note: '尚未捕获到委托 TQT 实例，请先打开一次「当日委托」页面' };
 
-      // 指针健壮性：类名必须是 TradeQueryTemplate，否则宁可不发
-      var clsName = '';
-      try {
-        var c = _object_getClass(inst);
-        if (!c || c.isNull()) return { ok: false, error: 'orders_instance_class_nil' };
-        var nm = _class_getName(c);
-        clsName = (nm && !nm.isNull()) ? String(nm.readUtf8String()) : '';
-      } catch(ec) { return { ok: false, error: 'orders_instance_ptr_unusable: ' + ec }; }
-      if (clsName !== 'TradeQueryTemplate')
-        return { ok: false, error: 'orders_instance_not_tradequerytemplate',
-                 instance_class: clsName, instance: inst.toString() };
+      var matches = [];
+      for (var k = 0; k < cands.length; k++) {
+        var ins = cands[k];
+        var clsOk = false;
+        try { clsOk = isKindOfClassName(ins, 'TradeQueryTemplate'); } catch (e) {}
+        if (!clsOk) continue;
+        var data = msg0p(ins, sel('tableSourceData'));
+        if (!data || data.isNull()) continue;
+        var cnt = Number(msg0u(data, sel('count')));
+        for (var m0 = 0; m0 < cnt; m0++) {
+          var rm = dumpNSDict(msg1p(data, sel('objectAtIndex:'), ptr(m0)));
+          if (String(rm[2135] === undefined ? '' : rm[2135]) === expect) {
+            matches.push({ inst: ins, rowIndex: m0, tableCount: cnt, cls: className(ins), row: rm });
+            break;
+          }
+        }
+      }
+      if (matches.length === 0)
+        return { ok: false, error: 'contract_not_found_in_any_orders_table',
+                 contract: expect, instances: cands.length };
 
-      var selChedan = sel('sendChedanRequestByTableIndex:');
-      if (msg1i(inst, sel('respondsToSelector:'), selChedan) === 0)
-        return { ok: false, error: 'sendChedanRequestByTableIndex: not found on instance' };
-
-      // 读实例自己的 tableSourceData（App 内部用的就是这份），校验下标与合同号
-      var data = msg0p(inst, sel('tableSourceData'));
-      if (!data || data.isNull())
-        return { ok: false, error: 'orders_instance_tableSourceData_nil' };
-      var n = Number(msg0u(data, sel('count')));
-      if (rowIndex >= n)
-        return { ok: false, error: 'row_index_out_of_range',
-                 rowIndex: rowIndex, table_count: n };
-
-      var row = dumpNSDict(msg1p(data, sel('objectAtIndex:'), ptr(rowIndex)));
-      var rowContract = (row[2135] !== undefined) ? String(row[2135]) : '';
-      var expect = (params.contract !== undefined && params.contract !== null)
-                   ? String(params.contract) : '';
-      if (expect !== '' && rowContract !== expect)
-        return { ok: false, error: 'contract_mismatch_at_index',
-                 rowIndex: rowIndex, expect_contract: expect, row_contract: rowContract };
+      var pick = Number(params.candidate || 0);
+      if (pick >= matches.length) pick = 0;
+      var hit = matches[pick];
+      var row = hit.row, inst = hit.inst, rowIndex = hit.rowIndex;
 
       var info = {
         row_index:   rowIndex,
-        table_count: n,
-        contract:    rowContract,
-        stockcode:   (row[2102] !== undefined) ? String(row[2102]) : '',
-        name:        (row[2103] !== undefined) ? String(row[2103]) : '',
-        action:      (row[2109] !== undefined) ? String(row[2109]) : '',
-        status:      (row[2105] !== undefined) ? String(row[2105]) : '',
-        qty:         (row[2126] !== undefined) ? String(row[2126]) : '',
-        price:       (row[2127] !== undefined) ? String(row[2127]) : '',
-        market:      (row[2108] !== undefined) ? String(row[2108]) : '',
-        gdzh:        (row[2106] !== undefined) ? String(row[2106]) : '',
-        attr:        (row[4008] !== undefined) ? String(row[4008]) : '',
+        table_count: hit.tableCount,
+        candidate:   pick,
+        candidates:  matches.map(function(x) { return { cls: x.cls, row_index: x.rowIndex, table_count: x.tableCount }; }),
+        contract:    String(row[2135] === undefined ? '' : row[2135]),
+        stockcode:   String(row[2102] === undefined ? '' : row[2102]),
+        name:        String(row[2103] === undefined ? '' : row[2103]),
+        action:      String(row[2109] === undefined ? '' : row[2109]),
+        status:      String(row[2105] === undefined ? '' : row[2105]),
+        qty:         String(row[2126] === undefined ? '' : row[2126]),
+        price:       String(row[2127] === undefined ? '' : row[2127]),
+        market:      String(row[2108] === undefined ? '' : row[2108]),
+        gdzh:        String(row[2106] === undefined ? '' : row[2106]),
+        attr:        String(row[4008] === undefined ? '' : row[4008]),
         instance:    inst.toString(),
+        instance_class: hit.cls,
+        instances_scanned: cands.length,
       };
 
-      // probe：只校验到「可以调用」为止，不发请求
       if (params.probe)
         return _objMerge({ ok: true, probe: true, dispatched: false,
                            method: 'sendChedanRequestByTableIndex:' }, info);
 
-      var tsBefore  = _cache.orders.ts;
-      var chedanFn  = new NativeFunction(_objc_msgSend, 'void', ['pointer','pointer','int64']);
-      chedanFn(inst, selChedan, rowIndex);
+      var chedanFn = new NativeFunction(_objc_msgSend, 'void', ['pointer','pointer','int64']);
+      chedanFn(inst, sel('sendChedanRequestByTableIndex:'), rowIndex);
+      return _objMerge({ ok: true, probe: false, dispatched: true,
+                         method: 'sendChedanRequestByTableIndex:' }, info);
+    } catch(e) { return { ok: false, error: String(e) }; }
+  },
 
+  // ── placeOrder：下单走 App 自己的 TradeRequest 构建 + 自己的派发方法 ────────
+  // 反编译依据：
+  //   /tmp/ths_decomp2/functions/0x100aedf78.c
+  //     -[JYMaiMaiView _sendWeituoRequestWithParams:]   ← 「买入/卖出」确定按钮的最终调用
+  //       它用 TradeRequest + setNsInsid(自己的 getInstanceID) + setDelegate(self)
+  //       + stockcode/zqdm/mkcode/scdm/amount/wtsl/price/wtjg/gdzh(股东账户)/interact=1
+  //       + setRequestParamInteger("req_type", JYWeituoParam.nReqType)
+  //       然后对 active user 发 XIXBiQhWtIEfT_DW:（见 0x100acb5c0.c UserModel）
+  //   本例完全照抄它的字段集合，只是没有视图实例：nsInsid 用 App 的
+  //   HXInstanceIDMan 分配（0x100b3fa24.c HXBaseTradeView::getInstanceID 的兜底路径），
+  //   gdzh 从 App 自己的 UserInfoModel.marketArray 取，不手填常量。
+  // params: {code, side:'buy'|'sell', price, shares, nsInsid?}
+  placeOrder: function (params) {
+    try {
+      if (!params) return { ok: false, error: 'need params' };
+      var code = String(params.code || '').trim();
+      var side = String(params.side || '').toLowerCase();
+      var price = String(params.price === undefined ? '' : params.price);
+      var shares = String(params.shares === undefined ? '' : params.shares);
+      if (!code) return { ok: false, error: 'need code' };
+      if (side !== 'buy' && side !== 'sell') return { ok: false, error: "side must be buy|sell" };
+      if (!/^\d+$/.test(shares) || Number(shares) <= 0) return { ok: false, error: 'bad shares: ' + shares };
+      if (!(Number(price) > 0)) return { ok: false, error: 'bad price: ' + price };
+
+      // ★ 优先调 App 自己的 -[JYMaiMaiView sendWeituoRequest]（唯一实测能成交的路径）
+      if (params.prefer !== 'request' && _maiMaiView && !_maiMaiView.isNull()
+          && isKindOfClassName(_maiMaiView, 'JYMaiMaiView')) {
+        var rv = rpc.exports.placeOrderViaView(params);
+        if (rv && rv.ok) { rv.via = 'view'; return rv; }
+      }
+
+      var au = getActiveMoniUser();
+      if (!au.ok) return { ok: false, error: au.error };
+
+      var mkcode = params.mkcode || _marketCodeFor(code);
+      var gdzh = params.gdzh || _accountForMarket(mkcode);
+      if (!gdzh) return { ok: false, error: 'no_gdzh_for_market_' + mkcode + ' (UserInfoModel.marketArray)' };
+
+      var reqType = (side === 'buy') ? 0x102 : 0x103;
+      var insId = 0x186eb;
+      if (params.nsInsid !== undefined && params.nsInsid !== null) {
+        insId = Number(params.nsInsid);
+      } else {
+        try {
+          var idm = msg0p(cls('HXInstanceIDMan'), sel('shareInstance'));
+          if (idm && !idm.isNull()) {
+            var fresh = Number(msg0u(idm, sel('getInstanceID')));
+            if (fresh > 0) insId = fresh;
+          }
+        } catch (e) {}
+      }
+
+      var before = sendCounter;
+      var b = buildTradeRequest(reqType, {
+        stockcode: code, mkcode: mkcode, gdzh: gdzh,
+        qty: shares, price: price, nsInsid: insId,
+        interact: params.interact
+      });
+      if (!b.ok) return { ok: false, error: b.error };
+      var d = dispatchTrade(b.req, au.user);
+      if (!d.ok) return { ok: false, error: d.error };
       return new Promise(function(resolve) {
         setTimeout(function() {
-          resolve(_objMerge({
-            ok: true, probe: false, dispatched: true,
-            method: 'sendChedanRequestByTableIndex:',
-            orders_cache_ts_before: tsBefore,
-            orders_cache_ts_after:  _cache.orders.ts,
-            orders_cache_refreshed: _cache.orders.ts > tsBefore,
-          }, info));
-        }, 600);
+          resolve({
+            ok: true, side: side, code: code, shares: shares, price: price,
+            mkcode: mkcode, gdzh: gdzh, nsInsid: insId, req_type: reqType,
+            via: 'request',
+            method: 'TradeRequest → -[UserModel XIXBiQhWtIEfT_DW:]',
+            send_detected: sendCounter > before, send_count: sendCounter - before
+          });
+        }, 350);
       });
     } catch(e) { return { ok: false, error: String(e) }; }
   },
 
-  // ── buy / sell ────────────────────────────────────────────────────────────
-  buy:  function (params) { return _order(0x102, params); },
-  sell: function (params) { return _order(0x103, params); },
+  // ── buy / sell（兼容旧名，统一走 placeOrder）───────────────────────────────
+  buy:  function (params) {
+    var p = params || {};
+    return rpc.exports.placeOrder({ code: p.stockcode || p.code, side: 'buy',
+                                    price: p.price, shares: p.qty || p.shares,
+                                    mkcode: p.mkcode, gdzh: p.gdzh, nsInsid: p.nsInsid });
+  },
+  sell: function (params) {
+    var p = params || {};
+    return rpc.exports.placeOrder({ code: p.stockcode || p.code, side: 'sell',
+                                    price: p.price, shares: p.qty || p.shares,
+                                    mkcode: p.mkcode, gdzh: p.gdzh, nsInsid: p.nsInsid });
+  },
 
   // ── loginSim ──────────────────────────────────────────────────────────────
   loginSim: function () {
@@ -1008,6 +1222,132 @@ rpc.exports = {
     } catch(e) { return { ok: false, error: String(e) }; }
   },
 
+  // ── loginMoni：冷启动直接完成模拟仓登录（锁屏/无窗口可用）─────────────────
+  // 反编译入口（/tmp/ths_decomp2）：
+  //   -[JYMoniLoginWindowController moniTradeLoginWithAccount:password:] (0x100b61aec)
+  //     ← 就是「交易→模拟」面板 OK 按钮走的那条路（同账号分支）
+  //   内部：aQuotaUserID → getMoniServerInfoWithSucceedBlock（HTTP 取模拟服务器）
+  //        → 造 TradeLoginParam → [UserManager getOneUserModel] → isMoniUser=1
+  //        → SetType:4 → [UserModel DJAwpxdGFxRzelWL:] → commumodule 建连登录
+  //   之后还要做两件 App 由界面代劳的事：
+  //     a) SetType:1 补 A股 位 + setActiveUser:（getActiveUser 的类型掩码只认 1/2，
+  //        只置 4 的话 getActiveUser 恒为 nil）
+  //     b) getCacheDataObject.requestZijin（资金查询），否则 zichanData 全空
+  // params: { account: '176...', password: '<md5(明文)>' }  ← 与 App 记忆值同形态
+  loginMoni: function (params) {
+    var out = { ok: false, steps: [] };
+    try {
+      var umCls = cls('UserManager');
+      if (!umCls) return { ok: false, error: 'UserManager class not found' };
+      var um = msg0p(umCls, sel('shareInstance'));
+      if (!um || um.isNull()) return { ok: false, error: 'UserManager.shareInstance nil' };
+
+      function moniCount() {
+        var a = msg0p(um, sel('GetMoniUserArr'));
+        return (a && !a.isNull()) ? Number(msg0u(a, sel('count'))) : 0;
+      }
+      function findMoniUser() {
+        var arr = msg0p(um, sel('arrayUser'));
+        var n = (arr && !arr.isNull()) ? Number(msg0u(arr, sel('count'))) : 0;
+        for (var i = 0; i < n; i++) {
+          var u = msg1p(arr, sel('objectAtIndex:'), ptr(i));
+          if (!u || u.isNull()) continue;
+          try { if (msg0i(u, sel('isMoniUser')) !== 0) return u; } catch (e) {}
+        }
+        return null;
+      }
+
+      var mc = moniCount();
+      out.moni_count_before = mc;
+
+      // ① 没有模拟用户 → 调面板同款登录入口
+      if (mc === 0) {
+        var account  = params && params.account;
+        var password = params && params.password;
+        if (!account || !password) return { ok: false, error: 'need account/password' };
+
+        var ctrlCls = cls('JYMoniLoginWindowController');
+        if (!ctrlCls) return { ok: false, error: 'JYMoniLoginWindowController class not found' };
+        var ctrl = msg0p(ctrlCls, sel('shareInstance'));
+        if (!ctrl || ctrl.isNull())
+          return { ok: false, error: 'JYMoniLoginWindowController.shareInstance nil' };
+        var selLogin = sel('moniTradeLoginWithAccount:password:');
+        if (msg1i(ctrl, sel('respondsToSelector:'), selLogin) === 0)
+          return { ok: false, error: 'moniTradeLoginWithAccount:password: not found' };
+
+        var t0 = Date.now();
+        msg2p(ctrl, selLogin, jsStr(account), jsStr(password));
+        out.steps.push('moniTradeLoginWithAccount:password: dispatched');
+
+        while (Date.now() - t0 < 20000) {
+          Thread.sleep(0.3);
+          mc = moniCount();
+          if (mc > 0) break;
+        }
+        out.moni_count = mc;
+        if (mc === 0) {
+          return { ok: false, error: 'moni user 20s 内未落地（登录请求可能被拒/网络未通）',
+                   steps: out.steps, elapsed_ms: Date.now() - t0 };
+        }
+        out.steps.push('moni user in ' + (Date.now() - t0) + 'ms');
+      } else {
+        out.moni_count = mc;
+      }
+
+      // ② 激活：补 A股 位 + 设为 active
+      var user = findMoniUser();
+      if (!user) return { ok: false, error: 'arrayUser 里找不到 isMoniUser=1 的 UserModel',
+                          steps: out.steps, moni_count: mc };
+      try { msg1int(user, sel('SetType:'), 1); } catch (e) {}
+      msg1p(um, sel('setActiveUser:'), user);
+      var active = msg0p(um, sel('getActiveUser'));
+      out.active_ptr = (active && !active.isNull()) ? active.toString() : null;
+      out.active_is_moni = !!(active && !active.isNull() && active.equals(user));
+      if (!out.active_is_moni) {
+        return { ok: false, error: 'setActiveUser: 后 getActiveUser 仍不是模拟用户',
+                 steps: out.steps, active_ptr: out.active_ptr };
+      }
+      out.steps.push('active ok');
+
+      // ③ 拉资金（App 平常由资金面板代劳）：zichanData 全空时靠 requestZijin 回填
+      var cd = msg0p(user, sel('getCacheDataObject'));
+      var zzc = null;
+      for (var round = 0; round < 3; round++) {
+        try { msg0p(cd, sel('requestZijin')); } catch (e) {}
+        var t1 = Date.now();
+        while (Date.now() - t1 < 6000) {
+          Thread.sleep(0.3);
+          var info = msg0p(user, sel('getUserInfo'));
+          var zc = (info && !info.isNull()) ? msg0p(info, sel('zichanData')) : null;
+          zzc = (zc && !zc.isNull()) ? nsStr(msg0p(zc, sel('strZzc'))) : null;
+          if (zzc) break;
+        }
+        if (zzc) break;
+      }
+      // 持仓查询让 App 把「总盈亏」按持仓重算一遍（否则刚登录时可能还是 0）
+      if (zzc) {
+        try { msg0p(cd, sel('requestChicang')); } catch (e) {}
+        Thread.sleep(1.5);
+        try {
+          var info2 = msg0p(user, sel('getUserInfo'));
+          var zc2 = (info2 && !info2.isNull()) ? msg0p(info2, sel('zichanData')) : null;
+          if (zc2 && !zc2.isNull()) {
+            out.zichan_zyk = nsStr(msg0p(zc2, sel('strZyk'))) || '';
+          }
+        } catch (e) {}
+      }
+      out.zichan_ready = !!zzc;
+      out.zichan_zzc = zzc || '';
+      if (zzc) out.steps.push('zichan ready');
+
+      try { out.moni_count = moniCount(); } catch (e) {}
+      try { out.active_is_disconnect = (msg0i(active, sel('isDisconnect')) !== 0); } catch (e) {}
+      try { out.active_is_user_login = (msg0i(active, sel('isUserLogin')) !== 0); } catch (e) {}
+      out.ok = true;
+      return out;
+    } catch (e) { return { ok: false, error: String(e), steps: out.steps }; }
+  },
+
   // ── login（HXConnection 路径）────────────────────────────────────────────
   login: function (params) {
     try {
@@ -1051,6 +1391,59 @@ rpc.exports = {
   captureStop:  function () { captureActive = false; return { ok: true, entries: captureBuf.length }; },
   captureDump:  function () { return { ok: true, active: captureActive, count: captureBuf.length, entries: captureBuf.slice() }; },
   sendLog:      function () { return { ok: true, count: sendLog.length, entries: sendLog.slice() }; },
+
+  // ── placeOrderViaView：直接调 App 自己的 -[JYMaiMaiView sendWeituoRequest] ──
+  // 这是「买入/卖出」确定按钮 onTrade: 之后真正下单的方法：它自己读 mmParam
+  // （strCode/strPrice/strAmount/strSetCode/strGdzh/nReqType），自己 new TradeRequest、
+  // 自己 setNsInsid(getInstanceID)、setDelegate(self)，然后发给 active user。
+  // 我们只负责把 mmParam 字段填成要下的单，协议字段一个都不碰。
+  placeOrderViaView: function (params) {
+    try {
+      var p = params || {};
+      var inst = _maiMaiView;
+      if (!inst || inst.isNull())
+        return { ok: false, error: 'no_mai_mai_view', note: '交易面板未创建过，先打开一次交易页' };
+      var cn = className(inst);
+      if (!isKindOfClassName(inst, 'JYMaiMaiView'))
+        return { ok: false, error: 'not_maimai_view', instance_class: cn };
+
+      var code = String(p.code || '').trim();
+      var side = String(p.side || '').toLowerCase();
+      var price = String(p.price === undefined ? '' : p.price);
+      var shares = String(p.shares === undefined ? '' : p.shares);
+      if (side !== 'buy' && side !== 'sell') return { ok: false, error: 'side must be buy|sell' };
+      if (!/^\d+$/.test(shares) || Number(shares) <= 0) return { ok: false, error: 'bad shares' };
+      if (!(Number(price) > 0)) return { ok: false, error: 'bad price' };
+
+      var mm = msg0p(inst, sel('mmParam'));
+      if (!mm || mm.isNull()) return { ok: false, error: 'mmParam nil' };
+
+      var setcode = p.setcode || _marketCodeFor(code);
+      var gdzh = p.gdzh || _accountForMarket(setcode);
+      if (!gdzh) return { ok: false, error: 'no_gdzh_for_setcode_' + setcode };
+      var reqType = (side === 'buy') ? 0x102 : 0x103;
+
+      msg1p(mm, sel('setStrCode:'),    jsStr(code));
+      msg1p(mm, sel('setStrPrice:'),   jsStr(price));
+      msg1p(mm, sel('setStrAmount:'),  jsStr(shares));
+      msg1p(mm, sel('setStrSetCode:'), jsStr(String(setcode)));
+      msg1p(mm, sel('setStrGdzh:'),    jsStr(gdzh));
+      msg1int(mm, sel('setNReqType:'), reqType);
+
+      var commuBefore = commuSendCount;
+      msg0p(inst, sel('sendWeituoRequest'));
+
+      return {
+        ok: true, via: 'JYMaiMaiView::sendWeituoRequest',
+        side: side, code: code, shares: shares, price: price,
+        setcode: String(setcode), gdzh: gdzh, req_type: reqType,
+        view: inst.toString(),
+        commu_send_detected: commuSendCount > commuBefore,
+        commu_send_count: commuSendCount - commuBefore,
+        commu_last_req_type: commuLastReqType
+      };
+    } catch (e) { return { ok: false, error: String(e) }; }
+  },
 
   // ── 兼容旧 RPC 名 ─────────────────────────────────────────────────────────
   fetchPositions:   function ()  { return rpc.exports.readPositionsDirect(); },

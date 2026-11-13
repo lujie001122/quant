@@ -320,12 +320,16 @@ def ensure_app() -> int:
         os.kill(orig_pid, signal.SIGKILL)
         time.sleep(0.5)
 
-    # 2. 检查副本是否已经在跑
+    # 2. 副本若已在跑：杀掉重开。JYMaiMaiView（下单面板）实例只在窗口创建时产生，
+    #    agent 的视图钩子必须赶在它之前装好，否则拿不到下单入口的实例指针。
     copy_pid = _get_copy_pid()
     if copy_pid:
-        log.info("copy already running pid=%d", copy_pid)
-        _ensure_window()
-        return copy_pid
+        log.info("killing running copy pid=%d (restart to install hooks first)", copy_pid)
+        try:
+            os.kill(copy_pid, signal.SIGKILL)
+        except OSError:
+            pass
+        time.sleep(1.5)
 
     # 3. 启动副本
     # 确保 Info.plist 禁止窗口恢复（重签后会丢这个 key）
@@ -567,7 +571,7 @@ ALLOWED_METHODS = {
     # 买卖
     "buy", "sell",
     # 登录
-    "login",
+    "login", "loginSim", "loginMoni",
     # capture / sendLog（兼容）
     "capture_start", "capture_stop", "capture_dump", "send_log",
     # ── hook-free 新路径 ──────────────────────────────────────────────────────
@@ -575,6 +579,8 @@ ALLOWED_METHODS = {
     "read_positions", "read_orders", "read_trades",
     "read_account_direct",
     "send_chedan_by_index",
+    "place_order",
+    "place_order_via_view",
     # ── 旧名兼容别名 ──────────────────────────────────────────────────────────
     "read_positions_direct",
     "read_orders_direct",
@@ -749,12 +755,16 @@ tell application "System Events"
     set theProc to item 1 of theProcs
     set frontmost of theProc to true
     delay 0.5
+    -- ★ 先开一个新窗口：JYMaiMaiView（下单面板）只在窗口/交易页创建时实例化，
+    --   agent 的视图钩子必须赶在实例化之前装好，才能拿到下单入口的实例指针。
+    keystroke "n" using command down
+    delay 2
     set allWins to windows of theProc
     set winCount to count of allWins
     if winCount = 0 then return "no windows"
-    -- 遍历所有窗口，找到含 button 6 的那个（主交易窗口）
+    -- 从新窗口往回找含 button 6 的那个（主交易窗口）
     set theWin to missing value
-    repeat with wIdx from 1 to winCount
+    repeat with wIdx from winCount to 1 by -1
         set w to window wIdx of theProc
         try
             set dummy to button 6 of w

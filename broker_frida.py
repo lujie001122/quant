@@ -22,7 +22,10 @@ broker_frida.py — 进程内数据通道 broker（同花顺 App 内部数据对
   ThsBroker.get_positions()  = 二者超集，另加 available/frozen/market_value/pnl/pnl_pct
   trade.py sync 直接消费这份结构，字段名与 portfolio.json positions 一致。
 
-下单（buy/sell）本轮未迁移：ThsBroker.execute() 原样委托 RealBroker（EvolvingSim）。
+下单（buy/sell）：走 frida 接口 —— agent 侧调 App 自己的
+-[JYMaiMaiView sendWeituoRequest] / TradeRequest 派发，不点界面、锁屏可用，
+再从委托表核出合同号；trade.py 的 _place_order 优先用它，失败才回退 EvolvingSim。
+ThsBroker.execute()（BaseBroker 泛用接口，当前无调用方）仍原样走 RealBroker。
 """
 
 import json
@@ -41,6 +44,7 @@ VENV_PY = os.path.join(SCRIPT_DIR, ".venv/bin/python3")
 READ_TIMEOUT = 120
 # 资金：frida account 是纯 getter（快）；回退旧通道 EvolvingSim 时较慢
 ACCT_TIMEOUT = 120
+PLACE_TIMEOUT = 180   # 下单：发送 + 委托表核验（agent 侧最多等 10s）
 
 
 class ThsCliError(RuntimeError):
@@ -81,7 +85,7 @@ def _to_float(value, default: float = 0.0) -> float:
 
 
 class ThsBroker(BaseBroker):
-    """进程内接口 broker：读持仓/委托/成交 + 撤单走 frida；资金走旧通道。"""
+    """进程内接口 broker：读持仓/委托/成交 + 下单 + 撤单走 frida。"""
 
     def __init__(self, timeout: int = READ_TIMEOUT):
         self.timeout = timeout
@@ -299,6 +303,30 @@ class ThsBroker(BaseBroker):
             "market_value": mv,
             "source": "旧通道 EvolvingSim.getAccountInfo",
         }
+
+    # ── 下单 ─────────────────────────────────────────────────────────
+
+    def place(self, side: str, code: str, shares: int, price: float) -> Dict:
+        """接口化下单：frida buy/sell <代码> <数量> <价格>。
+
+        agent 侧调 App 自己的 -[JYMaiMaiView sendWeituoRequest]，然后从委托表
+        核验出合同号；没拿到合同号就抛错，不把「已发送」当成功。
+        """
+        side = str(side).lower()
+        if side not in ("buy", "sell"):
+            raise ThsCliError(f"side 非法: {side!r}")
+        data = self._frida(side, str(code), str(int(shares)),
+                           f"{float(price):.3f}", timeout=PLACE_TIMEOUT)
+        contract = str(data.get("contract") or "").strip()
+        if not contract:
+            raise ThsCliError(f"frida {side} 未拿到合同号: {data}")
+        return data
+
+    def buy(self, code: str, shares: int, price: float) -> Dict:
+        return self.place("buy", code, shares, price)
+
+    def sell(self, code: str, shares: int, price: float) -> Dict:
+        return self.place("sell", code, shares, price)
 
     # ── 撤单 ─────────────────────────────────────────────────────────
 

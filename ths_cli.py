@@ -211,14 +211,77 @@ def _ensure_bridge_running():
     raise RuntimeError("桥启动超时（30s）")
 
 
+def _cred_md5():
+    """读 ~/.ths_cred.json → (account, md5(password))。
+
+    同花顺模拟登录入口 -[JYMoniLoginWindowController moniTradeLoginWithAccount:password:]
+    收的 password 是 App 自己存的那份 md5（实测 aQuotaPassword == md5(明文)），
+    所以这里在本地算 md5 再交给 agent。凭据只留在本机，不落日志、不进代码。
+    """
+    import hashlib
+    path = os.path.expanduser("~/.ths_cred.json")
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        with open(path) as f:
+            cred = json.load(f)
+    except Exception as e:
+        print(f"读取凭据失败: {e}", file=sys.stderr)
+        return None, None
+    account  = cred.get("account")  or cred.get("username")
+    password = cred.get("password") or cred.get("passwd")
+    if not account or not password:
+        return None, None
+    return account, hashlib.md5(password.encode()).hexdigest()
+
+
+def _login_via_agent() -> dict:
+    """程序化登录模拟仓：agent.loginMoni = 面板 OK 按钮同一条链
+    （moniTradeLoginWithAccount:password: → 模拟服务器信息 → 建连 → 激活 → 拉资金）。
+    不需要窗口、不需要点击，锁屏可用。返回 agent 结果 dict（失败也有 error/steps）。"""
+    account, pw_md5 = _cred_md5()
+    if not account or not pw_md5:
+        print("未找到 ~/.ths_cred.json 或凭据不完整，跳过程序化登录", file=sys.stderr)
+        return {"ok": False, "error": "no_credential"}
+    tail = ("*" * (len(account) - 4) + account[-4:]) if len(account) >= 4 else "****"
+    print(f"程序化登录模拟仓  account=...{tail}", file=sys.stderr)
+    resp = _call("loginMoni", {"account": account, "password": pw_md5})
+    res = (resp.get("result") or {}) if resp.get("ok") else {"ok": False, "error": resp.get("error")}
+    if not res.get("ok"):
+        print(f"  程序化登录失败: {res.get('error')}  steps={res.get('steps')}",
+              file=sys.stderr)
+    else:
+        print(f"  程序化登录成功  moni_count={res.get('moni_count')}  "
+              f"active_is_moni={res.get('active_is_moni')}  "
+              f"资金就绪={res.get('zichan_ready')}  总资产={res.get('zichan_zzc')}",
+              file=sys.stderr)
+    return res
+
+
 def _ensure_login_ready():
-    """等 moni 登录就绪；count=0 则点「模拟」按钮，最多等 60 秒。
-    遍历所有窗口找到含 button 6 的交易主窗口，不硬编码 window 1。"""
+    """确保模拟仓登录态。顺序：
+       ① 程序化登录（loginMoni，锁屏可用）
+       ② loginSim（内存里已有模拟用户时直接切 active）
+       ③ 点界面「交易→模拟」（锁屏必然失败，打印原因）
+    """
     resp = _call("state")
-    result = _ok_or_die(resp)
-    if result.get("moni_count", 0) > 0:
+    st = _ok_or_die(resp)
+    if st.get("moni_count", 0) > 0 and st.get("active_is_moni"):
         return
-    print("模拟仓未登录，尝试点击「模拟」按钮...", file=sys.stderr)
+
+    res = _login_via_agent()
+    if res.get("ok") and res.get("active_is_moni"):
+        return
+
+    print("程序化登录未成功，尝试 loginSim（内存内切 active）...", file=sys.stderr)
+    resp_ls = _call("loginSim")
+    ls = (resp_ls.get("result") or {}) if resp_ls.get("ok") else {}
+    if ls.get("active_is_moni"):
+        print("  loginSim 成功", file=sys.stderr)
+        return
+
+    print("模拟仓未登录，尝试点击「交易→模拟」按钮"
+          "（★ 当前屏幕锁定/无窗口时这一步必然失败，只是兜底）...", file=sys.stderr)
     script = '''
 tell application "System Events"
     set theProcs to processes whose bundle identifier is "com.ths.lab"
@@ -264,15 +327,29 @@ tell application "System Events"
         return "not found"
     end try
 end tell'''
-    subprocess.run(["osascript", "-e", script], timeout=15, capture_output=True, text=True)
+    r = subprocess.run(["osascript", "-e", script], timeout=15, capture_output=True, text=True)
+    click_msg = (r.stdout or "").strip() or (r.stderr or "").strip()
     for _ in range(30):  # 最多等 60 秒（每次 2s）
         _time.sleep(2)
         resp = _call("state")
         result = _ok_or_die(resp)
-        if result.get("moni_count", 0) > 0:
-            print("模拟仓登录完成", file=sys.stderr)
+        if result.get("moni_count", 0) > 0 and result.get("active_is_moni"):
+            print("模拟仓登录完成（点击路径）", file=sys.stderr)
             return
-    raise RuntimeError("等待模拟仓登录超时（60s）")
+    locked = _screen_locked()
+    hint = ("屏幕已锁定（CGSSessionScreenIsLocked=Yes），osascript 点击不可能生效" if locked
+            else "窗口数为 0 或模拟按钮不可点")
+    raise RuntimeError(f"等待模拟仓登录超时（60s）；点击兜底结果={click_msg or '(无输出)'}；{hint}。"
+                       f"程序化登录失败请先看上面 loginMoni 的 error/steps")
+
+
+def _screen_locked() -> bool:
+    """读 CGSSessionScreenIsLocked（锁屏时任何点击都用不了）。"""
+    try:
+        r = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True, text=True, timeout=5)
+        return "CGSSessionScreenIsLocked" in r.stdout and "Yes" in r.stdout.split("CGSSessionScreenIsLocked")[1][:40]
+    except Exception:
+        return False
 
 
 def _call(method: str, params: dict = None) -> dict:
@@ -715,275 +792,65 @@ def frida_account(args):
 
 
 def frida_cancel(args):
-    """撤单：在委托缓存里按合同号（2135）定位行下标，调用 App 自己的
-    -[TradeQueryTemplate sendChedanRequestByTableIndex:]，不自己拼 req_type/nsInsid。
+    """撤单：走 ths.Ths.cancel（App 自己的 sendChedanRequestByTableIndex:）。
 
-    默认 dry-run：打印合同号/行下标/该行代码方向数量，并让 agent 做一次 probe
-    （校验实例类名、tableSourceData 行数、该行合同号一致），不发任何请求。
-    --real 才真发；发完等 3s 从缓存复查该合同号状态，未变就明说，不谎报成功。
+    默认 dry-run（只 probe，不发）；--real 才真发，并轮询委托表确认状态变化。
     """
-    contract = args.contract
-
-    resp = _call("read_orders", None)
-    result = resp.get("result", {}) if resp else {}
-
-    # 缓存空 → 自动 prime 一次再重试
-    if not result.get("ok") and result.get("error") in (
-            "cache_empty_need_prime", "need_open_orders_ui"):
-        _auto_prime_if_empty("orders")
-        resp = _call("read_orders", None)
-        result = resp.get("result", {}) if resp else {}
-
-    if not result.get("ok"):
-        err = result.get("error", "unknown")
-        print(f"撤单失败: 委托查询错误: {err}", file=sys.stderr)
+    from ths import Ths, ThsError
+    t = Ths()
+    try:
+        r = t.cancel(args.contract, real=bool(args.real))
+    except ThsError as ex:
+        err = {"ok": False, "error": str(ex), "result": ex.result}
         if args.json:
-            _json_out({"ok": False, "error": err})
+            _json_out(err)
+        else:
+            print(f"撤单失败: {ex}", file=sys.stderr)
         sys.exit(1)
-
-    raw_rows = result.get("rows") or []
-    if not raw_rows:
-        print(f"撤单失败: 委托列表为空 (source={result.get('source')})", file=sys.stderr)
-        if args.json:
-            _json_out({"ok": False, "error": "orders empty"})
-        sys.exit(1)
-
-    # 按合同号（字段 2135）定位行下标 —— 这个下标就是 tableSourceData 的行号
-    target_raw = None
-    row_index = None
-    for idx, row in enumerate(raw_rows):
-        if _get_field(row, *_ORD_FIELD_HTBH) == contract:
-            target_raw = row
-            row_index = idx
-            break
-
-    if target_raw is None:
-        print(f"撤单失败: 委托列表中未找到合同号 {contract}", file=sys.stderr)
-        if args.json:
-            _json_out({"ok": False, "error": f"contract {contract} not found",
-                       "row_count": len(raw_rows)})
-        sys.exit(1)
-
-    p = _parse_ord_row(target_raw)
-    source = result.get("source", "cache")
-    cache_ts = result.get("ts")
-    is_real = getattr(args, "real", False)
-    action = p["方向"]
-
-    # ── dry-run（默认）────────────────────────────────────────────────────
-    if not is_real:
-        print("[DRY-RUN] 撤单路径检查（不发请求，加 --real 才真发）")
-        print(f"  合同号:   {contract}     ← 字段 2135")
-        print(f"  行下标:   {row_index}     ← 传给 -[TradeQueryTemplate sendChedanRequestByTableIndex:]")
-        print(f"  该行:     {p['代码']} {p['名称']}  {action}  {p['委托量']}股  "
-              f"状态={p['状态']}  委托价={p['委托价']}")
-        print(f"  市场:     {p['市场']}   股东账户: {p['股东账户']}")
-        print(f"  委托缓存: {len(raw_rows)} 行  source={source}")
-
-        probe = _call("send_chedan_by_index",
-                      {"rowIndex": row_index, "contract": contract, "probe": True})
-        pr = (probe.get("result") or {}) if probe.get("ok") else {}
-        if not pr.get("ok"):
-            err = pr.get("error", "probe 失败")
-            print(f"  校验:     失败  {err}", file=sys.stderr)
-            if pr.get("note"):
-                print(f"            {pr['note']}", file=sys.stderr)
-            if args.json:
-                _json_out({"ok": False, "dry_run": True, "contract": contract,
-                           "row_index": row_index, "error": err})
-            sys.exit(1)
-        print(f"  校验:     通过  实例={pr.get('instance')}  table={pr.get('table_count')} 行  "
-              f"该行合同号={pr.get('contract')}  方法={pr.get('method')}")
-        print("  未发送（dry-run）")
-        if args.json:
-            _json_out({"ok": True, "dry_run": True, "contract": contract,
-                       "row_index": row_index, "contract_field": 2135,
-                       "stockcode": p["代码"], "name": p["名称"], "action": action,
-                       "qty": p["委托量"], "status": p["状态"], "source": source,
-                       "probe": pr})
-        return
-
-    # ── --real 路径：调 App 自己的撤单方法 ────────────────────────────────
-    old_status = p["状态"]
-    print("正在调用 App 撤单方法...", file=sys.stderr)
-    resp2 = _call("send_chedan_by_index",
-                  {"rowIndex": row_index, "contract": contract})
-    result2 = (resp2.get("result") or {}) if resp2.get("ok") else {}
-    if not result2.get("ok"):
-        err = result2.get("error", "撤单调用失败")
-        print(f"撤单失败: {err}", file=sys.stderr)
-        if args.json:
-            _json_out({"ok": False, "error": err, "contract": contract,
-                       "row_index": row_index})
-        sys.exit(1)
-
-    print(f"已调用 -[TradeQueryTemplate sendChedanRequestByTableIndex:]  "
-          f"rowIndex={row_index}  合同号={contract}")
-    print(f"  实例={result2.get('instance')}  "
-          f"orders缓存刷新={result2.get('orders_cache_refreshed')}")
-
-    # 等 3s 后从缓存复查该合同号状态
-    print("等待 3s 后从缓存复查...", file=sys.stderr)
-    _time.sleep(3)
-    resp3 = _call("read_orders", None)
-    result3 = (resp3.get("result") or {}) if resp3.get("ok") else {}
-    raw_rows3 = result3.get("rows") or []
-    new_status = None
-    for row3 in raw_rows3:
-        if _get_field(row3, *_ORD_FIELD_HTBH) == contract:
-            new_status = _get_field(row3, *_ORD_FIELD_STATUS)
-            break
-
-    if new_status is None:
-        print(f"复查: 缓存里已无合同号 {contract}（已从委托表移除）")
-        if args.json:
-            _json_out({"ok": True, "real": True, "contract": contract,
-                       "row_index": row_index, "old_status": old_status,
-                       "new_status": None, "confirmed_cancelled": True,
-                       "note": "order removed from orders table"})
-        return
-
-    print(f"复查  合同号={contract}  状态: {old_status} → {new_status}")
-    if new_status == old_status:
-        print("状态未变（可能收盘/被拒）")
-        if cache_ts is not None and result3.get("ts") == cache_ts:
-            print("  注意: 委托缓存未刷新，这是撤单前的旧快照")
-        if args.json:
-            _json_out({"ok": False, "real": True, "contract": contract,
-                       "row_index": row_index, "old_status": old_status,
-                       "new_status": new_status, "confirmed_cancelled": False,
-                       "cache_ts_unchanged": result3.get("ts") == cache_ts})
-        sys.exit(1)
-
-    cancelled = ("撤" in new_status) or ("废" in new_status)
-    print(f"撤单确认: {'已撤' if cancelled else '状态已变化'}")
+    finally:
+        t.close()
+    out = {"ok": True, **r}
     if args.json:
-        _json_out({"ok": True, "real": True, "contract": contract,
-                   "row_index": row_index, "old_status": old_status,
-                   "new_status": new_status, "confirmed_cancelled": cancelled})
-
+        _json_out(out)
+    else:
+        print(f"撤单  合同号={r['contract']}  {r.get('old_status')} → {r.get('new_status')}")
+    return out
 
 
 def frida_login(args):
-    """attach 后等待模拟仓登录态（active_is_moni=True）。
-    程序化路径：先尝试 login RPC（HXAuthenticationManager.authorizeWithUserName:...）；
-    若 30s 内未到 active_is_moni=True，退化为 AppleScript 点「交易→模拟」再轮询。"""
-    import os as _os, json as _json
+    """冷启动模拟仓登录（锁屏、无窗口、零点击）。
 
-    # ── 读凭据 ──────────────────────────────────────────────────────────────
-    cred_path = _os.path.expanduser("~/.ths_cred.json")
-    account = password = None
-    if _os.path.isfile(cred_path):
-        try:
-            with open(cred_path) as f:
-                cred = _json.load(f)
-            account  = cred.get("account")  or cred.get("username")
-            password = cred.get("password") or cred.get("passwd")
-        except Exception as e:
-            print(f"读取凭据失败: {e}", file=sys.stderr)
+    主路径 agent.loginMoni（= 「交易→模拟」面板 OK 按钮同一条链）：
+      ① -[JYMoniLoginWindowController moniTradeLoginWithAccount:password:]
+         取模拟服务器信息 → 建连 → 登录，UserManager 里出现 isMoni=1 的 UserModel
+      ② 补 A股 类型位 + setActiveUser:（getActiveUser 的类型掩码只认 1/2，
+         只置 SetType:4 会永远返回 nil）
+      ③ getCacheDataObject.requestZijin（资金回填，否则 zichanData 全空）
+    失败才退化：loginSim → 点界面「交易→模拟」（锁屏必失败，会打印原因）。
+    """
+    st = (_call("state").get("result") or {})
+    if st.get("active_is_moni") and st.get("moni_count"):
+        print("已是模拟仓登录态，补齐资金/激活", file=sys.stderr)
 
-    # ── 先查当前 state ───────────────────────────────────────────────────
-    resp = _call("state")
-    st = resp.get("result", {}) if resp.get("ok") else {}
-    if st.get("active_is_moni") and st.get("active_trade_commu_model"):
-        print("已是模拟仓登录态，无需重新登录")
-        _do_prime()
-        if args.json:
-            _json_out({"ok": True, "already": True, "state": st})
-        else:
-            print(f"  moni_count={st.get('moni_count')}  active_is_moni=True  "
-                  f"active_trade_commu_model={str(st.get('active_trade_commu_model',''))[:20]}...")
-        return
+    res = _login_via_agent()
+    if not (res.get("ok") and res.get("active_is_moni")):
+        _ensure_login_ready()          # 内含 loginSim 与点击兜底
 
-    # ── 路径1：loginSim（直接操控 UserManager，不需要凭据/界面点击）──────
-    # 录制到的调用链（2026-11-12）：
-    #   addUser:(实盘) → addUser:(模拟) → setActiveUser:(模拟) →
-    #   setMoNiSelectedActiveUser
-    # 若 moni_count>0，loginSim 直接 setMoNiSelectedActiveUser 即可。
-    print("尝试 loginSim（直接设模拟账户为 active）...", file=sys.stderr)
-    resp_ls = _call("loginSim")
-    ls = resp_ls.get("result", {}) if resp_ls.get("ok") else {}
-    if ls.get("ok") and ls.get("active_is_moni"):
-        print("loginSim 成功（模拟账户已在内存，直接设为 active）")
-        _do_prime()
-        resp_st = _call("state")
-        st_ls = resp_st.get("result", {}) if resp_st.get("ok") else {}
-        if args.json:
-            _json_out({"ok": True, "method": "loginSim", "state": st_ls})
-        else:
-            _print_state(st_ls)
-        return
-    if ls.get("need_wait"):
-        print("  loginSim: moni_count=0，账户未加载，需要先触发账户加载", file=sys.stderr)
-    else:
-        print(f"  loginSim 未成功: {ls.get('error', '')}", file=sys.stderr)
-
-    # ── 路径2：触发账户加载（点交易→模拟），再 loginSim ─────────────────
-    print("触发账户加载（点交易→模拟）...", file=sys.stderr)
-    _ensure_login_ready()
-    for i in range(15):
-        _time.sleep(1)
-        r_w = _call("state")
-        s_w = r_w.get("result", {}) if r_w.get("ok") else {}
-        if s_w.get("moni_count", 0) > 0:
-            print(f"  账户已加载 moni_count={s_w.get('moni_count')}", file=sys.stderr)
-            break
-    resp_ls2 = _call("loginSim")
-    ls2 = resp_ls2.get("result", {}) if resp_ls2.get("ok") else {}
-    if ls2.get("ok") and ls2.get("active_is_moni"):
-        print("loginSim 成功（账户加载后设为 active）")
-        _do_prime()
-        resp_st2 = _call("state")
-        st_ls2 = resp_st2.get("result", {}) if resp_st2.get("ok") else {}
-        if args.json:
-            _json_out({"ok": True, "method": "loginSim_after_click", "state": st_ls2})
-        else:
-            _print_state(st_ls2)
-        return
-
-    # ── 路径3：程序化登录（需要凭据，HXConnection）──────────────────────
-    if account and password:
-        acct_tail = ("*" * (len(account)-4) + account[-4:]) if len(account) >= 4 else "****"
-        print(f"尝试程序化登录  account=...{acct_tail}", file=sys.stderr)
-        resp2 = _call("login", {"account": account, "password": password, "loginType": 0})
-        result2 = resp2.get("result", {}) if resp2.get("ok") else {}
-        if result2.get("dispatched"):
-            print(f"  login RPC 已派发  send_before={result2.get('send_before')}  "
-                  f"send_after={result2.get('send_after')}", file=sys.stderr)
-            for i in range(30):
-                _time.sleep(1)
-                r3 = _call("state")
-                s3 = r3.get("result", {}) if r3.get("ok") else {}
-                if s3.get("active_is_moni") and s3.get("active_trade_commu_model"):
-                    print("程序化登录成功")
-                    _do_prime()
-                    if args.json:
-                        _json_out({"ok": True, "method": "programmatic", "state": s3})
-                    else:
-                        _print_state(s3)
-                    return
-            print("程序化登录 30s 内未到 active_is_moni=True", file=sys.stderr)
-        else:
-            err = result2.get("error", "login RPC 返回 dispatched=False")
-            print(f"  login RPC 失败: {err}", file=sys.stderr)
-    else:
-        print("未找到 ~/.ths_cred.json 或凭据不完整，跳过程序化登录", file=sys.stderr)
-
-    # ── 最终检查 ────────────────────────────────────────────────────────────
-    resp_f = _call("state")
-    st_f = resp_f.get("result", {}) if resp_f.get("ok") else {}
-    if st_f.get("active_is_moni"):
-        print("登录成功")
-        _do_prime()
-        if args.json:
-            _json_out({"ok": True, "method": "fallback", "state": st_f})
-        else:
-            _print_state(st_f)
-    else:
+    st_f = _call("state").get("result") or {}
+    if not st_f.get("active_is_moni"):
         print("登录失败: active_is_moni 仍为 False", file=sys.stderr)
         if args.json:
-            _json_out({"ok": False, "error": "active_is_moni=False after all attempts", "state": st_f})
+            _json_out({"ok": False, "method": "loginMoni",
+                       "error": res.get("error") or "active_is_moni=False",
+                       "login": res, "state": st_f})
         sys.exit(1)
+
+    _do_prime()
+    if args.json:
+        _json_out({"ok": True, "method": "loginMoni", "state": st_f, "login": res})
+    else:
+        _print_state(st_f)
+        print(f"  资金: 总资产={res.get('zichan_zzc') or '(未就绪)'}")
 
 
 def _cache_counts():
@@ -1333,24 +1200,38 @@ def frida_detail(args):
         print(f"    {k:<8} = {v}")
 
 
-def frida_buy(args):
-    resp = _call("buy", {"stockcode": args.code, "qty": str(args.qty), "price": str(args.price)})
-    result = _ok_or_die(resp)
+def _frida_place(args, side):
+    """接口化下单：走 ths.Ths.buy/sell（App 自己的下单方法 + 委托表核验）。"""
+    from ths import Ths, ThsError
+    t = Ths()
+    try:
+        r = t.buy(args.code, args.qty, args.price) if side == "buy" \
+            else t.sell(args.code, args.qty, args.price)
+    except ThsError as ex:
+        err = {"ok": False, "error": str(ex), "result": ex.result}
+        if args.json:
+            _json_out(err)
+        else:
+            print(f"{'买入' if side == 'buy' else '卖出'}失败: {ex}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        t.close()
+    out = {"ok": True, **r}
     if args.json:
-        _json_out(result)
+        _json_out(out)
     else:
-        print(f"买入  {result.get('stockcode')}  数量={result.get('qty')}  "
-              f"价格={result.get('price')}  send_detected={result.get('send_detected')}")
+        print(f"{'买入' if side == 'buy' else '卖出'}  合同号={r['contract']}  "
+              f"{r['code']}  数量={r['shares']}  价格={r['price']}  状态={r['status']}  "
+              f"通道={r.get('via')}")
+    return out
+
+
+def frida_buy(args):
+    return _frida_place(args, "buy")
 
 
 def frida_sell(args):
-    resp = _call("sell", {"stockcode": args.code, "qty": str(args.qty), "price": str(args.price)})
-    result = _ok_or_die(resp)
-    if args.json:
-        _json_out(result)
-    else:
-        print(f"卖出  {result.get('stockcode')}  数量={result.get('qty')}  "
-              f"价格={result.get('price')}  send_detected={result.get('send_detected')}")
+    return _frida_place(args, "sell")
 
 
 # ── 主入口 ────────────────────────────────────────────────────────────────────
@@ -1427,7 +1308,7 @@ def main():
     else:  # frida
         # ── 需要先 attach + login 检查的命令 ────────────────────────────────
         # orders/cancel/detail/trades 走纯 cache 或按需 TQT 路径，不强制 state 检查
-        NO_LOGIN_CHECK = ("account", "orders", "cancel", "detail", "trades", "login", "prime",
+        NO_LOGIN_CHECK = ("orders", "cancel", "detail", "trades", "login", "prime",
                           "start", "stop", "status", "state", "ping")
 
         frida_dispatch = {
