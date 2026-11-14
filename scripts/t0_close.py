@@ -817,14 +817,28 @@ def _is_filled_status(status_text) -> bool:
 
 # ── 真实持仓读取（frida 优先，EvolvingSim 兜底） ──────────────────────────
 
-def read_all_holdings():
-    """返回 ({code: shares}, 来源)；读取失败返回 (None, 原因)。"""
+def _read_frida_positions():
+    """frida 持仓原始表。返回 (positions|None, 原因)。
+
+    只有"拿到非空持仓表"才算读成功；接口报错/返回空 dict 一律 None（读不到），
+    由调用方回退旧通道或告警——绝不把"读不到"当成"没有持仓"。
+    """
     try:
         from broker_frida import ThsBroker
         pos = ThsBroker().get_positions() or {}
-        return {c: int(v.get('shares') or 0) for c, v in pos.items()}, 'frida'
     except Exception as ex:
-        log.warning(f"  frida 持仓读取失败: {ex}，回退 EvolvingSim")
+        return None, f'frida 接口报错: {ex}'
+    if not pos:
+        return None, 'frida 返回空持仓'
+    return pos, ''
+
+
+def read_all_holdings():
+    """返回 ({code: shares}, 来源)；读取失败返回 (None, 原因)。"""
+    pos, frida_err = _read_frida_positions()
+    if pos is not None:
+        return {c: int(v.get('shares') or 0) for c, v in pos.items()}, 'frida'
+    log.warning(f"  frida 持仓读取失败（{frida_err}），回退 EvolvingSim")
 
     try:
         with open(PORTFOLIO_JSON, encoding='utf-8') as f:
@@ -832,37 +846,39 @@ def read_all_holdings():
     except Exception:
         codes = []
     if not codes:
-        return None, 'frida 失败且 portfolio.json 无持仓清单'
+        return None, f'{frida_err}；旧通道也无持仓清单（portfolio.json 无 positions）'
 
     out = {}
     for c in codes:
         info = get_real_holding_info(c)
         if info['shares'] < 0:
-            return None, f'EvolvingSim getHoldingShares 失败({c})'
+            return None, f'{frida_err}；EvolvingSim getHoldingShares 失败({c})'
         out[c] = info['shares']
     return out, 'EvolvingSim'
 
 
 def read_holding(code):
     """单只真实持仓；读不到返回 None。"""
-    try:
-        from broker_frida import ThsBroker
-        pos = ThsBroker().get_positions() or {}
+    pos, _reason = _read_frida_positions()
+    if pos is not None:
+        if code not in pos:
+            return 0  # 持仓表非空但没有该标的 → 确实无该标的
         return int((pos.get(code) or {}).get('shares') or 0)
-    except Exception:
-        info = get_real_holding_info(code)
-        return info['shares'] if info['shares'] >= 0 else None
+    info = get_real_holding_info(code)
+    return info['shares'] if info['shares'] >= 0 else None
 
 
 def read_available(code):
-    """单只可用数量；读不到返回 None。"""
-    try:
-        from broker_frida import ThsBroker
-        pos = ThsBroker().get_positions() or {}
+    """单只可用数量；读不到/不在持仓表返回 None（调用方必须跳过，不得当 0）。"""
+    pos, _reason = _read_frida_positions()
+    if pos is not None:
+        if code not in pos:
+            return None  # 找不到标的 → 未知，不当 0
         return int((pos.get(code) or {}).get('available') or 0)
-    except Exception:
-        info = get_real_holding_info(code)
-        return info['available'] if info['shares'] >= 0 else None
+    info = get_real_holding_info(code)
+    if info['shares'] <= 0:
+        return None  # 旧通道查不到该标的（或持仓为0）→ 未知
+    return info['available']
 
 
 # ── 当日 T0 活动 + 基线 ──────────────────────────────────────────────────
@@ -1213,7 +1229,10 @@ def reconcile_code(code, diff, baseline, real_before, act):
 
     if action == 'sell':
         avail = read_available(code)
-        if avail is not None and 0 <= avail < shares:
+        if avail is None:
+            log.error(f"[ALERT] [{code}] 可用量读取失败（不在持仓表/接口异常），跳过补平，存在过夜风险")
+            return False
+        if 0 <= avail < shares:
             log.warning(f"  [{code}] 可用 {avail} < 需补卖 {shares}，按可用数量下单")
             shares = avail // 100 * 100
         if shares < min_shares:
@@ -1271,7 +1290,7 @@ def main():
 
     holdings, src = read_all_holdings()
     if holdings is None:
-        log.error(f"[ALERT] 无法读取真实持仓（{src}），为安全不交易，退出码 2")
+        log.error(f"[ALERT] 取数失败，未平仓，存在过夜风险（{src}），为安全不交易，退出码 2")
         sys.exit(2)
 
     activity = scan_t0_activity()

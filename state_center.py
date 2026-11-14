@@ -280,11 +280,12 @@ def load_portfolio():
 
 
 def save_portfolio(pf_data):
-    """保存 portfolio.json"""
+    """保存 portfolio.json（原子写：临时文件+fsync+rename，绝不写半截）"""
     try:
-        with open(_PF_PATH, "w", encoding="utf-8") as f:
-            json.dump(pf_data, f, ensure_ascii=False, indent=2)
-    except IOError as e:
+        from core.atomic_writer import atomic_write_json
+        if not atomic_write_json(_PF_PATH, pf_data):
+            print("[state_center] ⚠️ 保存 portfolio 失败: 原子写入返回 False")
+    except Exception as e:
         print(f"[state_center] ⚠️ 保存 portfolio 失败: {e}")
 
 

@@ -1172,9 +1172,10 @@ class SignalExecutor:
           - 状态含"成交"字样的记录优先匹配并在日志中标注
 
         返回:
-          ('success', detail)   情况a: 核验通过
-          ('failed', reason)    情况b: 委托表有效但无该笔
-          ('unknown', reason)   情况c: 委托表连续空/异常
+          ('success', detail, {'filled': bool, 'status': str})  情况a: 核验通过
+              filled=True 仅当委托状态是"全部成交/已成交"；未成交/部成/已撤均 False
+          ('failed', reason, None)    情况b: 委托表有效但无该笔
+          ('unknown', reason, None)   情况c: 委托表连续空/异常
         """
         # 统一方向为中文
         if direction in ('buy', 'Buy', 'BUY'):
@@ -1219,6 +1220,7 @@ class SignalExecutor:
             # 优先匹配含"成交"状态的记录
             best_row = None
             best_filled = False
+            best_status = ''
             for row in rows:
                 if not row or len(row) < 11:
                     continue
@@ -1250,6 +1252,7 @@ class SignalExecutor:
                 if best_row is None or (is_filled and not best_filled):
                     best_row = row
                     best_filled = is_filled
+                    best_status = row_status
             if best_row is not None:
                 try:
                     matched_shares = int(best_row[6])
@@ -1259,8 +1262,8 @@ class SignalExecutor:
                 filled_tag = '(已成交)' if best_filled else ''
                 shares_tag = '' if matched_shares == shares else f'(委托量={matched_shares}≠信号量={shares},差异{abs(matched_shares-shares)}股)'
                 since_tag = f' since>={since}' if since else ''
-                print(f"  [情况a:成功] 第{attempt}次即匹配{filled_tag}: {code} {direction} 合同号={contract} {shares_tag}{since_tag}")
-                return 'success', f"{code} {direction} 合同号={contract}{filled_tag}{shares_tag}{since_tag}"
+                print(f"  [情况a:成功] 第{attempt}次即匹配{filled_tag}: {code} {direction} 合同号={contract} 状态={best_status or '未知'} {shares_tag}{since_tag}")
+                return 'success', f"{code} {direction} 合同号={contract} 状态={best_status or '未知'}{filled_tag}{shares_tag}{since_tag}", {'filled': best_filled, 'status': best_status}
 
             last_reason = f"委托表共{len(last_rows)}条，时间窗口内未找到 {code} {direction} 数量容差≤100股的有效记录"
             # 拿到过有效数据但没匹配 → 情况b:失败（真没下出去）
@@ -1271,7 +1274,7 @@ class SignalExecutor:
                 f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
                 + ("\n  ..." if len(last_rows) > 30 else "")
             )
-            return 'failed', reason_b
+            return 'failed', reason_b, None
 
         # 全部轮询结束，区分情况b(曾拿到有效数据)与情况c(一直空/异常)
         if ever_got_valid_data:
@@ -1283,7 +1286,7 @@ class SignalExecutor:
                 f"  委托表最后一次全部记录:\n" + "\n".join(last_rows[:30])
                 + ("\n  ..." if len(last_rows) > 30 else "")
             )
-            return 'failed', reason
+            return 'failed', reason, None
         else:
             # 情况c: 全程空/异常 → 未知，不下第二单，交由调用方查持仓
             reason = (
@@ -1292,7 +1295,7 @@ class SignalExecutor:
                 f"  最后一次原始返回: {last_ent}\n"
                 f"  ⚠️ 委托表全程无有效数据,不能判失败,需查持仓变化做最终判定"
             )
-            return 'unknown', reason
+            return 'unknown', reason, None
 
     def execute_signals(self, result, mode=None):
         """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
@@ -1647,6 +1650,7 @@ class SignalExecutor:
                     fail_count += 1
                     continue
             after_shares = before_shares  # 默认保持原值，只有实查确认才更新
+            _liquidate_fill_ok = False    # 清仓删持仓的唯一凭据：委托全部成交 或 接口读到真实持仓=0
 
             # ═══ 下单前先落盘 intent（status=pending）：并发/重跑时靠它拦住"在途"信号 ═══
             try:
@@ -1698,7 +1702,9 @@ class SignalExecutor:
                         #   'success' → 情况a: 委托表查到该笔，判定成功
                         #   'failed'  → 情况b: 委托表有效数据但无该笔，真没下出去，判失败
                         #   'unknown' → 情况c: 接口抖动全程空/异常，不能判失败，查持仓做最终判定
-                        _v_status, _v_detail = self._verify_order_via_entrust(code, direction, shares, since=_order_since)
+                        _v_status, _v_detail, _v_extra = self._verify_order_via_entrust(code, direction, shares, since=_order_since)
+                        _v_filled = bool((_v_extra or {}).get('filled'))
+                        _v_order_status = str((_v_extra or {}).get('status') or '')
 
                         if _v_status == 'failed':
                             # 情况b: 委托表有效但无该笔 → 真没下出去，报警，不重下单
@@ -1714,8 +1720,10 @@ class SignalExecutor:
                             try:
                                 _pos_after = self._get_position_shares(code)
                                 _is_liquidate = (trade_type == "liquidate")
-                                if _is_liquidate and (_pos_after == 0 or _pos_after is None):
-                                    print(f"  ✅ [情况c→持仓归零] 清仓已成交，判定成功，不重下单")
+                                _pos_desc = f"{_pos_after}股" if _pos_after is not None else "读不到"
+                                print(f"  [情况c] 当前状态=委托表全程空/异常, 实际持仓={_pos_desc}, 信号={code} {direction} {shares}股")
+                                if _is_liquidate and _pos_after == 0:
+                                    print(f"  ✅ [情况c→持仓归零] 接口读到真实持仓=0股，清仓确认，删除持仓，不重下单")
                                     after_shares = 0
                                     success_count += 1
                                     success = True
@@ -1754,6 +1762,8 @@ class SignalExecutor:
 
                         # _v_status == 'success': 情况a，正常继续后续处理
                         print(f"  ✅ 核验通过: {_v_detail}")
+                        if trade_type == "liquidate" and _v_filled:
+                            _liquidate_fill_ok = True
 
                         # ═══ B4+: 成交后按实查持仓更新 portfolio.json，禁止写0 ═══
                         # 用 SignalExecutor 内部已有的 _get_position_shares（state_center.get_position_shares）
@@ -1764,8 +1774,9 @@ class SignalExecutor:
                                 # 查到真实持仓(>0): 用真实股数更新
                                 after_shares = _real_shares
                             elif _real_shares == 0 and trade_type == "liquidate":
-                                # 清仓确认: 真实持仓为0，允许写0
+                                # 清仓确认: 接口读到真实持仓=0，允许写0并删持仓
                                 after_shares = 0
+                                _liquidate_fill_ok = True
                             else:
                                 # 查不到 或 返回0且非清仓: 保持原值，绝不允许写0
                                 after_shares = before_shares
@@ -1858,18 +1869,32 @@ class SignalExecutor:
                             except Exception as _sc_err:
                                 print(f"  [SELL-CHASE] 记录追价状态失败: {_sc_err}")
 
-                        # ═══ O4: 清仓成交确认后重置持仓状态（统一入口）═══
+                        # ═══ O4: 清仓确认后重置持仓状态（统一入口）═══
+                        # 只有两种凭据允许删 positions[code]：
+                        #   1) 该委托"全部成交"（_v_filled）
+                        #   2) 接口读到真实持仓数量=0（_real_shares==0，已折算进 _liquidate_fill_ok）
+                        # 未成交/部分成交/已撤 → 一律保留持仓，并打印委托状态+实际持仓。
                         if trade_type == "liquidate":
                             try:
                                 from state_center import load_portfolio, save_portfolio, reset_signal_state_on_liquidate
                                 pf = load_portfolio()
-                                reset_signal_state_on_liquidate(pf, code, today_str)
-                                # 同时清理 positions[code]
-                                if code in pf.get("positions", {}):
-                                    del pf["positions"][code]
-                                save_portfolio(pf)
-                            except Exception:
-                                pass
+                                if _liquidate_fill_ok and after_shares == 0:
+                                    reset_signal_state_on_liquidate(pf, code, today_str)
+                                    if code in pf.get("positions", {}):
+                                        del pf["positions"][code]
+                                    save_portfolio(pf)
+                                    print(f"  ✅ [{code}] 清仓确认（委托状态={_v_order_status or '未知'}, "
+                                          f"实际持仓={after_shares}股）→ 已删除持仓")
+                                else:
+                                    _held = pf.get("positions", {}).get(code)
+                                    _held_desc = f"{_held.get('shares')}股" if _held else "无记录"
+                                    if _held is not None and after_shares > 0 and _held.get("shares") != after_shares:
+                                        _held["shares"] = after_shares
+                                        save_portfolio(pf)
+                                    print(f"  🚨 [{code}] 清仓未确认全部成交，保留持仓：委托状态={_v_order_status or '未知'} "
+                                          f"当前状态=未成交/部成/已撤(或读不到成交确认) 实际持仓={after_shares}股(portfolio原值={_held_desc})")
+                            except Exception as _o4_err:
+                                print(f"  [WARN] 清仓持仓状态更新失败: {_o4_err}")
 
                         # ═══ 记录交易 ═══
                         try:
@@ -1888,7 +1913,7 @@ class SignalExecutor:
                     elif err_type == "tonghuashun_disconnect":
                         print(f"  ⚠️ 同花顺断连，尝试重启后重试")
                         try:
-                            self._subprocess.run(["python3", os.path.join(script_dir, "scripts/restart_ths.py"), "--no-revoke"], timeout=30)
+                            self._subprocess.run([sys.executable, os.path.join(script_dir, "scripts/restart_ths.py"), "--no-revoke"], timeout=30)
                             time.sleep(3)
                             # 重试下单
                             retry_r = self._subprocess.run(cmd, capture_output=True, text=True, timeout=30)

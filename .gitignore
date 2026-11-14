@@ -11,6 +11,8 @@ orders/
 .DS_Store
 .ths_cred*
 *.bak_*
+*.bak
+*.bak[0-9]
 .run/
 .signal_generator.lock
 .t0_close.lock

@@ -1092,8 +1092,8 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             except Exception:
                 pass  # StateCenter 不可用时保留原 account 不覆盖
             pf_data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            with open(pf_path, "w") as _f:
-                json.dump(pf_data, _f, ensure_ascii=False, indent=2)
+            from core.atomic_writer import atomic_write_json
+            atomic_write_json(pf_path, pf_data)
         except Exception:
             pass
 

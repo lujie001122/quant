@@ -479,7 +479,23 @@ def _apply_zero_position(pf, code, sold_volumes):
 
 
 def sync():
-    """同步持仓到 portfolio.json
+    """同步持仓到 portfolio.json（持有 sync 执行锁，覆盖整个读-改-写过程）。
+
+    与 10:00 信号并发时：抢不到锁就跳过本次（退出码 0），绝不两进程同时改同一文件。
+    """
+    from core.exec_lock import ExecLock
+    lock = ExecLock('sync')
+    if not lock.acquire():
+        print("[SYNC] 未抢到 sync 锁（另一进程正在同步持仓），本次跳过，退出码 0")
+        return
+    try:
+        _sync_locked()
+    finally:
+        lock.release()
+
+
+def _sync_locked():
+    """真正执行持仓同步（调用方已持 ExecLock('sync')）。
 
     数据通道（每段都打印实际来源）:
       - 持仓/委托/成交/资金: frida 接口（ths_cli --engine frida）→ 失败才回退 EvolvingSim
@@ -655,8 +671,9 @@ def sync():
 
     pf['last_updated'] = time.strftime('%Y-%m-%d %H:%M')
 
-    with open(PF_PATH, 'w') as f:
-        json.dump(pf, f, ensure_ascii=False, indent=2)
+    from core.atomic_writer import atomic_write_json
+    if not atomic_write_json(PF_PATH, pf):
+        print("  🚨 sync: portfolio.json 原子写入失败")
 
     # 开盘第一次 sync 落一份当日基线快照（t0_close 用真实持仓 vs 基线判定单边敞口）
     try:
