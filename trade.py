@@ -658,6 +658,14 @@ def sync():
     with open(PF_PATH, 'w') as f:
         json.dump(pf, f, ensure_ascii=False, indent=2)
 
+    # 开盘第一次 sync 落一份当日基线快照（t0_close 用真实持仓 vs 基线判定单边敞口）
+    try:
+        from core.daily_baseline import snapshot_if_missing
+        if snapshot_if_missing(pf.get('positions', {})):
+            print(f"  📌 已记录当日基线快照: {len(pf.get('positions', {}))} 只")
+    except Exception as _bl_ex:
+        print(f"  ⚠️ 基线快照写入失败: {_bl_ex}")
+
     total_asset = pf.get('account', {}).get('total_asset', 0)
     print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{total_asset:.0f} | "
           f"来源: 持仓={pos_src} 委托={ord_src} 成交={trd_src} 资金={acct_src or '保留上次'}")
@@ -854,7 +862,8 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     from state_center import sync_entrust_to_orders, write_intent, write_intent_failed, write_order
     sync_entrust_to_orders(e=e)
     direction = '买入' if 'buy' in action else '卖出'
-    write_intent(code, action, direction)
+    # 下单前先落盘 intent（status=pending）：即使订单文件还没写，别的进程也能靠它去重
+    write_intent(code, action, direction, shares=shares, price=price, status='pending')
 
     # T0 配对：在下单前捕获基准持仓（固定基线，sync 后不变）
     baseline_shares = _get_baseline_shares(code) if is_t0 else None
@@ -886,6 +895,9 @@ def _unified_trade(action, code, shares, price, pair_price=None):
         sys.exit(1)
     print(f"  ✅ 核验通过: {detail_main}")
     write_order(code, action, shares, price, contract_main, status='pending', baseline_shares=baseline_shares)
+    # 主腿已报出：intent 标记 submitted（订单文件已落盘，去重以订单文件为准）
+    write_intent(code, action, direction, shares=shares, price=price,
+                 status='submitted', contract=contract_main)
 
     # T0 配对单
     if is_t0 and pair_price is not None:

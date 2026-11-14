@@ -543,50 +543,89 @@ def intent_to_dedup_key(intent):
     return (code, mode, direction)
 
 
-def write_intent(code, action, direction, mode=None):
-    """写 intent 文件到 orders/intent/ 目录。
+def _atomic_write_json(path, data):
+    """原子写 intent（tmp + os.replace），避免并发进程读到半截 JSON。"""
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _load_intent_file(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def write_intent(code, action, direction, mode=None, shares=None, price=None,
+                 status='pending', contract=None):
+    """写 intent 文件到 orders/intent/ 目录（下单前调用，作为"在途"去重依据）。
+
     action: 'buy'/'sell'/'t0_buy'/'t0_sell'
     direction: '买入'/'卖出'
     mode: 自动推导，不传则根据 action 推导
+    status: pending=在途（去重阻塞），filled=已成交，failed=失败（不阻塞重试）
     """
     os.makedirs(_INTENT_DIR, exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
     if mode is None:
         mode = 't0' if 't0_' in action else 'buy_sell'
     intent_path = os.path.join(_INTENT_DIR, f'{today}_{code}_{action}.json')
+    old = _load_intent_file(intent_path) or {}
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     intent = {
         'code': code,
         'action': action,
         'direction': direction,
         'mode': mode,
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'status': status,
+        'created_at': old.get('created_at') or now,
+        'updated_at': now,
     }
+    if shares is not None:
+        intent['shares'] = shares
+    elif old.get('shares') is not None:
+        intent['shares'] = old['shares']
+    if price is not None:
+        intent['price'] = price
+    elif old.get('price') is not None:
+        intent['price'] = old['price']
+    if contract:
+        intent['contract'] = contract
     try:
-        with open(intent_path, 'w') as f:
-            json.dump(intent, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(intent_path, intent)
     except IOError:
         pass
 
 
 def write_intent_failed(code, action, shares, price, reason='failed'):
-    """下单失败时写 intent 文件（status=failed），下次 cron 可去重识别。"""
+    """下单失败 → 把同一份 intent 标记为 status=failed（不新增 _failed 文件）。
+
+    failed 的 intent 不参与去重阻塞，允许后续 cron 正常重试；
+    真正的"在途"保护由 status=pending 承担。
+    """
     os.makedirs(_INTENT_DIR, exist_ok=True)
     today = datetime.now().strftime('%Y%m%d')
-    intent_path = os.path.join(_INTENT_DIR, f'{today}_{code}_{action}_failed.json')
-    direction = '买入' if 'buy' in action else '卖出'
+    intent_path = os.path.join(_INTENT_DIR, f'{today}_{code}_{action}.json')
+    old = _load_intent_file(intent_path) or {}
     intent = {
         'code': code,
         'action': action,
+        'direction': '买入' if 'buy' in action else '卖出',
+        'mode': 't0' if 't0_' in action else 'buy_sell',
         'shares': shares,
         'price': price,
-        'direction': direction,
         'status': 'failed',
         'reason': reason,
-        'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'created_at': old.get('created_at') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
     try:
-        with open(intent_path, 'w') as f:
-            json.dump(intent, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(intent_path, intent)
     except IOError as e:
         print(f"  ⚠️ failed intent 文件写入失败: {e}")
 
@@ -896,6 +935,19 @@ def check_pending_orders(mode=None, sync_entrust=True):
         intent_key = intent_to_dedup_key(intent)
         code = intent_key[0]
         direction = intent_key[2]  # '买入' 或 '卖出'
+        intent_status = str(intent.get('status') or '').strip()
+
+        # 已失败/已撤的 intent 不阻塞，允许后续 cron 重试
+        if intent_status in ('failed', 'cancelled'):
+            print(f"[check_pending] intent 不阻塞: {intent_key} (来源:{fname}, status={intent_status})")
+            continue
+
+        # 在途（下单前已落盘、尚未成交）：买卖都阻塞，这是"下单中途被并发重跑"的防线
+        if intent_status == 'pending':
+            print(f"[check_pending] intent 在途去重: {intent_key} "
+                  f"(来源:{fname}, shares={intent.get('shares')}, created_at={intent.get('created_at')}，阻塞)")
+            filled_codes.add(intent_key)
+            continue
 
         if direction == '卖出':
             # 卖出去重：检查真实持仓，有货则不阻塞（允许再次卖出）

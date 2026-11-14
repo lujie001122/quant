@@ -11,3 +11,7 @@ orders/
 .DS_Store
 .ths_cred*
 *.bak_*
+.run/
+.signal_generator.lock
+.t0_close.lock
+logs/t0_baseline_*.json

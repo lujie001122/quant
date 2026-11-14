@@ -1047,6 +1047,22 @@ class SignalExecutor:
             # 任意已下单记录都视为今日已下过（filled/pending/partial/failed 均阻塞）
             print(f"  [T0幂等] {code} 今日已有{action}记录 {fname} status={status}，不允许重复下单")
             return False
+
+        # 订单文件可能还没落盘（下单进行中）：查"在途"intent（下单前写盘），
+        # 这是 11-13 并发重跑重复下单的直接防线。
+        try:
+            from state_center import load_intent_files
+            for fname, it in load_intent_files().items():
+                if it.get('code') != code or it.get('action') != action:
+                    continue
+                st = str(it.get('status') or '').strip()
+                if st in ('failed', 'cancelled'):
+                    continue
+                print(f"  [T0幂等] {code} 今日已有{action}在途intent {fname} "
+                      f"status={st or '未标注'} created_at={it.get('created_at')}，不允许重复下单")
+                return False
+        except Exception as ex:
+            print(f"  ⚠️ [T0幂等] 读取今日intent失败({ex})，放行")
         return True
 
     def _record_t0_pair_after_execute(self, code: str, action: str, shares: int):
@@ -1125,14 +1141,19 @@ class SignalExecutor:
         self._cleanup_old_intent_files = cleanup_old_intent_files
         self._imports_loaded = True
 
-    def _write_intent_for_sg(self, code, mode, direction):
-        """写 intent 文件（兜底，trade.py 内部已写）"""
+    @staticmethod
+    def _intent_action(mode, direction):
         if mode == 't0':
-            action = 't0_buy' if direction == '买入' else 't0_sell'
-        else:
-            action = 'buy' if direction == '买入' else 'sell'
+            return 't0_buy' if direction == '买入' else 't0_sell'
+        return 'buy' if direction == '买入' else 'sell'
+
+    def _write_intent_for_sg(self, code, mode, direction, shares=None, price=None,
+                             status='pending', contract=None):
+        """写 intent 文件（下单前落盘，作为在途去重依据；成交后改 filled）。"""
         from state_center import write_intent
-        write_intent(code, action, direction, mode=mode)
+        write_intent(code, self._intent_action(mode, direction), direction,
+                     mode=mode, shares=shares, price=price, status=status,
+                     contract=contract)
 
     def _verify_order_via_entrust(self, code, direction, shares, since=None):
         """下单后通过 getEntrust 独立核验订单是否真实提交到券商。
@@ -1629,6 +1650,15 @@ class SignalExecutor:
                     continue
             after_shares = before_shares  # 默认保持原值，只有实查确认才更新
 
+            # ═══ 下单前先落盘 intent（status=pending）：并发/重跑时靠它拦住"在途"信号 ═══
+            try:
+                self._write_intent_for_sg(code, sig_mode, sig_direction,
+                                          shares=shares, price=price, status='pending')
+                print(f"  [INTENT] 下单前落盘: {code} {sig_mode} {sig_direction} "
+                      f"{shares}股@{price:.3f} status=pending")
+            except Exception as _intent_ex:
+                print(f"  ⚠️ [INTENT] 落盘失败: {_intent_ex}")
+
             os.system("open -a 同花顺")
             os.system("cliclick c:960,50")
 
@@ -1692,7 +1722,7 @@ class SignalExecutor:
                                     success_count += 1
                                     success = True
                                     filled_codes.add((code, sig_mode, sig_direction))
-                                    self._write_intent_for_sg(code, sig_mode, sig_direction)
+                                    self._write_intent_for_sg(code, sig_mode, sig_direction, shares=shares, price=price, status='filled')
                                     try:
                                         from state_center import load_portfolio, save_portfolio, reset_signal_state_on_liquidate
                                         pf = load_portfolio()
@@ -1709,7 +1739,7 @@ class SignalExecutor:
                                     success_count += 1
                                     success = True
                                     filled_codes.add((code, sig_mode, sig_direction))
-                                    self._write_intent_for_sg(code, sig_mode, sig_direction)
+                                    self._write_intent_for_sg(code, sig_mode, sig_direction, shares=shares, price=price, status='filled')
                                     break
                                 else:
                                     # 持仓未变或查不到 → 未知，报警要求人工核对，绝不重下单
@@ -1767,7 +1797,7 @@ class SignalExecutor:
                         filled_codes.add((code, sig_mode, sig_direction))
 
                         # ═══ 同时写 intent 记录 ═══
-                        self._write_intent_for_sg(code, sig_mode, sig_direction)
+                        self._write_intent_for_sg(code, sig_mode, sig_direction, shares=shares, price=price, status='filled')
 
                         # ═══ B4: 每笔成交后更新持仓状态(防超额卖出) ═══
                         if trade_type in ("sell", "reduce", "t0"):
@@ -1917,6 +1947,14 @@ class SignalExecutor:
 
             if not success:
                 fail_count += 1
+                # ═══ intent 标记 failed：失败不阻塞后续 cron 重试 ═══
+                try:
+                    from state_center import write_intent_failed
+                    write_intent_failed(code, self._intent_action(sig_mode, sig_direction),
+                                        shares, price, reason=(final_error or '执行失败'))
+                    print(f"  [INTENT] 已标记 failed: {code} {sig_mode} {sig_direction}")
+                except Exception as _intent_ex:
+                    print(f"  ⚠️ [INTENT] 标记 failed 失败: {_intent_ex}")
                 # ═══ 交易失败告警 ═══
                 try:
                     _alert_msg = f"{code} {direction}失败: {final_error or '未知错误'} (类型: {final_error_type or 'unknown'})"

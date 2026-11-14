@@ -1115,37 +1115,50 @@ def execute_signals(result, mode=None):
     return _exec_execute(result, mode=mode)
 
 
+def _parse_execute_args():
+    """解析 --execute / --execute=t0|buy_sell。返回 (execute_flag, mode)。"""
+    for arg in sys.argv[1:]:
+        if arg == "--execute":
+            return True, None
+        if arg.startswith("--execute="):
+            val = arg.split("=", 1)[1].strip().lower()
+            if val in ("buy_sell", "t0"):
+                return True, val
+            print(f"[WARN] 无效的 --execute 值: {val}, 使用默认模式(全部)")
+            return True, None
+    return False, None
+
+
+def _acquire_exec_locks(execute_flag, execute_mode):
+    """执行层互斥锁：同一 mode 同时只允许一个进程。
+
+    --execute（全部模式）同时占 t0 和 buy_sell 两把锁，避免与单模式执行并发下单。
+    抢不到锁时 ExecLock 已打印「已有执行在进行中（pid=… since=…），本次跳过」，
+    这里返回 None，main 直接退出（退出码 0，不算失败）。
+    """
+    if not execute_flag:
+        return []
+    from core.exec_lock import ExecLock
+    modes = [execute_mode] if execute_mode else ["t0", "buy_sell"]
+    locks = []
+    for m in modes:
+        lk = ExecLock(m)
+        if not lk.acquire():
+            for held in reversed(locks):
+                held.release()
+            return None
+        locks.append(lk)
+    return locks
+
+
 def main():
-    # ── 排他锁：同一时刻只允许一个进程从"读信号"到"下单完成"执行 ──
-    import fcntl
-    _lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".signal_generator.lock")
-    _lock_fd = open(_lock_path, "w")
-    try:
-        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print("[SKIP] 另一进程正在执行，跳过本次")
-        _lock_fd.close()
-        sys.exit(0)
+    # ── 执行层互斥锁：同一 mode 同一时刻只允许一个进程从"读信号"到"下单完成" ──
+    execute_flag, execute_mode = _parse_execute_args()
+    locks = _acquire_exec_locks(execute_flag, execute_mode)
+    if locks is None:
+        return None
 
     try:
-        # 解析 --execute 参数
-        execute_mode = None  # None 表示未指定 --execute，不执行
-        execute_flag = False  # 标记是否出现了 --execute 参数
-        for arg in sys.argv:
-            if arg == "--execute":
-                execute_flag = True
-                execute_mode = None  # 全部（None 在此上下文表示全部模式）
-                break
-            if arg.startswith("--execute="):
-                execute_flag = True
-                val = arg.split("=", 1)[1].strip().lower()
-                if val in ("buy_sell", "t0"):
-                    execute_mode = val
-                else:
-                    print(f"[WARN] 无效的 --execute 值: {val}, 使用默认模式(全部)")
-                    execute_mode = None
-                break
-
         try:
             result = generate_signals()
             json_str = json.dumps(result, indent=2, ensure_ascii=False)
@@ -1162,9 +1175,8 @@ def main():
             print(json.dumps(error_msg, indent=2, ensure_ascii=False))
             return None
     finally:
-        # 进程正常或异常退出时自动释放锁
-        fcntl.flock(_lock_fd, fcntl.LOCK_UN)
-        _lock_fd.close()
+        for _lk in reversed(locks):
+            _lk.release()
 
 if __name__ == "__main__":
     main()

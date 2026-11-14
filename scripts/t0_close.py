@@ -2,15 +2,17 @@
 """
 T0尾盘平仓脚本 — 每个交易日 14:50 执行
 
-核心修复（2026-10-23）：
-  判定成交不再只看 orders/*.json 的 status 字段，增加两个独立证据源：
-    源2：THS 真实持仓（getHoldingShares）vs portfolio.json 基准持仓
-    源3：当日委托回报（getEntrust，全部，不限是否可撤）
-  三源任一显示买入腿已成交，即认定成交并发起平仓。
+判定规则（2026-11-14 修复 11-13 单边敞口漏平）：
+  1. 每只持仓取 真实持仓(frida) - 基线(baseline)
+  2. diff<0（卖多了）→ 买回差额；diff>0（买多了）→ 卖出差额；diff=0 → 不动作
+  3. 配对文件（orders/*_t0_*.json）只用于解释原因/写日志，不作"无需动作"依据
+  4. 平仓价=卖一/买一/现价，并用当日涨跌停价夹边界（money_manager.day_price_limits）
+  5. 每只都打印 baseline/real/diff；有动作再打印方向/合同号/成交价/数量/平仓后持仓
 
-接口异常处理：
-  status=False（unknown err） → 重启同花顺 → 最多重试 3 次
-  3 次后仍失败 → 打印 [ALERT] + 以退出码 2 结束，绝不静默跳过
+基线优先级：当日最早一笔 T0 订单的 baseline_shares → logs/t0_baseline_YYYYMMDD.json
+            → _signal_state 兜底（日志标注来源）
+
+接口异常：frida 优先、EvolvingSim 兜底；读不到真实持仓 → [ALERT] 并以退出码 2 结束
 
 用法:
   python3 scripts/t0_close.py [--dry-run] [--verify]
@@ -632,143 +634,14 @@ def find_contract_from_entrust(code: str, action: str, shares: int,
         return ''
 
 
-def _is_order_filled_from_entrust(code: str, action: str, shares: int,
-                                   contract_no: str) -> bool:
-    """
-    根据合同号查委托状态，判断是否已全部成交。
-    合同号为空则按 代码+方向+数量 找最新一条。
-    """
-    try:
-        from evolving.evolving import EvolvingSim
-        e = EvolvingSim()
-        result = e.getEntrust('today', False)
-        time.sleep(1)
-        if not (result and isinstance(result, dict) and result.get('status')):
-            return False
-        direction_kw = '买' if action == 'buy' else '卖'
-        for row in result.get('data', []):
-            if not row or len(row) < 11:
-                continue
-            if str(row[2]) != code:
-                continue
-            if direction_kw not in str(row[4]):
-                continue
-            if contract_no and str(row[10]) != contract_no:
-                continue
-            try:
-                qty = int(float(row[6]))
-            except ValueError:
-                continue
-            if qty != shares:
-                continue
-            remark = str(row[5])
-            filled = (('已成' in remark or '全部' in remark)
-                      and '未成' not in remark and '撤' not in remark)
-            if filled:
-                return True
-        return False
-    except Exception as ex:
-        log.warning(f"  [核验] 状态查询异常: {ex}")
-        return False
-
-
 # ══════════════════════════════════════════════════════════════════════════
-# 单腿平仓（一次市价单，不重试）
+# 平仓参数
 # ══════════════════════════════════════════════════════════════════════════
 
-# 市价单下单后等待成交的最长秒数（可调整）
+# 补平下单后等待成交的最长秒数（可调整）
 CLOSE_MARKET_WAIT   = 30
 # 轮询间隔
 CLOSE_POLL_INTERVAL = 5
-
-
-def _clear_chase_state(pair_id: str, code: str) -> None:
-    """
-    平仓成功后，清掉 orders/t0_chase_state.json 里该配对的追价记录，
-    避免第二天继续追。删除 key 为 pair_id 的条目，保留其他条目。
-    注意：不动 portfolio.json 里的 t0_leg_added（那是加仓幂等标记，不能删）。
-    """
-    chase_path = os.path.join(ORDERS_DIR, 't0_chase_state.json')
-    try:
-        if not os.path.exists(chase_path):
-            log.info(f"  [{pair_id}] t0_chase_state.json 不存在，无需清除")
-            return
-        with open(chase_path, encoding='utf-8') as f:
-            chase = json.load(f)
-        if pair_id in chase:
-            del chase[pair_id]
-            with open(chase_path, 'w', encoding='utf-8') as f:
-                json.dump(chase, f, ensure_ascii=False, indent=2)
-            log.info(f"  [{pair_id}] 追价记录已清除（t0_chase_state.json[{pair_id}]）")
-        else:
-            log.info(f"  [{pair_id}] t0_chase_state.json 中无该配对记录，跳过")
-    except Exception as ex:
-        log.warning(f"  [{pair_id}] 清除追价状态失败（不影响平仓结果）: {ex}")
-
-
-def close_single_leg(code: str, pair_id: str, action: str,
-                     shares: int) -> bool:
-    """
-    单腿平仓：只挂一次市价单（对手价），不重试，不挂涨跌停价。
-
-    流程（严格执行一次，绝不循环下单）：
-      1. 挂市价单 price=None（对手价），只调用一次
-      2. 查委托表拿合同号
-      3. 等待最多 CLOSE_MARKET_WAIT 秒，轮询成交状态
-         a. 已成交 → 打印结果，清追价记录，返回 True
-         b. 等完仍未成 → 撤单，[ALERT] 报警"平仓未成交已撤单，将留过夜"，返回 False
-      4. 下单失败（拒单）→ 直接 [ALERT] 报警，返回 False
-
-    DRY_RUN 模式下打印所有步骤，不真实下单，直接模拟场景 a（成交），返回 True。
-    """
-    now_str = lambda: datetime.now().strftime('%H:%M:%S')
-
-    # ── 【唯一一次】市价单下单 ───────────────────────────────────────────
-    log.info(f"  [{now_str()}] [{pair_id}] 平仓下单（仅此一次）"
-             f" 方向={action} 股数={shares} 价格类型=对手价(market)")
-
-    ok, raw = place_order_market(action, code, shares, price=None)
-
-    # ── 下单失败：拒单或接口异常，不重试 ───────────────────────────────
-    if not ok and not DRY_RUN:
-        log.error(
-            f"[ALERT] [{pair_id}] {code} {shares}股 市价{action}单下单失败（拒单/异常）\n"
-            f"  raw={raw}\n"
-            f"  价格类型=对手价  已撤对侧委托  不再重试"
-        )
-        return False
-
-    # ── DRY_RUN 模拟场景 a：一次成交 ────────────────────────────────────
-    if DRY_RUN:
-        log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 下单调用次数=1 模拟场景a(一次成交)")
-        log.info(f"  [{now_str()}] [{pair_id}] [DRY-RUN] 将清除追价记录 {pair_id}")
-        _clear_chase_state(pair_id, code)
-        return True
-
-    # ── 查委托表获取合同号 ───────────────────────────────────────────────
-    contract = find_contract_from_entrust(code, action, shares) or ''
-    log.info(f"  [{now_str()}] [{pair_id}] 下单返回={raw} 合同号={contract or '未取到'}")
-
-    # ── 等待成交（最多 CLOSE_MARKET_WAIT 秒，每 CLOSE_POLL_INTERVAL 秒查一次）
-    deadline_ts = time.time() + CLOSE_MARKET_WAIT
-    while time.time() < deadline_ts:
-        time.sleep(CLOSE_POLL_INTERVAL)
-        if _is_order_filled_from_entrust(code, action, shares, contract):
-            log.info(f"  [{now_str()}] [{pair_id}] ✅ 市价单已成交"
-                     f" 合同号={contract} 股数={shares} 价格类型=对手价")
-            _clear_chase_state(pair_id, code)
-            return True
-        log.info(f"  [{now_str()}] [{pair_id}] 等待成交中… 合同号={contract or '未取到'}")
-
-    # ── 等完仍未成：撤单 + 报警，不再下单 ─────────────────────────────
-    log.info(f"  [{now_str()}] [{pair_id}] {CLOSE_MARKET_WAIT}s 等待结束，仍未成交，尝试撤单")
-    revoke_order(contract)
-    log.error(
-        f"[ALERT] [{pair_id}] 平仓未成交已撤单，将留过夜\n"
-        f"  合同号={contract or '未取到'}  股数={shares}  价格类型=对手价\n"
-        f"  已撤单，不再重试，请人工处理"
-    )
-    return False
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -830,53 +703,9 @@ def scan_t0_pairs() -> list:
 # 撤单
 # ══════════════════════════════════════════════════════════════════════════
 
-def revoke_order(contract_no: str) -> bool:
-    """先单笔撤，失败降级全撤。返回是否撤单成功。"""
-    try:
-        from evolving.evolving import EvolvingSim
-        e = EvolvingSim()
-
-        if contract_no and contract_no != 'pending':
-            result = e.revokeEntrust(revokeType='contractNo', contractNo=contract_no)
-            time.sleep(2)
-            if result is not None:
-                log.info(f"  单笔撤单成功 contractNo={contract_no}")
-                return True
-            log.warning(f"  单笔撤单返回 None（unknown err），降级全撤")
-
-        result = e.revokeEntrust(revokeType='allBuyAndSell')
-        time.sleep(2)
-        if result is not None:
-            log.info(f"  全撤成功（allBuyAndSell）")
-            return True
-        log.error(f"  全撤也失败")
-        return False
-    except Exception as ex:
-        log.error(f"  撤单异常: {ex}")
-        return False
-
-
 # ══════════════════════════════════════════════════════════════════════════
 # 下单
 # ══════════════════════════════════════════════════════════════════════════
-
-def place_order(action: str, code: str, shares: int, price: float) -> bool:
-    """调用 python3 trade.py sell/buy 下单，返回是否成功。"""
-    cmd = [sys.executable, TRADE_PY, action, code, str(shares), str(price)]
-    log.info(f"  下单: {' '.join(cmd)}")
-    if DRY_RUN or VERIFY:
-        log.info(f"  [{'VERIFY' if VERIFY else 'DRY-RUN'}] 跳过真实下单")
-        return True
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        output = (r.stdout + r.stderr).strip()
-        if output:
-            log.info(f"  trade.py 输出: {output}")
-        return r.returncode == 0
-    except Exception as ex:
-        log.error(f"  trade.py 调用异常: {ex}")
-        return False
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # 日志记录
@@ -956,93 +785,480 @@ def main_verify():
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 防仓位走高：买入腿成交、卖出腿未成交 → 额外份额转普通持仓，消耗金字塔名额
+# 真实持仓 vs 基线：单边敞口补平
+#   判据只有一条：real_shares - baseline_shares（持仓差是最硬的证据）
+#   配对文件（t0_buy/t0_sell 订单）只用来解释原因、写日志，不决定"无需动作"
 # ══════════════════════════════════════════════════════════════════════════
 
-def _handle_t0_leg_to_position(code: str, pair_id: str, buy_shares: int, status: dict) -> None:
+INTENT_DIR = os.path.join(ORDERS_DIR, 'intent')
+
+_T0_ORDER_RE  = re.compile(r'^(\d{8})_(\d+)_t0_(buy|sell)_(\d+)\.json$')
+_T0_INTENT_RE = re.compile(r'^(\d{8})_(\d+)_(t0_buy|t0_sell)(_failed)?\.json$')
+
+
+def _min_shares() -> int:
+    try:
+        import yaml as _yaml
+        with open(os.path.join(ROOT_DIR, 'config.yaml'), encoding='utf-8') as f:
+            cfg = _yaml.safe_load(f) or {}
+        return int((cfg.get('trade') or {}).get('min_shares', 100))
+    except Exception:
+        return 100
+
+
+def _is_filled_status(status_text) -> bool:
+    s = str(status_text or '').strip()
+    if not s or '未成交' in s:
+        return False
+    if '撤' in s or '废' in s:
+        return False
+    return '全部成交' in s or '已成交' in s
+
+
+# ── 真实持仓读取（frida 优先，EvolvingSim 兜底） ──────────────────────────
+
+def read_all_holdings():
+    """返回 ({code: shares}, 来源)；读取失败返回 (None, 原因)。"""
+    try:
+        from broker_frida import ThsBroker
+        pos = ThsBroker().get_positions() or {}
+        return {c: int(v.get('shares') or 0) for c, v in pos.items()}, 'frida'
+    except Exception as ex:
+        log.warning(f"  frida 持仓读取失败: {ex}，回退 EvolvingSim")
+
+    try:
+        with open(PORTFOLIO_JSON, encoding='utf-8') as f:
+            codes = list((json.load(f).get('positions') or {}).keys())
+    except Exception:
+        codes = []
+    if not codes:
+        return None, 'frida 失败且 portfolio.json 无持仓清单'
+
+    out = {}
+    for c in codes:
+        info = get_real_holding_info(c)
+        if info['shares'] < 0:
+            return None, f'EvolvingSim getHoldingShares 失败({c})'
+        out[c] = info['shares']
+    return out, 'EvolvingSim'
+
+
+def read_holding(code):
+    """单只真实持仓；读不到返回 None。"""
+    try:
+        from broker_frida import ThsBroker
+        pos = ThsBroker().get_positions() or {}
+        return int((pos.get(code) or {}).get('shares') or 0)
+    except Exception:
+        info = get_real_holding_info(code)
+        return info['shares'] if info['shares'] >= 0 else None
+
+
+def read_available(code):
+    """单只可用数量；读不到返回 None。"""
+    try:
+        from broker_frida import ThsBroker
+        pos = ThsBroker().get_positions() or {}
+        return int((pos.get(code) or {}).get('available') or 0)
+    except Exception:
+        info = get_real_holding_info(code)
+        return info['available'] if info['shares'] >= 0 else None
+
+
+# ── 当日 T0 活动 + 基线 ──────────────────────────────────────────────────
+
+def scan_t0_activity() -> dict:
+    """扫描今日 T0 订单/意图（含不完整配对），返回 {code: {...}}。
+
+    基线取当日最早一笔 T0 订单的 baseline_shares（trade.py 在下单前固定写入），
+    它是"这笔做T开始前"的持仓，普通买卖不会污染它。
     """
-    买入腿成交、卖出腿未成交时调用。
-    条件：接口可用（iface_ok=True）且真实持仓已取到（real_shares >= 0）。
+    today = _today_compact()
+    act: dict = {}
 
-    1. 幂等检查：_signal_state[code]['t0_leg_added'][pair_id] == today → 跳过
-    2. add_count +1，_signal_state[code]['shares'/'avg_cost'] 按真实持仓对齐
-       positions[code]['shares'/'available'/'avg_cost'] 按真实持仓对齐
-    3. 写回 portfolio.json
-    4. 打印日志
+    def entry(code):
+        return act.setdefault(code, {'orders': [], 'intents': [],
+                                     'baseline': None, 'baseline_src': ''})
 
-    接口不可用或 real_shares < 0 时直接返回，不做任何修改。
-    """
-    # ── 前置守卫：必须有真实持仓数据 ────────────────────────────────────
-    if not status.get('iface_ok', False):
-        log.warning(f"  [{code}] 接口不可用，跳过仓位对齐和加仓次数更新（避免误判）")
-        return
+    try:
+        fnames = sorted(os.listdir(ORDERS_DIR))
+    except OSError:
+        fnames = []
+    for fname in fnames:
+        m = _T0_ORDER_RE.match(fname)
+        if not m or m.group(1) != today:
+            continue
+        try:
+            with open(os.path.join(ORDERS_DIR, fname), encoding='utf-8') as f:
+                d = json.load(f)
+        except Exception:
+            continue
+        entry(m.group(2))['orders'].append({
+            'file': fname, 'side': m.group(3), 'x': m.group(4),
+            'status': str(d.get('status') or ''),
+            'shares': int(d.get('shares') or 0),
+            'price': float(d.get('price') or 0),
+            'contract': str(d.get('contract') or ''),
+            'baseline_shares': d.get('baseline_shares'),
+            'created_at': str(d.get('created_at') or ''),
+        })
 
-    real_info = status.get('_real_info', {})
-    real_shares = real_info.get('shares', -1)
-    if real_shares < 0:
-        log.warning(f"  [{code}] 真实持仓获取失败（shares=-1），跳过仓位对齐和加仓次数更新")
-        return
+    if os.path.isdir(INTENT_DIR):
+        for fname in sorted(os.listdir(INTENT_DIR)):
+            m = _T0_INTENT_RE.match(fname)
+            if not m or m.group(1) != today:
+                continue
+            try:
+                with open(os.path.join(INTENT_DIR, fname), encoding='utf-8') as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            entry(m.group(2))['intents'].append({
+                'file': fname, 'action': m.group(3),
+                'status': str(d.get('status') or ''),
+                'shares': d.get('shares'),
+                'created_at': str(d.get('created_at') or ''),
+            })
 
-    real_available = real_info.get('available', 0)
-    real_avg_cost  = real_info.get('avg_cost',  0.0)
-    baseline       = status.get('_baseline', 0)
-    excess         = real_shares - baseline
+    for e in act.values():
+        cands = [o for o in e['orders'] if o.get('baseline_shares') is not None]
+        cands.sort(key=lambda o: (o['created_at'], o['file']))
+        if cands:
+            e['baseline'] = int(cands[0]['baseline_shares'])
+            e['baseline_src'] = f"T0首单 {cands[0]['file']}"
+    return act
 
-    if excess <= 0:
-        log.info(f"  [{code}] 真实持仓({real_shares}) <= 基线({baseline})，无超出份额，跳过")
-        return
 
-    today = _today()
-
-    # ── 读取 portfolio.json ───────────────────────────────────────────────
+def resolve_baseline(code, activity, snapshot):
+    """返回 (baseline, 来源)。优先级: T0首单基线 → 开盘快照 → _signal_state 兜底。"""
+    e = activity.get(code)
+    if e and e.get('baseline') is not None:
+        return int(e['baseline']), e['baseline_src']
+    if snapshot and code in snapshot:
+        return int(snapshot[code]), '开盘基线快照'
     try:
         with open(PORTFOLIO_JSON, encoding='utf-8') as f:
             pf = json.load(f)
-    except Exception as ex:
-        log.error(f"  [{code}] 读 portfolio.json 失败，跳过: {ex}")
-        return
+        v = (pf.get('_signal_state', {}).get(code) or {}).get('shares')
+        if v is None:
+            v = (pf.get('positions', {}).get(code) or {}).get('shares')
+        if v is not None:
+            return int(v), '兜底 _signal_state（基线缺失）'
+    except Exception:
+        pass
+    return None, '基线缺失'
 
-    sig = pf.setdefault('_signal_state', {}).setdefault(code, {})
 
-    # ── 幂等检查 ──────────────────────────────────────────────────────────
-    leg_added = sig.setdefault('t0_leg_added', {})
-    if leg_added.get(pair_id) == today:
-        log.info(f"  [{code}] [T0转持仓] 配对 {pair_id} 今日已处理过，跳过（幂等）")
-        return
+def describe_t0_activity(act) -> str:
+    """把配对文件翻译成人读的"原因"（只写日志，不参与决策）。"""
+    if not act:
+        return '无T0记录'
+    legs = []
+    for side in ('buy', 'sell'):
+        for o in act.get('orders', []):
+            if o['side'] != side:
+                continue
+            legs.append(f"t0_{side} {o['shares']}股@{o['price']:.3f} "
+                        f"status={o['status'] or 'unknown'}"
+                        f"{' contract=' + o['contract'] if o['contract'] else ''}")
+    for it in act.get('intents', []):
+        legs.append(f"intent {it['action']} status={it['status'] or '未标注'}")
+    if not legs:
+        return '无T0订单文件'
+    sides = {o['side'] for o in act.get('orders', [])}
+    tail = ' → 单边腿（配对不完整）' if len(sides) == 1 else ''
+    return ' + '.join(legs) + tail
 
-    # ── 更新 add_count ────────────────────────────────────────────────────
-    old_count = int(sig.get('add_count', 0))
-    new_count = old_count + 1
-    sig['add_count'] = new_count
 
-    # ── 对齐 _signal_state 持仓字段 ───────────────────────────────────────
-    sig['shares']   = real_shares
-    if real_avg_cost > 0:
-        sig['avg_cost'] = real_avg_cost
+# ── 行情 / 涨跌停 ────────────────────────────────────────────────────────
 
-    # ── 对齐 positions[code] ──────────────────────────────────────────────
-    pos = pf.setdefault('positions', {}).setdefault(code, {})
-    pos['shares']    = real_shares
-    pos['available'] = real_available
-    if real_avg_cost > 0:
-        pos['avg_cost'] = real_avg_cost
-
-    # ── 标记幂等 key ──────────────────────────────────────────────────────
-    leg_added[pair_id] = today
-
-    # ── 写回 portfolio.json ───────────────────────────────────────────────
+def get_quote(code) -> dict:
     try:
-        with open(PORTFOLIO_JSON, 'w', encoding='utf-8') as f:
-            json.dump(pf, f, ensure_ascii=False, indent=2)
+        from market_data import fetch_realtime_quotes
+        return (fetch_realtime_quotes([code]) or {}).get(code) or {}
     except Exception as ex:
-        log.error(f"  [{code}] 写 portfolio.json 失败: {ex}")
-        return
+        log.warning(f"  [{code}] 行情获取失败: {ex}")
+        return {}
 
-    log.info(
-        f"[T0转持仓] {code} 单腿成交{excess}股转普通持仓，"
-        f"加仓次数 {old_count}→{new_count}（已用掉一个金字塔名额）"
-        f"  real={real_shares} available={real_available} avg_cost={real_avg_cost}"
-    )
+
+def calc_close_limit_price(code, action, quote):
+    """平仓限价：买用卖一/现价，卖用买一/现价，并按当日涨跌停夹边界。
+
+    返回 (price, limit_down, limit_up, note)；price<=0 表示不可下单。
+    """
+    from money_manager import day_price_limits
+
+    try:
+        cur = float(quote.get('price') or 0)
+        prev_close = float(quote.get('prev_close') or 0)
+    except (TypeError, ValueError):
+        cur, prev_close = 0.0, 0.0
+
+    limit_down, limit_up = day_price_limits(code, prev_close, cur)
+    if limit_up <= 0 or limit_down <= 0:
+        return 0.0, limit_down, limit_up, f'涨跌停价无效(昨收={prev_close}, 现价={cur})'
+
+    label = '卖一' if action == 'buy' else '买一'
+    try:
+        raw = float((quote.get('ask1') if action == 'buy' else quote.get('bid1')) or 0)
+    except (TypeError, ValueError):
+        raw = 0.0
+    if raw <= 0:
+        raw, label = cur, '现价'
+    if raw <= 0:
+        return 0.0, limit_down, limit_up, '现价/盘口均不可用'
+
+    price = round(min(max(raw, limit_down), limit_up), 3)
+    note = ''
+    if abs(price - raw) > 1e-9:
+        note = f'{label}{raw:.3f} 越界，按涨跌停边界取 {price:.3f}'
+    return price, limit_down, limit_up, note
+
+
+# ── 撤单 / 查在途 ────────────────────────────────────────────────────────
+
+def _cancel_contract_only(contract) -> bool:
+    """只撤指定合同号（绝不降级全撤，避免误撤别的标的）。"""
+    if not contract or contract == 'pending':
+        return False
+    try:
+        from broker_frida import ThsBroker
+        ThsBroker().cancel_contract(contract, real=True)
+        log.info(f"  撤单成功(frida) contract={contract}")
+        return True
+    except Exception as ex:
+        log.warning(f"  frida 撤单失败({ex})，回退 EvolvingSim")
+    try:
+        from evolving.evolving import EvolvingSim
+        r = EvolvingSim().revokeEntrust(revokeType='contractNo', contractNo=contract)
+        time.sleep(2)
+        if r is not None:
+            log.info(f"  撤单成功(EvolvingSim) contract={contract}")
+            return True
+    except Exception as ex:
+        log.error(f"  EvolvingSim 撤单异常: {ex}")
+    return False
+
+
+def _mark_order_cancelled(fname: str) -> None:
+    path = os.path.join(ORDERS_DIR, fname)
+    try:
+        with open(path, encoding='utf-8') as f:
+            d = json.load(f)
+        d['status'] = 'cancelled'
+        d['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        tmp = f"{path}.tmp{os.getpid()}"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception as ex:
+        log.warning(f"  标记订单 cancelled 失败 {fname}: {ex}")
+
+
+def _cancel_pending_t0_legs(code, act):
+    """撤掉该标的今日未成交的 T0 腿，防补平后对侧腿再成交造成双倍敞口。"""
+    pending = [o for o in (act or {}).get('orders', [])
+               if str(o.get('status') or '') in ('pending', 'pending_confirm', 'partial')]
+    if not pending:
+        return True, []
+    for o in pending:
+        contract = str(o.get('contract') or '')
+        if DRY_RUN or VERIFY:
+            log.info(f"  [{'VERIFY' if VERIFY else 'DRY-RUN'}] 将撤未成交T0腿 "
+                     f"{code} {o.get('side')} contract={contract or 'pending'}")
+            continue
+        if not _cancel_contract_only(contract):
+            log.error(f"[ALERT] [{code}] 撤未成交T0腿失败 contract={contract or 'pending'}，"
+                      f"跳过补平（防对侧腿成交造成双倍敞口），请人工处理")
+            return False, []
+        _mark_order_cancelled(o['file'])
+    return True, [str(o.get('contract') or '') for o in pending]
+
+
+def _has_pending_order(code, action):
+    """当日是否已有同方向未成交委托（补平幂等检查）。"""
+    direction = '买入' if action == 'buy' else '卖出'
+    try:
+        from broker_frida import ThsBroker
+        for o in ThsBroker().get_orders() or []:
+            if o.get('code') != code or direction not in str(o.get('direction') or ''):
+                continue
+            st = str(o.get('status') or '')
+            if '撤' in st or '废' in st:
+                continue
+            if _is_filled_status(st):
+                continue
+            return True, o
+    except Exception as ex:
+        log.warning(f"  [{code}] 查当日委托失败: {ex}")
+    return False, None
+
+
+def _clear_chase_state_for_code(code: str) -> None:
+    """补平成功后清掉该标的今日追价记录，避免收盘后继续追。"""
+    chase_path = os.path.join(ORDERS_DIR, 't0_chase_state.json')
+    if not os.path.exists(chase_path):
+        return
+    try:
+        with open(chase_path, encoding='utf-8') as f:
+            chase = json.load(f)
+        keys = [k for k in chase if k.startswith(_today_compact()) and code in k]
+        if not keys:
+            return
+        for k in keys:
+            del chase[k]
+        with open(chase_path, 'w', encoding='utf-8') as f:
+            json.dump(chase, f, ensure_ascii=False, indent=2)
+        log.info(f"  [{code}] 追价记录已清除: {keys}")
+    except Exception as ex:
+        log.warning(f"  [{code}] 清除追价记录失败: {ex}")
+
+
+# ── 补平下单 / 等成交 ────────────────────────────────────────────────────
+
+def _place_close_order(action, code, shares, price):
+    """补平下单：frida 优先；已发出但未确认时禁止回退（防重复下单）。"""
+    if DRY_RUN or VERIFY:
+        log.info(f"  [{'VERIFY' if VERIFY else 'DRY-RUN'}] 跳过真实下单: "
+                 f"{action} {code} {shares}股 @{price:.3f}")
+        return True, 'DRY-RUN', {'via': 'dry-run'}
+
+    try:
+        from broker_frida import ThsBroker
+        r = ThsBroker().place(action, code, shares, price) or {}
+        contract = str(r.get('contract') or '').strip()
+        log.info(f"  下单通道=frida 合同号={contract or '未取到'} status={r.get('status')}")
+        return bool(contract), contract, r
+    except Exception as ex:
+        msg = str(ex)
+        if '已发送' in msg or '未拿到合同号' in msg:
+            log.error(f"  frida 已发送但未确认，禁止回退重下: {msg}")
+            return False, '', {'error': msg}
+        log.warning(f"  frida 下单失败({msg})，回退 EvolvingSim")
+
+    ok, raw = place_order_market(action, code, shares, price)
+    contract = find_contract_from_entrust(code, action, shares) if ok else ''
+    log.info(f"  下单通道=EvolvingSim 合同号={contract or '未取到'}")
+    return ok, contract, raw
+
+
+def _wait_close_fill(code, action, shares, contract, baseline, fallback_price,
+                     timeout=None):
+    """等补平成交：先看委托状态，再看真实持仓是否回归基线。"""
+    timeout = CLOSE_MARKET_WAIT if timeout is None else timeout
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(CLOSE_POLL_INTERVAL)
+        if contract and contract != 'DRY-RUN':
+            try:
+                from broker_frida import ThsBroker
+                o = ThsBroker().query_contract(contract)
+                if o and _is_filled_status(o.get('status')):
+                    px = float(o.get('avg_fill_price') or 0) or fallback_price
+                    log.info(f"  ✅ 成交确认: contract={contract} "
+                             f"状态={o.get('status')} 成交价={px:.3f}")
+                    return True, px
+            except Exception:
+                pass
+        h = read_holding(code)
+        if h is not None and abs(h - baseline) <= _SHARE_TOLERANCE:
+            log.info(f"  ✅ 成交确认: 真实持仓已回归基线 real={h} baseline={baseline}")
+            return True, fallback_price
+        log.info(f"  等待成交中… 合同号={contract or '未取到'}")
+    return False, fallback_price
+
+
+def reconcile_code(code, diff, baseline, real_before, act):
+    """按 real-baseline 差额补平。True=已补平/干跑；False=失败(记过夜风险)；None=无需动作。"""
+    action = 'buy' if diff < 0 else 'sell'
+    direction = '买入' if action == 'buy' else '卖出'
+    min_shares = _min_shares()
+    shares = abs(int(diff)) // 100 * 100
+    reason = describe_t0_activity(act)
+
+    log.info(f"[补平] 标的={code} baseline={baseline} real={real_before} diff={diff} "
+             f"→ 需{direction} {shares}股 | 配对解释: {reason}")
+
+    if shares < min_shares:
+        log.error(f"[ALERT] [{code}] 差额 {abs(diff)} 不足 {min_shares} 股，无法补平，请人工核对")
+        return False
+
+    # 先撤掉未成交的 T0 腿（可能是这条敞口的对侧腿），再按最新持仓补平
+    ok, _canceled = _cancel_pending_t0_legs(code, act)
+    if not ok:
+        return False
+
+    # 撤单后重新取真实持仓，按最新差额下单（撤单期间可能有成交）
+    real_now = read_holding(code)
+    if real_now is None:
+        log.error(f"[ALERT] [{code}] 补平前读真实持仓失败，不交易")
+        return False
+    diff_now = real_now - baseline
+    if abs(diff_now) < min_shares:
+        log.info(f"  [{code}] 撤单后差额={diff_now}，已无敞口，无需补平")
+        return None
+
+    if (diff_now > 0) != (diff > 0):
+        action = 'buy' if diff_now < 0 else 'sell'
+        direction = '买入' if action == 'buy' else '卖出'
+    diff, real_before = diff_now, real_now
+    shares = abs(diff) // 100 * 100
+
+    # 补平幂等：已有同方向挂单（例如上一轮补平单还在途）则本轮不再下
+    has_pending, order = _has_pending_order(code, action)
+    if has_pending:
+        log.info(f"  [{code}] 已有{direction}挂单 contract={order.get('contract')} "
+                 f"status={order.get('status')}，本次跳过（幂等）")
+        return None
+
+    if action == 'sell':
+        avail = read_available(code)
+        if avail is not None and 0 <= avail < shares:
+            log.warning(f"  [{code}] 可用 {avail} < 需补卖 {shares}，按可用数量下单")
+            shares = avail // 100 * 100
+        if shares < min_shares:
+            log.error(f"[ALERT] [{code}] 可补卖数量不足 {min_shares} 股（可用={avail}），请人工核对")
+            return False
+
+    quote = get_quote(code)
+    price, limit_down, limit_up, note = calc_close_limit_price(code, action, quote)
+    if price <= 0:
+        log.error(f"[ALERT] [{code}] 平仓价无效: {note}")
+        return False
+    log.info(f"  [{code}] 平仓价={price:.3f}（{note or '盘口/现价'}） "
+             f"涨停={limit_up:.3f} 跌停={limit_down:.3f} 现价={quote.get('price')}")
+
+    if DRY_RUN or VERIFY:
+        log.info(f"  [{'VERIFY' if VERIFY else 'DRY-RUN'}] 将补平 {direction} {code} "
+                 f"{shares}股 @{price:.3f}（差额={diff}，涨跌停边界校验通过）")
+        log.info(f"[平仓完成(干跑)] 标的={code} 差额={diff} 方向={direction} 合同号=DRY-RUN "
+                 f"成交价={price:.3f} 数量={shares} 平仓后持仓(预期)={baseline}")
+        return True
+
+    ok, contract, raw = _place_close_order(action, code, shares, price)
+    if not ok:
+        log.error(f"[ALERT] [{code}] 补平下单失败: {raw}")
+        return False
+
+    filled, fill_price = _wait_close_fill(code, action, shares, contract, baseline, price)
+    if not filled:
+        log.warning(f"  [{code}] {CLOSE_MARKET_WAIT}s 未确认成交，撤单")
+        if contract:
+            _cancel_contract_only(contract)
+        log.error(f"[ALERT] [{code}] 补平未成交已撤单，存在过夜风险（差额={diff}）")
+        return False
+
+    real_after = read_holding(code)
+    log.info(f"[平仓完成] 标的={code} 差额={diff} 方向={direction} 合同号={contract} "
+             f"成交价={fill_price:.3f} 数量={shares} 平仓后持仓={real_after} "
+             f"(baseline={baseline} real_before={real_before}) 依据={reason}")
+    _log_record(code, action, shares, fill_price, '真实持仓vs基线补平', True, contract)
+    _clear_chase_state_for_code(code)
+
+    if real_after is not None and abs(real_after - baseline) > _SHARE_TOLERANCE:
+        log.error(f"[ALERT] [{code}] 补平后仍有差额 real={real_after} baseline={baseline}，请人工核对")
+        return False
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1050,194 +1266,55 @@ def _handle_t0_leg_to_position(code: str, pair_id: str, buy_shares: int, status:
 # ══════════════════════════════════════════════════════════════════════════
 
 def main():
-    mode_tag = '[DRY-RUN]' if DRY_RUN else ''
+    mode_tag = '[DRY-RUN]' if DRY_RUN else ('[VERIFY]' if VERIFY else '')
     log.info(f"=== T0尾盘平仓开始 {mode_tag} ===")
 
-    pairs = scan_t0_pairs()
-    if not pairs:
-        log.info("无当天T0配对，直接退出")
-        return
+    holdings, src = read_all_holdings()
+    if holdings is None:
+        log.error(f"[ALERT] 无法读取真实持仓（{src}），为安全不交易，退出码 2")
+        sys.exit(2)
 
-    log.info(f"找到 {len(pairs)} 组T0配对: " + ", ".join(p['pair_id'] for p in pairs))
+    activity = scan_t0_activity()
+    try:
+        from core.daily_baseline import load_baseline
+        snapshot = load_baseline()
+    except Exception as ex:
+        log.warning(f"  读取开盘基线快照失败: {ex}")
+        snapshot = {}
 
-    for pair in pairs:
-        code       = pair['code']
-        pair_id    = pair['pair_id']
-        buy_order  = pair['buy_order']
-        sell_order = pair['sell_order']
+    log.info(f"真实持仓来源={src}，持仓 {len(holdings)} 只；当日T0活动 {len(activity)} 只；"
+             f"开盘基线快照 {len(snapshot)} 只")
 
-        log.info(f"--- 配对 {pair_id} ---")
+    # 逐只打印 baseline / real / diff（无动作也打），配对文件只作解释
+    rows = []
+    for code in sorted(set(holdings) | set(activity)):
+        real = int(holdings.get(code, 0))
+        base, bsrc = resolve_baseline(code, activity, snapshot)
+        diff = (real - base) if base is not None else None
+        rows.append((code, real, base, diff, activity.get(code)))
+        explain = describe_t0_activity(activity.get(code)) if code in activity else '无当日T0活动'
+        log.info(f"[核对] 标的={code} baseline={base if base is not None else '缺失'}"
+                 f"({bsrc}) real={real} diff={diff if diff is not None else 'N/A'} | {explain}")
 
-        # ── 三方成交检测 ───────────────────────────────────────────────
-        status = detect_leg_status(code, buy_order, sell_order, pair_id)
-        ev = status['evidence']
-        buy_filled  = status['buy_filled']
-        sell_filled = status['sell_filled']
-        iface_ok    = status['iface_ok']
-        entrusts    = status.get('_entrusts')   # 当日委托列表，供幂等复用
-
-        log.info(f"  [源1 文件状态]  {ev['file']}")
-        log.info(f"  [源2 真实持仓]  {ev['holdings']}")
-        log.info(f"  [源3 当日委托]  {ev['entrust']}")
-
-        # ── 判断需要平仓的方向 ─────────────────────────────────────────
-        if buy_filled and sell_filled:
-            log.info(f"  [{pair_id}] 两腿均已成交（文件/委托确认），跳过")
+    for code, real, base, diff, act in rows:
+        if diff is None:
+            log.warning(f"  [{code}] 基线缺失，无法判定，跳过（请人工核对）")
             continue
-
-        if not buy_filled and not sell_filled:
-            inconclusive = status.get('inconclusive', False)
-            if not iface_ok:
-                local_level   = status.get('local_level', 3)
-                skip_no_alert = status.get('skip_no_alert', False)
-                single_side   = status.get('single_side', '')
-
-                # ── 无法确认：buy==sell 且 local≈baseline，绝不断言已成交 ──
-                if inconclusive:
-                    shares = int(buy_order.get('shares', 0))
-                    buy_price  = buy_order.get('price', '?')
-                    sell_price = sell_order.get('price', '?')
-                    buy_cont   = buy_order.get('contract', '?')
-                    sell_cont  = sell_order.get('contract', '?')
-                    local_val  = get_local_position_shares(code)
-                    log.error(
-                        f"[ALERT] [{pair_id}] 无法确认成交状态，请人工核对！\n"
-                        f"  配对方向: 买入{shares}股@{buy_price} / 卖出{shares}股@{sell_price}\n"
-                        f"  买入合同号: {buy_cont}  卖出合同号: {sell_cont}\n"
-                        f"  当前持仓: {local_val} 股\n"
-                        f"  原因: 买入量==卖出量，本地持仓无法区分双边成交/双边未成\n"
-                        f"  证据: {status['evidence']['holdings']}"
-                    )
-                    _overnight_risk.append((code, shares))
-
-                # ── 第二级：本地数据可用且持仓变化有明确判断 ──
-                elif local_level == 2:
-                    if skip_no_alert:
-                        log.info(
-                            f"  [{pair_id}] [第二级降级] 接口不可用，"
-                            f"本地持仓未异常（buy≠sell），判定两腿均未成交，无过夜风险，跳过"
-                        )
-                        log.info(f"  [{pair_id}] 降级依据: {status['evidence']['holdings']}")
-                    elif single_side:
-                        shares = int(buy_order.get('shares', 0))
-                        log.error(
-                            f"[ALERT] [第二级降级] T0 单边暴露，存在过夜风险: "
-                            f"{code} {shares} 股，方向={single_side}"
-                        )
-                        log.error(f"  [{pair_id}] 风险依据: {status['evidence']['holdings']}")
-                        _overnight_risk.append((code, shares))
-                    else:
-                        shares = int(buy_order.get('shares', 0))
-                        log.warning(
-                            f"[ALERT] [第二级降级] 接口不可用，本地数据未能明确判断: "
-                            f"{code} {shares} 股"
-                        )
-                        log.warning(f"  [{pair_id}] 依据: {status['evidence']['holdings']}")
-                        _overnight_risk.append((code, shares))
-                else:
-                    # 第三级：本地数据矛盾或缺失 → 严重告警
-                    shares = int(buy_order.get('shares', 0))
-                    log.error(
-                        f"[ALERT] [第三级严重] 接口不可用且本地数据矛盾/缺失，"
-                        f"无法确认成交状态，存在过夜风险: {code} {shares} 股"
-                    )
-                    log.error(f"  [{pair_id}] 依据: {status['evidence']['holdings']}")
-                    _overnight_risk.append((code, shares))
-            else:
-                # 接口正常但三方均未确认成交 → 判定两腿均未成交，无过夜风险
-                log.info(f"  [{pair_id}] 两腿均未成交（接口正常，三方均为 pending），无过夜风险，可手动撤单，跳过")
+        if code not in activity:
+            if diff:
+                log.info(f"  [{code}] 非T0标的（diff={diff} 来自普通买卖/建仓），不动作")
             continue
-
-        if buy_filled and not sell_filled:
-            filled_order  = buy_order
-            pending_order = sell_order
-            close_action  = 'sell'
-        else:  # sell_filled and not buy_filled
-            filled_order  = sell_order
-            pending_order = buy_order
-            close_action  = 'buy'
-
-        shares   = int(filled_order['shares'])
-        price    = float(filled_order['price'])
-        contract = pending_order.get('contract', 'pending')
-
-        log.info(f"  [{pair_id}] 已成交腿={filled_order['action']} {shares}股 @{price}，"
-                 f"需撤 {pending_order['action']} contractNo={contract}，平仓方向={close_action}")
-
-        # ── 防仓位走高：买入腿成交、卖出腿未成交 → 额外份额转普通持仓 ──────
-        # 只在 buy_filled and not sell_filled 时执行；接口不可用时跳过
-        if buy_filled and not sell_filled:
-            _handle_t0_leg_to_position(
-                code=code,
-                pair_id=pair_id,
-                buy_shares=int(buy_order.get('shares', 0)),
-                status=status,
-            )
-
-        # ── 数量校验 ──────────────────────────────────────────────────
+        if diff == 0:
+            log.info(f"  [{code}] diff=0，无需动作 | 配对解释: {describe_t0_activity(act)}")
+            continue
         try:
-            import yaml as _yaml
-            with open(os.path.join(ROOT_DIR, 'config.yaml')) as _f:
-                min_shares = int(_yaml.safe_load(_f).get('min_shares', 100))
-        except Exception:
-            min_shares = 100
-        if shares < min_shares:
-            log.warning(f"[{code}] 数量 {shares} < {min_shares}，跳过（告警）")
-            _log_record(code, close_action, shares, price, '数量不足跳过', False, contract)
-            continue
-        if shares % 100 != 0:
-            shares = (shares // 100) * 100
-            if shares < min_shares:
-                log.warning(f"[{code}] 修正后数量 {shares} < {min_shares}，跳过")
-                _log_record(code, close_action, shares, price, '数量不足跳过', False, contract)
-                continue
-            log.info(f"  [{code}] 数量修正为 {shares}（100的整数倍）")
+            result = reconcile_code(code, diff, base, real, act)
+        except Exception as ex:
+            log.error(f"[ALERT] [{code}] 补平过程异常: {ex}")
+            result = False
+        if result is False:
+            _overnight_risk.append((code, abs(diff)))
 
-        # ── 幂等检查 ──────────────────────────────────────────────────
-        # 避免重复跑时重复下单
-        if not DRY_RUN:
-            if close_action == 'sell':
-                # 若已有挂卖单 → 上次已处理过
-                if entrusts is not None and _entrust_has_pending_sell(entrusts):
-                    log.info(f"  [{code}] 已有挂卖单，跳过（幂等）")
-                    continue
-                # 若持仓已回归基准 → 已平仓
-                real = get_real_holding_shares(code)
-                if real >= 0:
-                    baseline, baseline_src = get_baseline_shares(code, buy_order)
-                    if real <= baseline:
-                        log.info(f"  [{code}] 持仓已回归基准（real={real} baseline={baseline} 来自:{baseline_src}），跳过（幂等）")
-                        continue
-            else:  # buy
-                if entrusts is not None and _entrust_has_pending_buy(entrusts):
-                    log.info(f"  [{code}] 已有挂买单，跳过（幂等）")
-                    continue
-
-        # ── 撤单 ──────────────────────────────────────────────────────
-        if DRY_RUN:
-            log.info(f"  [DRY-RUN] 将撤单 {pending_order['action']} contractNo={contract}")
-            revoke_ok = True
-        else:
-            revoke_ok = revoke_order(contract)
-
-        if not revoke_ok:
-            log.error(f"  [{code}] 撤单失败，跳过平仓")
-            _log_record(code, close_action, shares, price, '撤单失败跳过', False, contract)
-            continue
-
-        log.info(f"  [{code}] 平仓: {close_action} {shares}股（原成交价 {price}）原因=T0尾盘平仓 → 进入市价/限价循环")
-
-        # ── 单腿平仓循环（市价→跌停/涨停→重试到14:57）─────────────────
-        ok = close_single_leg(code, pair_id, close_action, shares)
-        _log_record(code, close_action, shares, 0.0, 'T0尾盘平仓(市价循环)', ok, contract)
-
-        if ok:
-            log.info(f"  [{code}] 平仓{'成功（dry-run）' if DRY_RUN else '成功'}")
-        else:
-            # close_single_leg 内部已打印 ALERT，此处追加过夜风险记录
-            _overnight_risk.append((code, shares))
-
-    # ── 最终告警 + 退出码 ────────────────────────────────────────────────
     log.info("=== T0尾盘平仓结束 ===")
 
     if _overnight_risk:
@@ -1251,14 +1328,9 @@ def main():
 
 
 if __name__ == '__main__':
-    import fcntl as _fcntl
-    _lock_path = os.path.join(ROOT_DIR, ".t0_close.lock")
-    _lock_fd = open(_lock_path, "w")
-    try:
-        _fcntl.flock(_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-    except BlockingIOError:
-        print("[SKIP] 另一进程正在执行，跳过本次")
-        _lock_fd.close()
+    from core.exec_lock import ExecLock
+    _lock = ExecLock('t0_close')
+    if not _lock.acquire():
         sys.exit(0)
     try:
         if VERIFY:
@@ -1266,5 +1338,4 @@ if __name__ == '__main__':
         else:
             main()
     finally:
-        _fcntl.flock(_lock_fd, _fcntl.LOCK_UN)
-        _lock_fd.close()
+        _lock.release()
