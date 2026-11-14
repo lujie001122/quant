@@ -4,9 +4,9 @@
 
 set -euo pipefail
 
-APP_COPY="/tmp/thsx2.app"
+APP_COPY="/tmp/ths_lab/THSX.app"  # 全仓唯一启动路径（ths_app.py）
 BUNDLE_ID="cn.com.10jqka.thsx"
-PROC_NAME="THSX"
+PROC_NAME="THSX.app/Contents/MacOS/同花顺"
 ORIG_NAME="同花顺"
 
 _pgrep_thsx() { pgrep -f "$PROC_NAME" 2>/dev/null || true; }

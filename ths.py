@@ -18,13 +18,14 @@ import subprocess
 import sys
 import time
 
+from ths_app import app_pid
 from ths_cli import (_get_field, _parse_ord_row, _parse_pos_row, _parse_trd_row,
                      _ORD_FIELD_HTBH, _ACCT_NUM_FIELDS, _cred_md5)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SOCK_PATH = "/tmp/ths_bridge.sock"
 BRIDGE_LOG = "/tmp/ths_bridge.log"
-BRIDGE_START_TIMEOUT = 30.0
+BRIDGE_START_TIMEOUT = 60.0  # 冷启动要等进程(20s)+窗口(20s)
 
 _TRD_FIELD_DATE = (2141,)        # 成交日期（委托行用 2139）
 _PRIME_ERR = ("cache_empty_need_prime", "need_open_positions_ui",
@@ -87,12 +88,19 @@ class Ths:
         raise ThsError("start_bridge", f"桥启动超时（{BRIDGE_START_TIMEOUT:.0f}s）")
 
     def _start_bridge(self):
+        """与 ths_cli 一致：attach 已运行进程（--pid）+ --no-prime。
+
+        ★ 桥只在「同花顺进程确实不在」时才启动 THSX.app，永不 SIGKILL 正在运行的进程。
+          人工重启只能显式执行：ths_bridge.py --force-restart。
+        """
         py = os.path.join(SCRIPT_DIR, ".venv/bin/python3")
         if not os.path.isfile(py):
             py = sys.executable
         cmd = [py, os.path.join(SCRIPT_DIR, "ths_bridge.py")]
-        # 不指定 --pid、不跳过 prime：桥自己保证「先杀重开 App → 装钩子 → 建窗口
-        # → 拿到下单面板实例」，这是下单接口能用的前提。
+        pid = app_pid()
+        if pid:
+            cmd += ["--pid", str(pid)]
+        cmd += ["--no-prime"]
         subprocess.Popen(cmd, stdout=open(BRIDGE_LOG, "a"),
                          stderr=subprocess.STDOUT, start_new_session=True)
 

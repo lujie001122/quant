@@ -10,11 +10,12 @@
 """
 import os
 import sys
-import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+from ths_app import APP_PATH, force_restart, wait_window  # 唯一启动/重启入口
 
 NO_REVOKE = "--no-revoke" in sys.argv
 DRY_RUN = "--dry-run" in sys.argv
@@ -64,13 +65,14 @@ def revoke_all_pending() -> None:
 
 
 def restart() -> None:
+    """显式人工/定时重启：这是全仓唯一允许杀同花顺的入口。"""
     if DRY_RUN:
-        print("[DRY-RUN] 将执行: pkill -9 -x 同花顺 && open -a /Applications/同花顺.app")
+        print(f"[DRY-RUN] 将执行: SIGKILL 现有同花顺 && open {APP_PATH}")
         return
-    os.system("pkill -9 -x 同花顺 2>/dev/null")
-    time.sleep(3)
-    os.system("open -a /Applications/同花顺.app")
-    time.sleep(5)
+    pid = force_restart()
+    if not wait_window():
+        print(f"⚠ 已启动 {APP_PATH} pid={pid}，但窗口暂不可用（锁屏/UI 未就绪）")
+    print(f"   THSX.app pid={pid}")
 
 
 def main() -> None:

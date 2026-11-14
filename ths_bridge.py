@@ -12,7 +12,6 @@ Socket：/tmp/ths_bridge.sock
 import json
 import logging
 import os
-import signal
 import socket
 import struct
 import subprocess
@@ -22,6 +21,8 @@ import time
 from typing import Optional
 
 import frida
+
+import ths_app
 
 # ── 路径 ─────────────────────────────────────────────────────────────────────
 AGENT_JS   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ths_agent.js")
@@ -35,11 +36,6 @@ try:
     FRAME_KEEP_DAYS = int(os.environ.get("THS_FRAME_KEEP_DAYS", "7"))
 except ValueError:
     FRAME_KEEP_DAYS = 7
-APP_COPY  = "/tmp/ths_lab/THS.app"
-APP_BIN   = "/tmp/ths_lab/THS.app/Contents/MacOS/同花顺"
-APP_ORIG_NAME = "同花顺"
-BUNDLE_ID = "com.ths.lab"
-APP_COPY_PATH_PREFIX = "/private/tmp/ths_lab"  # realpath of /tmp/ths_lab on macOS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -322,161 +318,20 @@ def humanize_records(records: list) -> list:
     return out
 
 
-# ── 进程管理 ──────────────────────────────────────────────────────────────────
-
-def _get_copy_pid() -> Optional[int]:
-    """返回副本 /tmp/thsx2.app 的 pid，没有返回 None。"""
-    try:
-        out = subprocess.check_output(["pgrep", "-x", APP_ORIG_NAME], text=True)
-        for pid_s in out.split():
-            pid = int(pid_s.strip())
-            try:
-                cmd = subprocess.check_output(["ps", "-p", str(pid), "-o", "args="], text=True).strip()
-                if APP_COPY_PATH_PREFIX in cmd:
-                    return pid
-            except subprocess.CalledProcessError:
-                pass
-    except subprocess.CalledProcessError:
-        pass
-    return None
-
-
-def _get_orig_pid() -> Optional[int]:
-    """返回原版 /Applications/同花顺.app 的 pid，没有返回 None。"""
-    try:
-        out = subprocess.check_output(["pgrep", "-x", APP_ORIG_NAME], text=True)
-        for pid_s in out.split():
-            pid = int(pid_s.strip())
-            try:
-                cmd = subprocess.check_output(["ps", "-p", str(pid), "-o", "args="], text=True).strip()
-                if "/Applications/" in cmd:
-                    return pid
-            except subprocess.CalledProcessError:
-                pass
-    except subprocess.CalledProcessError:
-        pass
-    return None
-
+# ── 进程管理（唯一入口：ths_app.py）──────────────────────────────────────────
 
 def ensure_app() -> int:
-    """确保副本在跑；返回 PID。"""
-    # 1. 杀原版（只杀 /Applications/ 路径的）
-    orig_pid = _get_orig_pid()
-    if orig_pid:
-        log.info("killing original 同花顺 pid=%d", orig_pid)
-        os.kill(orig_pid, signal.SIGKILL)
-        time.sleep(0.5)
+    """确保 THSX.app 在跑并返回 pid。
 
-    # 2. 副本若已在跑：杀掉重开。JYMaiMaiView（下单面板）实例只在窗口创建时产生，
-    #    agent 的视图钩子必须赶在它之前装好，否则拿不到下单入口的实例指针。
-    copy_pid = _get_copy_pid()
-    if copy_pid:
-        log.info("killing running copy pid=%d (restart to install hooks first)", copy_pid)
-        try:
-            os.kill(copy_pid, signal.SIGKILL)
-        except OSError:
-            pass
-        time.sleep(1.5)
-
-    # 3. 启动副本
-    # 确保 Info.plist 禁止窗口恢复（重签后会丢这个 key）
-    _ensure_plist_no_restore()
-    log.info("launching %s", APP_COPY)
-    subprocess.Popen(
-        ["open", APP_COPY],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    # 等待进程出现，最多 25 秒
-    for _ in range(50):
-        copy_pid = _get_copy_pid()
-        if copy_pid:
-            break
-        time.sleep(0.5)
-    else:
-        raise RuntimeError("thsx2.app did not start within 25 s")
-
-    # 等窗口出现，最多 30 秒
-    for _ in range(60):
-        wins = _count_windows()
-        if wins and wins > 0:
-            break
-        time.sleep(0.5)
-    _ensure_window()
-    return copy_pid
-
-
-def _ensure_plist_no_restore():
-    """确保 Info.plist 有 NSQuitAlwaysKeepsWindows=false，避免 StateRestoration 卡死。"""
-    plist = os.path.join(APP_COPY, "Contents", "Info.plist")
-    r = subprocess.run(
-        ["/usr/libexec/PlistBuddy", "-c", "Print :NSQuitAlwaysKeepsWindows", plist],
-        capture_output=True, text=True,
-    )
-    if "false" in r.stdout:
-        return  # 已存在
-    if "Does Not Exist" in r.stderr or r.returncode != 0:
-        subprocess.run(
-            ["/usr/libexec/PlistBuddy", "-c", "Add :NSQuitAlwaysKeepsWindows bool false", plist],
-            check=False,
-        )
-    else:
-        subprocess.run(
-            ["/usr/libexec/PlistBuddy", "-c", "Set :NSQuitAlwaysKeepsWindows false", plist],
-            check=False,
-        )
-    # 修改 plist 后必须重签
-    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", APP_COPY],
-                   capture_output=True)
-    log.info("patched Info.plist + re-signed")
-
-
-def _count_windows() -> int:
-    """用 AppleScript 读窗口数。"""
-    script = '''
-tell application "System Events"
-    set theProcs to processes whose bundle identifier is "com.ths.lab"
-    if theProcs is {} then
-        set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
-    end if
-    if theProcs is {} then return 0
-    return count of (windows of item 1 of theProcs)
-end tell'''
-    try:
-        r = subprocess.run(["osascript", "-e", script],
-                           timeout=5, capture_output=True, text=True)
-        return int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
-    except Exception:
-        return 0
-
-
-def _ensure_window():
-    """如果没有窗口，用 AppleScript 激活 + Cmd+N。"""
-    script = """
-tell application "System Events"
-    set theProcs to processes whose bundle identifier is "com.ths.lab"
-    if theProcs is {} then
-        set theProcs to processes whose bundle identifier is "cn.com.10jqka.thsx"
-    end if
-    if theProcs is {} then return
-    set theProc to item 1 of theProcs
-    set winCount to count of (windows of theProc)
-    if winCount = 0 then
-        set frontmost of theProc to true
-        delay 0.5
-        keystroke "n" using command down
-        delay 1
-    end if
-end tell
-"""
-    try:
-        subprocess.run(
-            ["osascript", "-e", script],
-            timeout=8,
-            capture_output=True,
-        )
-    except Exception as e:
-        log.warning("ensure_window AppleScript error: %s", e)
+    ★ 默认绝不杀进程：进程在就直接返回，不在才启动（/tmp/ths_lab/THSX.app）。
+      启动后等窗口有超时，超时明确报错；进程已在跑所以不阻断 attach。
+      人工重启只能走 --force-restart。
+    """
+    pid = ths_app.ensure_running(require_window=False)
+    if not ths_app.wait_window():
+        log.error("THSX.app 窗口 %.0fs 内不可用（锁屏/UI 未就绪）：pid=%d 已在跑，"
+                  "不杀进程，继续 attach", ths_app.APP_WINDOW_TIMEOUT, pid)
+    return pid
 
 
 # ── Frida 连接 ────────────────────────────────────────────────────────────────
@@ -511,8 +366,8 @@ class AgentSession:
         with self._lock:
             self._disconnect_locked()
             dev = frida.get_local_device()
-            log.info("spawning %s", APP_BIN)
-            pid = dev.spawn([APP_BIN])
+            log.info("spawning %s", ths_app.APP_BIN)
+            pid = dev.spawn([ths_app.APP_BIN])
             log.info("spawned pid=%d, attaching...", pid)
             session = dev.attach(pid)
             session.on("detached", self._on_detach)
@@ -594,16 +449,34 @@ _agent = AgentSession()
 
 # ── 重连循环 ──────────────────────────────────────────────────────────────────
 
-def reconnect_loop():
+def reconnect_loop(pid_hint: Optional[int] = None):
+    """断线重连：进程在 → 只重试 attach（绝不杀）；进程确实不在 → 才启动 THSX.app。"""
     backoff = 2
     while True:
         if not _agent.connected:
+            pid = None
+            if pid_hint and ths_app.pid_alive(pid_hint):
+                pid = pid_hint  # 人工 --pid 指定的进程，还活着就重试 attach 它
+            if pid is None:
+                pid = ths_app.app_pid()
+            if pid is None:
+                log.warning("同花顺进程不在，启动 %s（只启动，不杀任何进程）", ths_app.APP_PATH)
+                try:
+                    pid = ensure_app()
+                except Exception as e:
+                    log.error("启动 THSX.app 失败: %s — %ds 后重试", e, backoff)
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+                    continue
+                log.info("THSX.app 已启动 pid=%d，attach...", pid)
+            else:
+                log.warning("同花顺进程在 pid=%d 但 frida 未连接：重试 attach（不杀进程）", pid)
             try:
-                pid = ensure_app()
                 _agent.connect(pid)
                 backoff = 2
             except Exception as e:
-                log.error("reconnect failed: %s — retry in %ds", e, backoff)
+                log.error("attach pid=%d 失败: %s — %ds 后重试（进程保留，不杀）",
+                          pid, e, backoff)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30)
                 continue
@@ -873,6 +746,9 @@ def main():
     ap = _ap.ArgumentParser(description="ths_bridge — Frida agent bridge")
     ap.add_argument("--pid", type=int, default=None,
                     help="直接 attach 指定 pid，不自动启动/重启 app")
+    ap.add_argument("--force-restart", action="store_true",
+                    help="人工用：SIGKILL 现有同花顺并重启 %s（默认路径从不杀进程）"
+                         % ths_app.APP_PATH)
     ap.add_argument("--spawn", action="store_true",
                     help="用 frida spawn 启动副本，hook 在所有 ObjC init 之前生效（推荐）")
     ap.add_argument("--no-prime", action="store_true",
@@ -897,77 +773,80 @@ def main():
 
     _no_prime = getattr(args, "no_prime", False)
 
+    if args.force_restart:
+        log.warning("--force-restart：人工显式要求重启同花顺（默认路径从不杀进程）")
+        try:
+            pid = ths_app.force_restart()
+        except Exception as e:
+            log.error("force-restart 失败: %s", e)
+            sys.exit(1)
+        log.warning("force-restart 完成：THSX.app pid=%d", pid)
+        if args.pid is None:
+            args.pid = pid
+
+    def _prime_async():
+        if not _no_prime:
+            threading.Thread(target=_prime_trade_panel, daemon=True).start()
+
     if args.spawn:
-        # spawn 模式：先杀已有副本，再 spawn+attach，确保 hook 最早生效
-        copy_pid = _get_copy_pid()
-        if copy_pid:
-            log.info("killing existing copy pid=%d before spawn", copy_pid)
-            os.kill(copy_pid, signal.SIGKILL)
-            time.sleep(1)
-        _ensure_plist_no_restore()
+        # spawn 模式：需要空进程才能装上最早的 hook；已在跑就拒绝，绝不杀
+        running = ths_app.app_pid()
+        if running:
+            log.error("同花顺已在运行 pid=%d，--spawn 需要空进程，拒绝杀进程；"
+                      "人工重启请用 --force-restart", running)
+            sys.exit(1)
         try:
             _agent.spawn_connect()
         except Exception as e:
             log.error("spawn failed: %s", e)
             sys.exit(1)
-        if not _no_prime:
-            threading.Thread(target=_prime_trade_panel, daemon=True).start()
+        _prime_async()
 
         def _spawn_reconnect():
             while True:
                 time.sleep(5)
                 if not _agent.connected:
-                    log.warning("agent disconnected after spawn, re-spawning...")
                     try:
-                        c = _get_copy_pid()
-                        if c:
-                            os.kill(c, signal.SIGKILL)
-                            time.sleep(1)
-                        _agent.spawn_connect()
-                        if not _no_prime:
-                            _prime_trade_panel()
+                        pid = ths_app.app_pid()
+                        if pid:
+                            log.warning("spawn 后断开，进程在 pid=%d：只重试 attach（不杀）", pid)
+                            _agent.connect(pid)
+                            if not _no_prime:
+                                _prime_trade_panel()
+                        else:
+                            log.warning("进程已不在，重新 spawn %s", ths_app.APP_PATH)
+                            _agent.spawn_connect()
+                            if not _no_prime:
+                                _prime_trade_panel()
                     except Exception as e:
-                        log.error("re-spawn failed: %s", e)
-        t = threading.Thread(target=_spawn_reconnect, daemon=True)
-        t.start()
+                        log.error("spawn 重连失败: %s（不杀进程）", e)
+        threading.Thread(target=_spawn_reconnect, daemon=True).start()
 
     elif args.pid:
-        # 直接 attach 模式：不调用 ensure_app，不自动重启
-        log.info("direct-pid mode: attaching to pid=%d (no auto-restart)", args.pid)
+        # 直接 attach 模式：只 attach；进程在但连不上就重试，绝不杀
+        log.info("direct-pid mode: attaching to pid=%d (no kill, no app restart)", args.pid)
         try:
             _agent.connect(args.pid)
+            log.info("attached pid=%d", args.pid)
         except Exception as e:
-            log.error("attach failed: %s", e)
-            sys.exit(1)
-        if not _no_prime:
-            threading.Thread(target=_prime_trade_panel, daemon=True).start()
+            log.error("attach pid=%d 失败: %s（进程保留，交给重连循环重试）", args.pid, e)
+        _prime_async()
+        threading.Thread(target=reconnect_loop, args=(args.pid,), daemon=True).start()
 
-        # 静态重连：只有 agent 断开才重连到同一 pid，不重启进程
-        def _static_reconnect():
-            while True:
-                time.sleep(5)
-                if not _agent.connected:
-                    log.warning("agent disconnected, re-attaching to pid=%d", args.pid)
-                    try:
-                        _agent.connect(args.pid)
-                        if not _no_prime:
-                            _prime_trade_panel()
-                    except Exception as e:
-                        log.error("re-attach failed: %s", e)
-        t = threading.Thread(target=_static_reconnect, daemon=True)
-        t.start()
     else:
-        # 原始自动模式（attach 已跑进程）
+        # 自动模式：在跑就 attach，不在才启动；全程不杀进程
+        if ths_app.app_pid():
+            log.info("同花顺已在运行 pid=%d，直接 attach（不杀进程）", ths_app.app_pid())
+        else:
+            log.warning("同花顺未运行，启动 %s（只启动，不杀任何进程）", ths_app.APP_PATH)
         try:
             pid = ensure_app()
             _agent.connect(pid)
+            log.info("attached pid=%d", pid)
         except Exception as e:
-            log.error("initial connect failed: %s", e)
-        if not _no_prime:
-            threading.Thread(target=_prime_trade_panel, daemon=True).start()
-
-        t = threading.Thread(target=reconnect_loop, daemon=True)
-        t.start()
+            log.error("启动/attach 失败: %s（不杀进程，交给重连循环重试）", e)
+        _prime_async()
+        threading.Thread(target=reconnect_loop, daemon=True).start()
 
     # 前台运行 socket 服务
     serve()

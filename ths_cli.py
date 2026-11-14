@@ -12,6 +12,8 @@ import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+from ths_app import APP_PATH, app_pid  # 同花顺副本路径/进程的唯一入口
+
 # ── JSON 输出 ─────────────────────────────────────────────────────────────────
 
 def _json_out(obj):
@@ -179,24 +181,20 @@ def _bridge_alive() -> bool:
 
 def _ensure_bridge_running():
     """桥未运行就启动它（后台常驻，直接 attach 当前 pid），等 socket 就绪。
-    ★ 一律带 --no-prime：钩子必须在开面板之前装好，点击顺序由 `prime` 命令驱动。"""
+    ★ 一律带 --no-prime：钩子必须在开面板之前装好，点击顺序由 `prime` 命令驱动。
+    ★ 只 attach THSX.app 现有进程；进程不在时桥会自己启动 THSX.app，绝不杀进程。"""
     if _bridge_alive():
         return
-    # 取当前 THS 副本 pid
-    try:
-        ths_pid = subprocess.check_output(
-            ["pgrep", "-f", "MacOS/同花顺"], text=True
-        ).split()[0].strip()
-    except Exception:
-        ths_pid = None
+    ths_pid = app_pid()
 
-    print(f"桥未运行，正在启动（pid={ths_pid}，--no-prime）...", file=sys.stderr)
+    print(f"桥未运行，正在启动（pid={ths_pid or '无，桥将启动 ' + APP_PATH}，--no-prime）...",
+          file=sys.stderr)
     bridge = os.path.join(SCRIPT_DIR, "ths_bridge.py")
     venv_py = os.path.join(SCRIPT_DIR, ".venv/bin/python3")
     py = venv_py if os.path.isfile(venv_py) else sys.executable
     cmd = [py, bridge]
     if ths_pid:
-        cmd += ["--pid", ths_pid]
+        cmd += ["--pid", str(ths_pid)]
     cmd += ["--no-prime"]
     subprocess.Popen(
         cmd,
@@ -1283,7 +1281,9 @@ def build_parser():
 
     sp_start = sub.add_parser("start", help="启动桥进程 (frida)")
     sp_start.add_argument("--pid", type=int, default=None,
-                          help="attach 指定 pid（默认自动取同花顺副本 pid）")
+                          help="attach 指定 pid（默认自动取 THSX.app pid）")
+    sp_start.add_argument("--force-restart", action="store_true",
+                          help="人工用：杀掉并重启 THSX.app（默认从不杀进程）")
     sub.add_parser("stop",   help="停止桥进程 (frida)")
     sub.add_parser("status", help="桥状态 (frida)")
     sub.add_parser("ping",   help="ping agent (frida)")
@@ -1349,14 +1349,12 @@ def main():
             venv_py = os.path.join(SCRIPT_DIR, ".venv/bin/python3")
             py = venv_py if os.path.isfile(venv_py) else sys.executable
             # ★ 只 attach 已跑的副本；不带 --no-prime 就会在装钩子前自动点开交易面板
-            pid = getattr(args, "pid", None)
-            if not pid:
-                try:
-                    pid = int(subprocess.check_output(
-                        ["pgrep", "-f", "MacOS/同花顺"], text=True).split()[0])
-                except Exception:
-                    pid = None
+            force = getattr(args, "force_restart", False)
+            pid = getattr(args, "pid", None) or (None if force else app_pid())
             cmd = [py, bridge] + (["--pid", str(pid)] if pid else []) + ["--no-prime"]
+            if force:
+                cmd += ["--force-restart"]
+                print(f"⚠ --force-restart：将杀掉现有同花顺并重启 {APP_PATH}")
             proc = subprocess.Popen(
                 cmd,
                 stdout=open("/tmp/ths_bridge.log", "a"),
