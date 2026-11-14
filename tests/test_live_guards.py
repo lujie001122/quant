@@ -95,6 +95,8 @@ def make_executor(subproc, verifier, shares=10000, price=2.0):
     ex._ETFS = {"159915": {"fund": 44000}}
     ex._TOTAL_FUND = 220000
     ex._parse_position_ratio = state_center.parse_position_ratio
+    from core.position_manager import calc_order_amount
+    ex._calc_order_amount = calc_order_amount
     ex._get_position_shares = lambda code: shares
     ex._check_pending_orders = lambda mode, sync_entrust=False: ({}, set())
     ex._run_sell_chase_cycle = lambda: None

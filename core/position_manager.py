@@ -32,6 +32,7 @@ core/position_manager.py — 仓位管理（Kelly公式 + 风险平价 + 资金�
   allocation = pm.allocate_fund(codes=["159516", "510300", "588170"])
 """
 
+import json
 import math
 import os
 from typing import Dict, List, Optional, Tuple
@@ -444,6 +445,69 @@ class PositionManager:
         return allocation
 
     # ══════════════════════════════════════════════
+    # 4b. 实盘下单金额（与回测 backtest_bt.py::_buy 同口径）
+    # ══════════════════════════════════════════════
+
+    def fund_slots(self) -> int:
+        """每只ETF资金基数的分母：集中模式=top_n，否则=池内标的数。
+
+        与 state_center.get_etfs_config() 的分母算法保持一致。
+        """
+        if self.concentrated_mode:
+            return max(int(self.concentrated_top_n or 1), 1)
+        try:
+            pool_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "etf_pool.json")
+            with open(pool_path, "r", encoding="utf-8") as f:
+                n = len(json.load(f).get("etf_pool") or [])
+        except Exception:
+            n = 0
+        return max(n, 1)
+
+    def calc_order_amount(self, total_asset: float, position_ratio: float,
+                          price: float = 0.0, static_fund: float = 0.0,
+                          min_shares: int = 5000) -> dict:
+        """按“当前实际总资产 × 配置比例”算单笔下单金额与股数（唯一计算处）。
+
+        回测口径 (backtest_bt.py:458-463):
+            fund_per_etf = max_per_etf × (1-cash_reserve_ratio) ÷ top_n
+                           （state_center.get_etfs_config，即 config 静态 fund）
+            target_value = min(fund_per_etf × pct, fund_per_etf × position_cap)
+            need         = max(int(target_value / price / 100) × 100, MIN_SHARES)
+        实盘把 fund_per_etf 换成动态基数 = total_asset × (1-cash_reserve_ratio) ÷ top_n，
+        比例参数全部读 config（cash_reserve_ratio / concentrated_top_n / position_cap）。
+        config 静态 fund 只在总资产取不到时兜底，并作为单笔金额上限。
+        """
+        reserve = float(self._config.get("cash_reserve_ratio", 0.20) or 0)
+        slots = self.fund_slots()
+        try:
+            ratio = float(position_ratio or 0)
+        except (TypeError, ValueError):
+            ratio = 0.0
+        static_fund = float(static_fund or 0)
+        ta = float(total_asset or 0)
+
+        if ta > 0:
+            # 与 state_center.get_etfs_config 同算法：先取整可投资金，再整除份数
+            base, source = int(ta * (1.0 - reserve)) // slots, "total_asset"
+        elif static_fund > 0:
+            base, source = static_fund, "static_fund"
+        else:
+            return {"ok": False, "reason": "无总资产且无静态fund兜底", "total_asset": ta,
+                    "base": 0.0, "ratio": ratio, "amount": 0.0, "shares": 0,
+                    "source": "none"}
+
+        amount = min(base * ratio, base * self.max_position_ratio)
+        if static_fund > 0:
+            amount = min(amount, static_fund)
+        shares = max(int(amount / price / 100) * 100, int(min_shares)) if price > 0 and amount > 0 else 0
+        return {"ok": amount > 0 and shares > 0,
+                "reason": "" if amount > 0 else "金额为0（仓位比例无效）",
+                "total_asset": round(ta, 2), "base": round(base, 2), "ratio": ratio,
+                "amount": round(amount, 2), "shares": shares,
+                "min_shares": int(min_shares), "source": source}
+
+    # ══════════════════════════════════════════════
     # 5. 仓位计算
     # ══════════════════════════════════════════════
 
@@ -573,3 +637,11 @@ def set_position_manager(pm: "PositionManager") -> None:
     """设置全局仓位管理器实例"""
     global _global_pm
     _global_pm = pm
+
+
+def calc_order_amount(total_asset: float, position_ratio: float, price: float = 0.0,
+                      static_fund: float = 0.0, min_shares: int = 5000) -> dict:
+    """模块级快捷方式：实盘下单金额/股数（executor 唯一调用点）。"""
+    return get_position_manager().calc_order_amount(
+        total_asset, position_ratio, price=price,
+        static_fund=static_fund, min_shares=min_shares)

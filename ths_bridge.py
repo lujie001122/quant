@@ -28,6 +28,13 @@ AGENT_JS   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ths_agent
 SOCK_PATH  = "/tmp/ths_bridge.sock"
 LOG_PATH   = "/tmp/ths_bridge.log"
 FRAMES_DIR = "/tmp/ths_frames"
+# 抓帧落盘默认关闭（/tmp/ths_frames 曾被写爆）：只在 ths_bridge.py --save-frames
+# 或 THS_FRAME_SAVE=1 时开启；THS_FRAME_KEEP_DAYS=N 开启时启动清理 N 天前的旧帧
+FRAME_SAVE_ENABLED = os.environ.get("THS_FRAME_SAVE", "").strip().lower() in ("1", "true", "yes", "on")
+try:
+    FRAME_KEEP_DAYS = int(os.environ.get("THS_FRAME_KEEP_DAYS", "7"))
+except ValueError:
+    FRAME_KEEP_DAYS = 7
 APP_COPY  = "/tmp/ths_lab/THS.app"
 APP_BIN   = "/tmp/ths_lab/THS.app/Contents/MacOS/同花顺"
 APP_ORIG_NAME = "同花顺"
@@ -49,6 +56,7 @@ log = logging.getLogger("ths_bridge")
 # 协议层 FrameSaver + 帧解析器
 # 职责：
 #   1. 保存 agent 通过 send({type:'sock_frame'}) 推来的原始字节到 /tmp/ths_frames/
+#      （默认关闭，--save-frames / THS_FRAME_SAVE=1 才落盘；读取/解析能力不变）
 #   2. parse_frames(data) 解析同花顺协议帧 → 记录列表
 #      帧格式：FD FD FD FD + 8字节ASCII十六进制长度 + 0x09 + payload
 #      payload：TLV —— 字段键（十进制字符串或二进制）+ 长度 + 值
@@ -69,22 +77,59 @@ _FIELD_NAMES = {
 
 
 class FrameSaver:
-    """线程安全的原始帧落盘管理器。"""
+    """线程安全的原始帧落盘管理器（默认不落盘）。"""
 
     MAX_TOTAL = 32 * 1024 * 1024   # 32 MB 总缓存上限
     MAX_FRAME = 256 * 1024          # 256 KB 单帧上限
 
-    def __init__(self, frames_dir: str = FRAMES_DIR):
+    def __init__(self, frames_dir: str = FRAMES_DIR, enabled: bool = None,
+                 keep_days: int = None):
         self._dir = frames_dir
         self._lock = threading.Lock()
         self._total_bytes = 0
         self._frame_count = 0
         self._dropped = 0
-        os.makedirs(frames_dir, exist_ok=True)
+        self._enabled = FRAME_SAVE_ENABLED if enabled is None else bool(enabled)
+        self._keep_days = FRAME_KEEP_DAYS if keep_days is None else int(keep_days)
+        if self._enabled:
+            os.makedirs(frames_dir, exist_ok=True)
+            if self._keep_days > 0:
+                self.purge_old(self._keep_days)
+
+    def set_enabled(self, enabled: bool, keep_days: int = None) -> None:
+        """显式开启/关闭落盘（--save-frames / THS_FRAME_SAVE）。"""
+        self._enabled = bool(enabled)
+        if keep_days is not None:
+            self._keep_days = int(keep_days)
+        if self._enabled:
+            os.makedirs(self._dir, exist_ok=True)
+            if self._keep_days > 0:
+                self.purge_old(self._keep_days)
+
+    def purge_old(self, days: int) -> int:
+        """删除超过 days 天的旧帧文件，返回删除个数。"""
+        cutoff = time.time() - max(int(days), 1) * 86400
+        removed = 0
+        try:
+            names = os.listdir(self._dir)
+        except OSError:
+            return 0
+        for name in names:
+            path = os.path.join(self._dir, name)
+            try:
+                if not os.path.isfile(path) or os.path.getmtime(path) >= cutoff:
+                    continue
+                os.unlink(path)
+                removed += 1
+            except OSError:
+                continue
+        if removed:
+            log.info("frame_saver: purged %d files older than %dd in %s", removed, days, self._dir)
+        return removed
 
     def save(self, seq: int, data: Optional[bytes]) -> bool:
-        """保存一帧到磁盘。data 为 None 或超限时丢弃并计数。"""
-        if not data:
+        """保存一帧到磁盘。默认不落盘；data 为 None 或超限时丢弃并计数。"""
+        if not self._enabled or not data:
             return False
         n = len(data)
         with self._lock:
@@ -104,8 +149,8 @@ class FrameSaver:
                 return False
 
     def save_named(self, filename: str, data: Optional[bytes]) -> bool:
-        """保存一帧到磁盘，文件名由调用方指定。"""
-        if not data:
+        """保存一帧到磁盘，文件名由调用方指定。默认不落盘。"""
+        if not self._enabled or not data:
             return False
         n = len(data)
         with self._lock:
@@ -130,6 +175,8 @@ class FrameSaver:
                 "total_bytes": self._total_bytes,
                 "dropped": self._dropped,
                 "dir": self._dir,
+                "enabled": self._enabled,
+                "keep_days": self._keep_days,
             }
 
     def list_frames(self) -> list:
@@ -566,13 +613,17 @@ def reconnect_loop():
 # ── 请求处理 ──────────────────────────────────────────────────────────────────
 
 ALLOWED_METHODS = {
+    # 与 ths_agent.js 的 rpc.exports 逐条对齐（34 个导出）。
+    # 调用名走 frida.exports_sync：蛇形自动转驼峰（frida.core._to_camel_case），
+    # 例 read_positions → readPositions，因此这里一律写蛇形，映射逻辑不改。
+
     # 基础
-    "ping", "state",
+    "ping", "state", "last_trade_rsp",
     # 买卖
     "buy", "sell",
     # 登录
-    "login", "loginSim", "loginMoni",
-    # capture / sendLog（兼容）
+    "login", "loginSim", "loginMoni", "login_sim",
+    # capture / sendLog（兼容，agent 侧仍有 captureStart/Stop/Dump、sendLog）
     "capture_start", "capture_stop", "capture_dump", "send_log",
     # ── hook-free 新路径 ──────────────────────────────────────────────────────
     "scan_instances",
@@ -581,13 +632,12 @@ ALLOWED_METHODS = {
     "send_chedan_by_index",
     "place_order",
     "place_order_via_view",
-    # ── 旧名兼容别名 ──────────────────────────────────────────────────────────
+    # ── 旧名兼容别名（agent 侧仍有同名导出）──────────────────────────────────
     "read_positions_direct",
     "read_orders_direct",
     "read_trades_direct",
     "fetch_positions",
     "fetch_orders",
-    "read_table_data",
     "ensure_ready",
     "prime_cache",
     "get_cache_status",
@@ -827,10 +877,23 @@ def main():
                     help="用 frida spawn 启动副本，hook 在所有 ObjC init 之前生效（推荐）")
     ap.add_argument("--no-prime", action="store_true",
                     help="跳过 attach 后的自动点击「交易→模拟」流程")
+    ap.add_argument("--save-frames", action="store_true",
+                    help="把协议层原始帧落盘到 /tmp/ths_frames（默认关闭）")
+    ap.add_argument("--clean-frames", type=int, default=None, metavar="DAYS",
+                    help="启动时删除 /tmp/ths_frames 里超过 DAYS 天的旧帧")
     args = ap.parse_args()
 
     if not os.path.isfile(AGENT_JS):
         sys.exit(f"agent not found: {AGENT_JS}")
+
+    if args.clean_frames is not None:
+        _removed = _frame_saver.purge_old(args.clean_frames)
+        log.info("clean-frames: removed %d files older than %dd", _removed, args.clean_frames)
+    if args.save_frames:
+        _frame_saver.set_enabled(True)
+        log.info("frame saving ENABLED -> %s (keep_days=%d)", FRAMES_DIR, FRAME_KEEP_DAYS)
+    else:
+        log.info("frame saving disabled (use --save-frames or THS_FRAME_SAVE=1 to enable)")
 
     _no_prime = getattr(args, "no_prime", False)
 

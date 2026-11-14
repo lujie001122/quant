@@ -1143,6 +1143,7 @@ class SignalExecutor:
 
         from market_data import fetch_realtime_quotes, ETFS
         from position_info import PositionInfo, TOTAL_FUND
+        from core.position_manager import calc_order_amount
         from state_center import (
             get_position_shares,
             parse_position_ratio,
@@ -1164,6 +1165,7 @@ class SignalExecutor:
         self._get_position_shares = get_position_shares
         self._check_pending_orders = check_pending_orders
         self._trade_type_to_mode = trade_type_to_mode
+        self._calc_order_amount = calc_order_amount
         self._get_signal_direction = get_signal_direction
         self._signal_direction = signal_direction
         self._detect_error_type = detect_error_type
@@ -1176,6 +1178,22 @@ class SignalExecutor:
         if mode == 't0':
             return 't0_buy' if direction == '买入' else 't0_sell'
         return 'buy' if direction == '买入' else 'sell'
+
+    def _get_total_asset(self) -> float:
+        """当前实际总资产（下单金额的基数）。
+
+        优先 portfolio.json account.total_asset（trade.py sync / signal_generator 用实时价写入），
+        缺失或非正数时兜底 TOTAL_FUND。
+        """
+        try:
+            from state_center import load_portfolio
+            acc = (load_portfolio() or {}).get("account") or {}
+            ta = float(acc.get("total_asset") or 0)
+            if ta > 0:
+                return ta
+        except Exception:
+            pass
+        return float(self._TOTAL_FUND)
 
     def _write_intent_for_sg(self, code, mode, direction, shares=None, price=None,
                              status='pending', contract=None):
@@ -1618,12 +1636,19 @@ class SignalExecutor:
             # ── 普通买入 ──
             elif trade_type == "buy":
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
-                fund = self._ETFS.get(code, {}).get("fund", 44000)
-                shares = max(int(fund * ratio / price / 100) * 100, 5000)
-                if shares < 100:
-                    print(f"[EXECUTE] ⚠️ {code} 买入股数不足(fund={fund}, ratio={ratio:.0%}, shares={shares})，跳过")
+                # 下单金额 = 当前实际总资产 × 配置比例（与回测 backtest_bt.py:_buy 同口径）
+                # config 静态 fund 只做兜底/单笔上限
+                _static_fund = self._ETFS.get(code, {}).get("fund", 44000)
+                _plan = self._calc_order_amount(self._get_total_asset(), ratio, price=price,
+                                                static_fund=_static_fund)
+                print(f"[下单金额] {code} 总资产={_plan['total_asset']:.0f} "
+                      f"基数={_plan['base']:.0f}({_plan['source']}) 比例={_plan['ratio']:.0%} "
+                      f"金额={_plan['amount']:.0f} 股数={_plan['shares']} 现价={price:.3f}")
+                if not _plan["ok"]:
+                    print(f"[EXECUTE] ⚠️ {code} 买入金额/股数无效({_plan['reason']})，跳过")
                     fail_count += 1
                     continue
+                shares = _plan["shares"]
                 cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
                 label = f"买入 {code} {shares}股 @{price:.3f}"
 
