@@ -35,7 +35,7 @@ from position_info import (
 )
 
 # ── 仓位管理器 ──
-from core.position_manager import PositionManager, get_position_manager
+from core.position_manager import get_position_manager
 
 # ── 交易记录器 ──
 from core.trade_recorder import get_recorder
@@ -584,7 +584,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         pos = positions[code]
         price = r["price"]
         spacing = t["spacing"]
-        fund = _allocated_funds.get(code, cfg["fund"])
         base = base_prices[code]
         atr_pct = (t.get("atr_5min") or t["atr"]) / price if (t.get("atr_5min") or t["atr"]) and price else 0
 
@@ -609,7 +608,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         # Level 2: 做T弹性条件（基于5分钟分时数据）
         t0_result = evaluate_t0(t, pos, price, today_str, atr_pct)
         buy_score = t0_result["buy_score"]
-        sell_score = t0_result["sell_score"]
         t0_signal = t0_result["t0_signal"]
 
         pos.prev_rsi = t["rsi"]
@@ -1033,7 +1031,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     except Exception:
         _sp_cfg = {}
     _sl_cfg = _sp_cfg.get("stop_loss", {})
-    _pt_cfg = _sp_cfg.get("profit_take", {})
     _t1 = int(_sl_cfg.get("tier1_pct", 0.07) * 100)
     _t2 = int(_sl_cfg.get("tier2_pct", 0.10) * 100)
     _t3 = int(_sl_cfg.get("tier3_pct", 0.25) * 100)
@@ -1156,7 +1153,7 @@ def main():
     execute_flag, execute_mode = _parse_execute_args()
     locks = _acquire_exec_locks(execute_flag, execute_mode)
     if locks is None:
-        return None
+        return 0
 
     try:
         try:
@@ -1169,14 +1166,14 @@ def main():
             if execute_flag:  # 只要在命令行出现了 --execute，就执行信号
                 execute_signals(result, mode=execute_mode)
 
-            return result
+            return 0
         except Exception as e:
             error_msg = {"error": str(e), "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             print(json.dumps(error_msg, indent=2, ensure_ascii=False))
-            return None
+            return 1
     finally:
         for _lk in reversed(locks):
             _lk.release()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

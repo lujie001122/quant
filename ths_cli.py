@@ -1016,7 +1016,7 @@ def _auto_prime_if_empty(cat: str) -> bool:
 
 def frida_prime(args):
     """手动触发缓存填充（已验证路径：交易→4s→模拟→8s→委托→取消可撤过滤 + 轮询）。"""
-    final = _do_prime()
+    _do_prime()
     # 读缓存状态（_do_prime 已打印变化过程）
     resp = _call("get_cache_status")
     status = resp.get("result", {}) if resp.get("ok") else {}

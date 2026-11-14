@@ -184,7 +184,6 @@ class AlertManager:
             dedup_key = f"{level.name}:{title}"
 
         now = time.time()
-        pushed = False
 
         # ── 去重检查 ──
         with self._lock:

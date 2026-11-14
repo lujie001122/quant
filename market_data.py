@@ -403,7 +403,7 @@ def fetch_klines_5min(code):
         if not qfq_key:
             return []
 
-        kline_list = stock_data[qfq_key].get("m5") or stock_data[qfq_key].get("m5", [])
+        kline_list = stock_data[qfq_key].get("m5") or []
         if not kline_list:
             return []
 

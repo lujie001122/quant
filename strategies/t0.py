@@ -10,8 +10,6 @@ T0Strategy — 做T配对策略
 
 from strategies.base import BaseStrategy
 from strategies.rsi_macd import t0_buy_score, t0_sell_score, is_auction_time
-from position_info import TOTAL_FUND
-from position_info import MAX_POSITION_RATIO
 from money_manager import calc_t0_pair_plan
 
 import os, json, yaml
@@ -130,7 +128,6 @@ def detect_single_leg(holder: '_ChaseHolder', now: datetime) -> None:
     import json as _json
 
     today_orders = load_today_orders()     # {fname: order_dict}
-    today_str = now.strftime('%Y%m%d')
 
     # 读 portfolio.json 基准持仓（源2 基准）
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

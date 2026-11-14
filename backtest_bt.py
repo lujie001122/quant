@@ -51,7 +51,7 @@ with open(_CONFIG_PATH) as f:
     CONF = yaml.safe_load(f)
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
-from market_data import fetch_klines_daily, calc_rsi_wilder, calc_macd, calc_ao, calc_atr
+from market_data import fetch_klines_daily
 from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS, MIN_SHARES
 
 class _AddonEvalPos(PositionInfo):
@@ -63,7 +63,6 @@ class _AddonEvalPos(PositionInfo):
         return False
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
 from strategies.grid import (
-    evaluate_grid_signals, check_grid_reset, compute_grid_table,
     check_grid_overall_stop, is_v2_enabled,
 )
 from risk_manager import check_stop_loss as _rm_check_stop_loss, resolve_stop_signal as _rm_resolve_stop
@@ -117,7 +116,7 @@ _DEFAULT_CODES = {
     "515220": {"name": "煤炭ETF", "sid": "sh515220"},
 }
 
-from state_center import get_code_map, get_etfs_config
+from state_center import get_etfs_config
 
 # 每周轮动: 引入候选池
 from rotation import ETF_CANDIDATES
@@ -446,10 +445,6 @@ class ETFStrategy(bt.Strategy):
             else:
                 self.loss_trades += 1; self.loss_amount += abs(trade.pnl)
 
-    def _get_position_value(self, data):
-        """获取持仓市值"""
-        return self.getposition(data).size * data.close[0]
-
     def _get_avg_cost(self, data):
         """获取持仓均价 (backtrader position.price)"""
         return self.getposition(data).price
@@ -708,10 +703,7 @@ class ETFStrategy(bt.Strategy):
                     continue
 
                 rsi_val = self.rsi[name].rsi[0]
-                ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
-                dif_val = self.macd[name].dif[0]
                 ma5_v = self.ma5[name][0]
-                ma10_v = self.ma10[name][0]
                 ma20_v = self.ma20[name][0]
                 atr_val = self.atr[name].atr[0]
 
@@ -801,11 +793,6 @@ class ETFStrategy(bt.Strategy):
                     # 多头排列
                     if not (ma5_v and ma20_v and ma5_v > ma20_v):
                         continue
-
-                    # 10日新高
-                    h10 = None
-                    if len(d.close) >= 11:
-                        h10 = max(d.close.get(size=10, ago=1))
 
                     # ── 调用实盘策略模块 evaluate_entry (统一入场管线) ──
                     _realtime_cp = {dd._name: {"price": dd.close[0]} for dd in self.datas}
@@ -1085,9 +1072,7 @@ class ETFStrategy(bt.Strategy):
                                 continue
 
                         rsi_val = self.rsi[name].rsi[0]
-                        ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
                         ma5_v = self.ma5[name][0]
-                        ma10_v = self.ma10[name][0]
                         ma20_v = self.ma20[name][0]
                         atr_val = self.atr[name].atr[0]
 
@@ -1098,23 +1083,6 @@ class ETFStrategy(bt.Strategy):
                         # 多头排列
                         if not (ma5_v and ma20_v and ma5_v > ma20_v):
                             continue
-
-                        # 10日新高
-                        h10 = None
-                        if len(d.close) >= 11:
-                            h10 = max(d.close.get(size=10, ago=1))
-
-                        # 动态仓位
-                        if self.p.dynamic_pct:
-                            mom_score = momentum_scores.get(name, 0)
-                            if mom_score > 15:
-                                pct = self.p.init_pct * 1.2
-                            elif mom_score >= 8:
-                                pct = self.p.init_pct
-                            else:
-                                pct = self.p.init_pct * 0.6
-                        else:
-                            pct = self.p.init_pct
 
                         entered = False
 
@@ -1256,9 +1224,7 @@ class ETFStrategy(bt.Strategy):
                     avg = self._get_avg_cost(d)
 
                     rsi_val = self.rsi[name].rsi[0]
-                    ms = MACDStatus.STATUS_MAP.get(self.macd[name].status[0], "震荡")
                     ma5_v = self.ma5[name][0]
-                    ma10_v = self.ma10[name][0]
                     ma20_v = self.ma20[name][0]
                     atr_val = self.atr[name].atr[0]
 
@@ -1293,23 +1259,6 @@ class ETFStrategy(bt.Strategy):
                         # 多头排列
                         if not (ma5_v and ma20_v and ma5_v > ma20_v):
                             continue
-
-                        # 10日新高
-                        h10 = None
-                        if len(d.close) >= 11:
-                            h10 = max(d.close.get(size=10, ago=1))
-
-                        # 动态仓位
-                        if self.p.dynamic_pct:
-                            mom_score = momentum_scores.get(name, 0)
-                            if mom_score > 15:
-                                pct = self.p.init_pct * 1.2
-                            elif mom_score >= 8:
-                                pct = self.p.init_pct
-                            else:
-                                pct = self.p.init_pct * 0.6
-                        else:
-                            pct = self.p.init_pct
 
                         entered = False
 
@@ -1457,24 +1406,9 @@ class ETFStrategy(bt.Strategy):
 
             # 指标
             rsi_val = self.rsi[name].rsi[0]
-            macd_status = self.macd[name].status[0]
-            dif_val = self.macd[name].dif[0]
-            ms = MACDStatus.STATUS_MAP.get(macd_status, "震荡")
             ma5_v = self.ma5[name][0]
-            ma10_v = self.ma10[name][0]
             ma20_v = self.ma20[name][0]
-            ao_val = self.ao[name].ao[0]
             atr_val = self.atr[name].atr[0]
-
-            # 10日新高
-            h10 = None
-            if len(d.close) >= 11:
-                h10 = max(d.close.get(size=10, ago=1))
-
-            # AO 5日前
-            ao_5ago = None
-            if len(self.ao[name].ao) >= 6:
-                ao_5ago = self.ao[name].ao[-5]
 
             has_pos = self._has_position(d)
             shares = self._get_shares(d)
@@ -2358,7 +2292,6 @@ def main():
 
     total_trades = ta.get('total', {}).get('total', 0)
     won = ta.get('won', {}).get('total', 0)
-    lost = ta.get('lost', {}).get('total', 0)
     win_rate = won / total_trades * 100 if total_trades else 0
     avg_win = ta.get('won', {}).get('pnl', {}).get('average', 0)
     avg_loss = abs(ta.get('lost', {}).get('pnl', {}).get('average', 1))

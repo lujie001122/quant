@@ -489,7 +489,6 @@ class RealBroker(BaseBroker):
                     # 按 code + direction + shares 匹配
                     if len(row) >= 10:
                         entrust_code = str(row[0]) if row[0] else ""
-                        entrust_dir = str(row[4]) if len(row) > 4 else ""
                         entrust_shares = int(row[5]) if len(row) > 5 and row[5] else 0
                         entrust_status = str(row[8]) if len(row) > 8 else ""
                         entrust_price = float(row[7]) if len(row) > 7 and row[7] else 0.0
@@ -760,7 +759,6 @@ class SignalExecutor:
             load_chase_holder, save_chase_holder,
             detect_single_leg, T0Strategy
         )
-        from state_center import load_today_orders
         import sys as _sys_exe
 
         now = _dt.now()

@@ -22,6 +22,7 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 with open(_CONFIG_PATH) as f:
     _CONF = yaml.safe_load(f)
 EMPTY_DAYS_THRESHOLD = _CONF['trend']['empty_days_threshold']
+_AO_NONE_WARNED = False
 
 # ═══════════════════════════════════════════════
 # 常量（从 position_info 统一导入，避免跨文件定义不一致）
@@ -206,7 +207,15 @@ class RSIMACDStrategy(BaseStrategy):
             if price > pos.build_first_price or pos.ma5_touch_count >= 2:
                 ao_now = t.get("ao_now")
                 ao_5ago = t.get("ao_5ago")
-                ao_rising = ao_now is not None and ao_5ago is not None and ao_now > ao_5ago
+                if ao_now is None or ao_5ago is None:
+                    # K线不足34根时 calc_ao 返回 None：降级跳过AO共振判定，避免格式化崩溃
+                    global _AO_NONE_WARNED
+                    if not _AO_NONE_WARNED:
+                        print(f"[WARN] {code} AO数据不足(K线<34根), 跳过AO共振判定")
+                        _AO_NONE_WARNED = True
+                    ao_rising = True
+                else:
+                    ao_rising = ao_now > ao_5ago
                 if not ao_rising:
                     # AO 超时兜底：首批入场超过 ao_timeout_days 个自然日则放行
                     _ao_timeout_days = _CONF.get("entry", {}).get("ao_timeout_days", 5)

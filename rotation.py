@@ -882,7 +882,6 @@ class RotationManager:
 
         # 逐日检查最近 days 天
         for i in range(1, days + 1):
-            subset = closes[:-i] if i > 1 else closes
             # 取最后 len(subset) 天的数据用于计算
             daily_closes = closes[:len(closes) - i + 1] if i > 1 else closes
 

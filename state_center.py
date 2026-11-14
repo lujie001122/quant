@@ -440,26 +440,6 @@ def reset_signal_state_on_liquidate(pf, code, date_str):
         print(f"  ⚠️ [reset_signal_state] {code} 重置失败: {_e}")
 
 
-def reset_signal_state_on_liquidate(pf, code, date_str):
-    """
-    统一入口：持仓归零时彻底重置 _signal_state[code] 的止盈止损字段。
-    直接用 PositionInfo.reset_on_liquidate 保证与建仓初始化完全一致。
-    调用方须自行 save_portfolio(pf)。
-    """
-    try:
-        from position_info import PositionInfo
-        sig_state = pf.setdefault("_signal_state", {})
-        old = sig_state.get(code, {})
-        pos = PositionInfo()
-        if old:
-            pos.from_dict(old)
-        pos.reset_on_liquidate(date_str)
-        sig_state[code] = pos.to_dict(date_str)
-        print(f"  🔄 [reset_signal_state] {code} 止盈止损状态已重置 (date={date_str})")
-    except Exception as _e:
-        print(f"  ⚠️ [reset_signal_state] {code} 重置失败: {_e}")
-
-
 def init_signal_state_on_entry(pf, code, price, date_str):
     """
     统一入口：新建仓（before_shares==0 → after_shares>0）时初始化 _signal_state[code] 的止盈止损字段。
@@ -1119,62 +1099,3 @@ def cleanup_old_intent_files():
     if removed:
         print(f"[cleanup_old_intent] 清理 {removed} 个过期 intent 文件")
 
-
-# ====================================================================
-# 七、行情数据辅助
-# ====================================================================
-
-def fetch_and_build_tech(code, etfs_config):
-    """获取指定标的的日线/5分钟数据并计算技术指标。
-    返回 tech dict 或 None。
-    """
-    from market_data import (
-        fetch_klines_daily, fetch_klines_5min,
-        calc_ma, calc_rsi_wilder, calc_macd, calc_atr, calc_ao,
-        calc_vol_ratio_120min, calc_5min_indicators, dynamic_spacing,
-    )
-    try:
-        klines = fetch_klines_daily(code)
-        if not klines:
-            return None
-        closes = [k["close"] for k in klines]
-        volumes = [k["volume"] for k in klines]
-        ma5 = calc_ma(closes, 5)
-        ma10 = calc_ma(closes, 10)
-        ma20 = calc_ma(closes, 20)
-        rsi = calc_rsi_wilder(closes, 14)
-        dif, dea, macd_bar, macd_status = calc_macd(closes)
-        vol_ratio_120 = calc_vol_ratio_120min(volumes, 20)
-        atr = calc_atr(klines, 14)
-        base_s = etfs_config.get(code, {}).get("base_spacing", 0.025)
-        price = closes[-1] if closes else 0
-        spacing = dynamic_spacing(atr, price, base_s)
-
-        highs = [k["high"] for k in klines]
-        lows = [k["low"] for k in klines]
-        ao_now, ao_5ago = calc_ao(highs, lows)
-
-        klines_5min = fetch_klines_5min(code)
-        indicators_5min = calc_5min_indicators(klines_5min)
-
-        return {
-            "ma5": ma5, "ma10": ma10, "ma20": ma20,
-            "rsi": rsi, "dif": dif, "dea": dea, "macd_bar": macd_bar,
-            "macd_status": macd_status, "vol_ratio_120": vol_ratio_120,
-            "atr": atr, "spacing": spacing,
-            "vol_ratio_5min": indicators_5min["vol_ratio_5min"] if indicators_5min else None,
-            "atr_5min": indicators_5min["atr_5min"] if indicators_5min else None,
-            "rsi_5min": indicators_5min["rsi_5min"] if indicators_5min else None,
-            "macd_5min_status": indicators_5min["macd_5min_status"] if indicators_5min else None,
-            "macd_5min_dif": indicators_5min["macd_5min_dif"] if indicators_5min else None,
-            "macd_5min_dea": indicators_5min["macd_5min_dea"] if indicators_5min else None,
-            "macd_5min_bar": indicators_5min["macd_5min_bar"] if indicators_5min else None,
-            "day_high": indicators_5min["day_high"] if indicators_5min else None,
-            "day_low": indicators_5min["day_low"] if indicators_5min else None,
-            "day_pct": indicators_5min["day_pct"] if indicators_5min else None,
-            "ma20_5min_slope": indicators_5min["ma20_5min_slope"] if indicators_5min else None,
-            "ao_now": ao_now, "ao_5ago": ao_5ago,
-        }
-    except Exception as e:
-        print(f"[state_center] ⚠️ fetch_and_build_tech({code}) 失败: {e}")
-        return None
