@@ -29,6 +29,7 @@ state_center.py — 统一状态中心
 
 import json
 import os
+import sys
 import time
 import yaml
 from datetime import datetime
@@ -977,7 +978,7 @@ def get_signal_direction(trade_type, action):
     """从信号 trade_type 和 action 推导方向: '买入' | '卖出' | 'unknown'"""
     if trade_type == "buy":
         return "买入"
-    if trade_type in ("sell", "liquidate", "reduce"):
+    if trade_type in ("sell", "liquidate", "reduce", "reduce_half"):
         return "卖出"
     if trade_type == "t0":
         if "买入" in action:
@@ -993,28 +994,64 @@ def signal_direction(sig):
     action = sig.get("action", "")
     if trade_type in ("buy", "t0"):
         return "买入" if "买入" in action else "卖出"
-    if trade_type in ("sell", "liquidate", "reduce"):
+    if trade_type in ("sell", "liquidate", "reduce", "reduce_half"):
         return "卖出"
     return None
 
 
+# ── 结构化错误码（跨进程契约：退出码 + stderr 标记行）──────────────────
+# 上游只按这两个结构化信号判定错误类型，绝不再用中文自然语言子串匹配。
+# 历史事故：日志里出现"同花顺"三个字（配对腿失败提示、sync 日志）就被误判为
+# 断连，executor 于是重启并原样重跑 cmd，同一笔单被下两次。
+ERRCODE_TAG = "##ERRCODE##"
+
+EXIT_THS_DISCONNECT = 20    # 真断连：App 无响应/接口连不上，没有任何委托报出
+EXIT_ORDER_FAILED = 21      # 主腿未确认（已发出但委托表没确认/被拒），禁止重下
+EXIT_PAIR_LEG_FAILED = 22   # 主腿已成交、配对腿没挂上，禁止重下（否则主腿重复）
+
+_TOKEN_TO_TYPE = {
+    "THS_DISCONNECT": "tonghuashun_disconnect",
+    "ORDER_NOT_CONFIRMED": "order_not_confirmed",
+    "PAIR_LEG_FAILED": "pair_leg_failed",
+}
+
+_EXITCODE_TO_TYPE = {
+    EXIT_THS_DISCONNECT: "tonghuashun_disconnect",
+    EXIT_ORDER_FAILED: "order_not_confirmed",
+    EXIT_PAIR_LEG_FAILED: "pair_leg_failed",
+}
+
+
+def emit_errcode(token, detail=""):
+    """向 stderr 打一行结构化错误码，供上游按码判定（不解析自然语言）。"""
+    print(f"{ERRCODE_TAG} {token} {detail}".rstrip(), file=sys.stderr, flush=True)
+
+
 def detect_error_type(stdout, stderr, returncode, exit_reason=None):
-    """从 subprocess 输出中检测错误类型。
+    """从子进程结果中判定错误类型（只认结构化错误码与退出码）。
     返回 (error_type, detail)
-    error_type: 'tonghuashun_disconnect' | 'not_filled' | 'timeout' | 'other'
+    error_type: 'tonghuashun_disconnect' | 'order_not_confirmed' | 'pair_leg_failed'
+                | 't0_canceled' | 'timeout' | 'other' | None
     """
     combined = (stdout or "") + "\n" + (stderr or "")
 
     if exit_reason == "timeout":
         return "timeout", "下单超时(120s)"
 
-    if "连接同花顺失败" in combined or "EvolvingSim 连接失败" in combined or "同花顺" in combined:
-        return "tonghuashun_disconnect", "同花顺断连"
+    # 1) 结构化标记行优先：##ERRCODE## TOKEN [detail]
+    for line in combined.splitlines():
+        if ERRCODE_TAG not in line:
+            continue
+        tail = line.split(ERRCODE_TAG, 1)[1].strip()
+        if not tail:
+            continue
+        token = tail.split()[0]
+        if token in _TOKEN_TO_TYPE:
+            return _TOKEN_TO_TYPE[token], tail
 
-    if "下单成功但持仓未变" in combined or "期望增量" in combined:
-        # [注释] 增量确认不再使用，直接 fall through 到 other
-        pass
-        # return "not_filled", "下单未成交(增量确认失败)"
+    # 2) 退出码（trade.py 已固化的失败语义）
+    if returncode in _EXITCODE_TO_TYPE:
+        return _EXITCODE_TO_TYPE[returncode], f"退出码={returncode}"
 
     if returncode != 0:
         return "other", f"退出码={returncode}"

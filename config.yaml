@@ -104,7 +104,14 @@ t0:
   min_spread_pct: 0.0035
   pair_atr_multiplier: 1.1
   pair_ratio: 0.3
-  price_limit_pct: 0.10          # 配对价硬边界：当日涨跌幅（科创板ETF 588/589 自动按20%）
+  # 配对价硬边界：当日涨跌幅。判断依据（money_manager._price_limit_pct）：
+  #   主板 ETF 10%；科创板 ETF(588/589) 20%；创业板 ETF 20%（159xxx 里的创业板品种，
+  #   用内置清单判断，159995/159819 等非创业板仍是 10%）。
+  price_limit_pct: 0.10
+  # 按代码单独覆盖涨跌幅（优先级最高），如 {"159915": 0.20}
+  price_limit_pct_overrides: {}
+  # 整份替换"创业板 ETF"清单（不填则用 money_manager.CHINEXT_ETF_CODES）
+  # chinext_etf_codes: ["159915", "159949"]
   rsi_buy_max: 50
   rsi_extreme_buy: 25
   rsi_extreme_sell: 75

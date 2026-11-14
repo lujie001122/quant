@@ -2057,7 +2057,8 @@ def main():
     ma60_filter = False   # MA60趋势过滤
     dynamic_pct = False   # 动态仓位
     rebalance = 5         # 重平衡周期(天)
-    stop_loss = 0.25      # 固定止损比例(对齐config.yaml hard_stop_pct)
+    stop_loss = 0.25      # 空参数：仅用于横幅展示，本文件 0 处使用（止损走 risk_manager）
+    stop_loss_given = False  # 是否显式传了 --stop-loss=N
     trail_pct = CONF.get('trail_pct', 0.12)      # 移动止盈回撤比例(fixed模式): 从config读取
     sector_diversify = False  # 板块分散
     confirm_days = 0      # 换仓延迟确认天数
@@ -2096,6 +2097,7 @@ def main():
             rebalance = int(arg.split("=", 1)[1])
         elif arg.startswith("--stop-loss="):
             stop_loss = float(arg.split("=", 1)[1])
+            stop_loss_given = True
         elif arg.startswith("--trail-pct="):
             trail_pct = float(arg.split("=", 1)[1])
         elif arg == "--sector-diversify":
@@ -2114,6 +2116,12 @@ def main():
                 rotation_interval = int(args[i + 1])
                 i += 1
         i += 1
+
+    # --stop-loss 是历史遗留的空参数：全仓 0 处使用，回测止损完全由 risk_manager 配置决定。
+    # 为保证回测 stdout 逐字节可复现（基线 MD5 校验），告警只写 stderr，不混入结果日志。
+    if stop_loss_given:
+        print(f"[WARN] --stop-loss={stop_loss:g} 该参数当前不影响结果，"
+              f"止损由 risk_manager 配置决定（config.yaml: stop_loss 段）", file=sys.stderr)
 
     # --period X 支持: 从 config.yaml 读取
     period_map = CONF['backtest']['periods']

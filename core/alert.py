@@ -168,7 +168,7 @@ class AlertManager:
         title: str,
         message: str,
         dedup_key: str = "",
-    ) -> bool:
+    ) -> dict:
         """发送告警
 
         参数:
@@ -178,7 +178,10 @@ class AlertManager:
           dedup_key: 去重键（空则自动生成: level:title）
 
         返回:
-          bool: 是否实际推送（去重时返回False）
+          dict: {"pushed": bool, "should_push": bool, "dedup_key": str, "record": AlertRecord}
+            pushed      — 真实推送结果（webhook 成功才 True；未配置/未达级别/去重都是 False）
+            should_push — 是否通过去重与级别门槛（不代表推送成功）
+        历史问题：以前直接返回 should_push，调用方把它当"推送成功"，实际可能根本没推出去。
         """
         if not dedup_key:
             dedup_key = f"{level.name}:{title}"
@@ -216,7 +219,12 @@ class AlertManager:
         # ── 日志落盘 ──
         self._write_log(record)
 
-        return should_push
+        return {
+            "pushed": record.pushed,
+            "should_push": should_push,
+            "dedup_key": dedup_key,
+            "record": record,
+        }
 
     # ── Webhook推送 ──
 

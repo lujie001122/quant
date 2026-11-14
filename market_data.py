@@ -162,7 +162,9 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
         raise RuntimeError(f"{code} 无代码映射")
 
     # 腾讯接口: qfq=前复权, datalen=1200条
-    url = (f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?"
+    # 注意：ifzq.gtimg.cn 对 fqkline 路径可能返回 WAF 501，改用同一 API 的
+    # web.ifzq.gtimg.cn（只换主机，数据源优先级不变：腾讯优先、Sina 兜底）
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
            f"param={sid},day,,,1200,qfq")
     try:
         req = urllib.request.Request(url, headers={
@@ -305,9 +307,9 @@ def fetch_klines_daily_arrays(code, sid):
 
 
 def _fetch_klines_by_sid(sid):
-    """直接用 sid 从腾讯接口获取K线数据"""
+    """直接用 sid 从腾讯接口获取K线数据（fqkline 走 web.ifzq 主机，规避 WAF 501）"""
     import urllib.request
-    url = (f"https://ifzq.gtimg.cn/appstock/app/fqkline/get?"
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
            f"param={sid},day,,,1200,qfq")
     try:
         req = urllib.request.Request(url, headers={

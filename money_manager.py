@@ -30,14 +30,45 @@ _TICK = 0.001  # ETF 最小价位
 _T0_CFG = _CONF.get("t0", {}) or {}
 
 
+# 当日涨跌幅限制的判定依据（交易所规则，非策略参数）：
+#   - 主板 ETF 10%：沪市 510/512/513/515/516/518/511 等、深市 159 里的非创业板品种
+#   - 科创板 ETF 20%：上交所科创板，代码前缀 588/589（588000 科创50ETF、588170 等）
+#   - 创业板 ETF 20%：深交所创业板，159xxx 里跟踪创业板指数/创业板50 的品种。
+#     注意：159 前缀不是全部 20% —— 159995 芯片ETF、159819 AI龙头ETF、159770 机器人ETF
+#     等仍是 10%，所以创业板必须用"已知清单"判断，不能按 159 通配。
+# 覆盖优先级（config.yaml → t0 段）：
+#   t0.price_limit_pct_overrides[code]  >  t0.chinext_etf_codes（整份替换清单）
+#   > 内置创业板清单  >  588/589 前缀  >  t0.price_limit_pct 默认值
+CHINEXT_ETF_CODES = {
+    "159915",  # 创业板ETF（易方达）
+    "159949",  # 创业板50ETF（华安）
+    "159952",  # 创业板ETF（广发）
+    "159957",  # 创业板ETF（华夏）
+    "159958",  # 创业板ETF（工银瑞信）
+    "159964",  # 创业板ETF（平安）
+    "159967",  # 创业板ETF（南方）
+    "159971",  # 创业板ETF（富国）
+    "159977",  # 创业板ETF（天弘）
+}
+
+
 def _price_limit_pct(code=None):
-    """当日涨跌幅限制比例。科创板ETF(588/589) 20%，其余默认 10%（可用config覆盖）。"""
+    """当日涨跌幅限制比例（判断依据见 CHINEXT_ETF_CODES 上方注释）。"""
     pct = float(_T0_CFG.get("price_limit_pct", 0.10))
+    code = str(code).strip() if code else ""
+
     overrides = _T0_CFG.get("price_limit_pct_overrides") or {}
-    if code and str(code) in overrides:
-        return float(overrides[str(code)])
-    if code and str(code)[:3] in ("588", "589"):
+    if code and code in overrides:
+        return float(overrides[code])
+
+    _cfg_chinext = _T0_CFG.get("chinext_etf_codes")
+    chinext = {str(c) for c in _cfg_chinext} if _cfg_chinext else CHINEXT_ETF_CODES
+    if code and code in chinext:
         return max(pct, 0.20)
+
+    if code[:3] in ("588", "589"):
+        return max(pct, 0.20)
+
     return pct
 
 

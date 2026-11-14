@@ -33,8 +33,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PF_PATH = os.path.join(SCRIPT_DIR, 'portfolio.json')
 
 from evolving.evolving import EvolvingSim
-# state_center 统一提供状态读写接口
-from state_center import get_code_map
+# state_center 统一提供状态读写接口 + 结构化错误码（与 executor 的跨进程契约）
+from state_center import (
+    get_code_map, emit_errcode,
+    EXIT_THS_DISCONNECT, EXIT_ORDER_FAILED, EXIT_PAIR_LEG_FAILED,
+)
 
 import yaml as _yaml
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
@@ -166,7 +169,20 @@ def is_filled_status(status_text: str) -> bool:
 
 
 def _verify_order_in_entrust(e, code, direction, shares, price=None, since=None):
-    """下单后强制核验：查当日委托表，匹配 代码+方向 且拿到合同号才算成功。
+    """⚠️ 委托核验器（本文件版本，仅下单主流程 trade.py 使用）。
+
+    【两份实现不一致，主路径用 executor 版本 — 不要合并】
+    另一份：executor.py `SignalExecutor._verify_order_via_entrust`（executor 执行
+    trade.py 子进程后的独立核验，是实际下单链路上的主路径）。两者口径差异：
+      1) 本版额外查"委托日期[0]必须是今天"；executor 版不查日期，只靠 since 时间窗。
+      2) 本版额外排除 orders/*.json 已用合同号；executor 版不排除（会把旧合同号算命中）。
+      3) 本版固定 8 次轮询；executor 版有情况b/c 区分 + 额外 10 次(接口抖动)轮询。
+      4) 本版只返回 (ok, contract, detail)；executor 版返回
+         (status, detail, {'filled','status'})，能区分"没下出去"与"接口抖动未知"。
+      5) 本版没有"状态已撤/废单"过滤；executor 版同样没有（两版都靠 is_filled_status 判成交）。
+    合并会同时改动下单链路与子进程核验语义，风险高，本次只做标注。
+
+    下单后强制核验：查当日委托表，匹配 代码+方向 且拿到合同号才算成功。
     不允许用返回码为0当作成交依据。接口查不到视为未知，不得当作成功。
 
     轮询策略：最多8次，每次间隔3秒，匹配即返回成功；8次都未匹配则判失败。
@@ -807,19 +823,21 @@ def _alert_t0_single_leg(code, name, action, shares, price, pair_price, detail, 
 def _place_order(method, code, shares, price, e=None):
     """买/卖：先走 frida 接口（App 自己的下单方法），失败回退 EvolvingSim 界面自动化。
 
-    返回 (ok, contract, detail)。ok=True 表示委托表里确认到了这笔单，
-    contract 交给 write_order 落盘，配对/撤单逻辑直接用它。
+    返回 (ok, contract, detail, exitcode)。ok=True 表示委托表里确认到了这笔单，
+    contract 交给 write_order 落盘；exitcode 是给上游的结构化失败语义
+    （state_center.EXIT_*）：None=成功，EXIT_THS_DISCONNECT=真断连，
+    EXIT_ORDER_FAILED=主腿未确认（禁止重下）。
     """
     try:
         from broker_frida import ThsBroker
         r = ThsBroker().place(method, code, shares, price)
         print(f"  [通道] 下单: frida 接口（{r.get('via')}）  合同号={r['contract']}  状态={r['status']}")
-        return True, r["contract"], f"frida 委托表 合同号={r['contract']} 状态={r['status']}"
+        return True, r["contract"], f"frida 委托表 合同号={r['contract']} 状态={r['status']}", None
     except Exception as ex:
         # 单已发给柜台、只是委托表没确认 → 不许回退，否则同一笔下两次
         if '已发送' in str(ex) or '未拿到合同号' in str(ex):
             print(f"  ⚠️ frida 已发送但委托表未确认: {ex}")
-            return False, None, f"frida 已发送未确认，禁止回退重下，请人工核对委托表: {ex}"
+            return False, None, f"frida 已发送未确认，禁止回退重下，请人工核对委托表: {ex}", EXIT_ORDER_FAILED
         print(f"  ⚠️ frida 接口下单失败: {ex}")
 
     print(f"  [通道] 下单: 旧通道 EvolvingSim.{method}（界面自动化）")
@@ -839,12 +857,16 @@ def _place_order(method, code, shares, price, e=None):
         since = time.strftime("%H:%M:%S")
         result = _call_evolving(method, code, shares, price, e=e)
         print(f"  📤 重试后 EvolvingSim.{method} 原始返回: {result}")
+        if result is None:
+            # 旧通道两次都没有任何响应 → 真断连（没有任何委托报出），允许上游重启重试
+            emit_errcode("THS_DISCONNECT", f"{method} {code} {shares}股 @{price}")
+            return False, None, "旧通道两次无响应(断连)，未报出任何委托", EXIT_THS_DISCONNECT
     elif isinstance(result, tuple) and len(result) > 0 and not result[0]:
-        return False, None, f"同花顺拒单（EvolvingSim 返回 {result}）"
+        return False, None, f"同花顺拒单（EvolvingSim 返回 {result}）", EXIT_ORDER_FAILED
 
     direction = '买入' if 'buy' in method else '卖出'
     ok, contract, detail = _verify_order_in_entrust(e, code, direction, shares, price, since=since)
-    return ok, contract, detail
+    return ok, contract, detail, (None if ok else EXIT_ORDER_FAILED)
 
 
 def _unified_trade(action, code, shares, price, pair_price=None):
@@ -904,12 +926,12 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     else:
         print(f"📊 卖出 {name}({code}) {shares:,}股 @{price}  金额¥{amount:,.0f}")
 
-    ok_main, contract_main, detail_main = _place_order(method, code, shares, price, e)
+    ok_main, contract_main, detail_main, code_main = _place_order(method, code, shares, price, e)
     if not ok_main:
         from state_center import write_intent_failed as _wif
         _wif(code, action, shares, price, reason='委托表未确认')
         print(f"  ❌ 下单失败: {detail_main}")
-        sys.exit(1)
+        sys.exit(code_main or EXIT_ORDER_FAILED)
     print(f"  ✅ 核验通过: {detail_main}")
     write_order(code, action, shares, price, contract_main, status='pending', baseline_shares=baseline_shares)
     # 主腿已报出：intent 标记 submitted（订单文件已落盘，去重以订单文件为准）
@@ -919,13 +941,15 @@ def _unified_trade(action, code, shares, price, pair_price=None):
     # T0 配对单
     if is_t0 and pair_price is not None:
         time.sleep(2)
-        ok_pair, contract_pair, detail_pair = _place_order(pair_method, code, shares, pair_price, e)
+        ok_pair, contract_pair, detail_pair, _code_pair = _place_order(pair_method, code, shares, pair_price, e)
         if not ok_pair:
             # 主腿已发出、配对腿没挂上 → 立刻告警并给补挂价，别静默留单边
             _alert_t0_single_leg(code, name, action, shares, price, pair_price,
                                  detail_pair, pair_is_buy=(pair_method == 'buy'))
             print(f"  ❌ 配对单下单失败: {detail_pair}")
-            sys.exit(1)
+            # 主腿已发出 → 结构化标记"配对腿失败"，上游禁止重跑（否则主腿下两次）
+            emit_errcode("PAIR_LEG_FAILED", f"{code} 主腿已发出，配对腿未挂上")
+            sys.exit(EXIT_PAIR_LEG_FAILED)
         print(f"  ✅ 配对单核验通过: {detail_pair}")
         write_order(code, pair_action, shares, pair_price, contract_pair, status='pending', baseline_shares=baseline_shares)
 

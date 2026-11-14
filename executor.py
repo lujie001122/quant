@@ -39,6 +39,38 @@ from trade import is_filled_status
 
 
 # ═══════════════════════════════════════════════════════
+# 信号类型 → 执行模式白名单
+# ═══════════════════════════════════════════════════════
+# reduce_half 是 signal_generator 在 strategy_v2 网格整体止损(-8%)时产出的
+# "减50%总仓"信号，必须在这里，否则 buy_sell 模式的过滤会把它静默丢掉。
+BUY_SELL_TYPES = {
+    "buy", "sell", "liquidate", "reduce", "reduce_half",
+    "sell_active_10pct", "sell_active_15pct", "sell_active_20pct",
+}
+T0_TYPES = {"t0"}
+
+
+def signal_passes_mode_filter(trade_type, mode):
+    """模式过滤：buy_sell 只执行买卖类信号，t0 只执行做T，mode=None 全放行。"""
+    if mode == "buy_sell":
+        return trade_type in BUY_SELL_TYPES
+    if mode == "t0":
+        return trade_type in T0_TYPES
+    return True
+
+
+class _SyntheticProc:
+    """断连后核对到委托表已有该笔时用的"假子进程结果"。
+
+    不再执行下单命令，只把已存在的委托交给后续核验/记账路径，
+    避免同一笔单被重启重试下两次。
+    """
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
+# ═══════════════════════════════════════════════════════
 # 数据类（从 order_manager.py 迁移）
 # ═══════════════════════════════════════════════════════
 
@@ -1153,8 +1185,51 @@ class SignalExecutor:
                      mode=mode, shares=shares, price=price, status=status,
                      contract=contract)
 
-    def _verify_order_via_entrust(self, code, direction, shares, since=None):
+    def _restart_ths(self):
+        """重启同花顺（--no-revoke 不撤单），只走脚本，不抢焦点、不点坐标。"""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self._subprocess.run(
+            [sys.executable, os.path.join(script_dir, "scripts/restart_ths.py"), "--no-revoke"],
+            timeout=30)
+        time.sleep(3)
+
+    def _retry_after_disconnect(self, code, direction, shares, since, cmd):
+        """断连后：先用委托表核对，再决定是否重跑命令。
+
+        返回 (outcome, proc)：
+          'already_placed' — 委托表已有该笔（code/方向/量/时间窗），不重跑，返回假进程结果
+          'retried'        — 委托表确认没有该笔，重启后重跑一次，返回重跑结果
+          'unknown'        — 委托表读不到，无法确认是否已下出 → 不重跑（防重复下单）
+          'failed'         — 重启/重跑仍失败
+        """
+        _st, _detail, _extra = self._verify_order_via_entrust(
+            code, direction, shares, since=since, max_tries=2, sleep_secs=2)
+        if _st == 'success':
+            print(f"  ✅ 断连核对：委托表已有该笔（{_detail}），不重跑命令")
+            return 'already_placed', _SyntheticProc()
+
+        if _st == 'unknown':
+            print(f"  🚨 断连核对：委托表读不到，无法确认是否已下出 → 不重跑（{_detail}）")
+            return 'unknown', None
+
+        # 情况b：委托表有效但没有这笔 → 真断连，重启后重跑一次
+        print(f"  ↻ 断连核对：委托表确认无此笔，重启同花顺后重跑一次")
+        try:
+            self._restart_ths()
+        except Exception as _restart_err:
+            print(f"  ❌ 重启失败: {_restart_err}")
+            return 'failed', None
+        retry_r = self._subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if retry_r.returncode == 0:
+            return 'retried', retry_r
+        return 'failed', None
+
+    def _verify_order_via_entrust(self, code, direction, shares, since=None,
+                                  max_tries=None, sleep_secs=3):
         """下单后通过 getEntrust 独立核验订单是否真实提交到券商。
+        ⚠️ 委托核验器（本文件版本，executor 主路径）。trade.py `_verify_order_in_entrust`
+        是另一份实现，口径已漂移（那边额外查委托日期 + 排除已用合同号）；暂不合并。
+
         区分三种情况：
           a) 委托表查到该笔(时间窗口内、代码方向一致、数量容差≤100股) → 成功
           b) 委托表返回有效数据但没有该笔 → 失败（真没下出去）
@@ -1193,9 +1268,10 @@ class SignalExecutor:
         last_reason = ''
         ever_got_valid_data = False  # 是否曾拿到过有效委托表数据
 
-        total_tries = MAX_TRIES + EXTRA_TRIES
+        # 断连前核对用短轮询（max_tries/ sleep_secs 由调用方指定），正常核验用默认值
+        total_tries = max_tries if max_tries else (MAX_TRIES + EXTRA_TRIES)
         for attempt in range(1, total_tries + 1):
-            time.sleep(3)
+            time.sleep(sleep_secs)
             try:
                 ent = e.getEntrust('today', False)
             except Exception as ex:
@@ -1334,24 +1410,16 @@ class SignalExecutor:
         except Exception as e:
             print(f"[EXECUTE] ⚠️ 获取实时行情失败: {e}，将使用信号价作为兜底")
 
-        # 按模式过滤信号
-        BUY_SELL_TYPES = {"buy", "sell", "liquidate", "reduce", "sell_active_10pct", "sell_active_15pct", "sell_active_20pct"}
-        T0_TYPES = {"t0"}
-
+        # 按模式过滤信号（白名单见模块级 BUY_SELL_TYPES，含 reduce_half）
         actionable = []
         for code, sig in signals.items():
             trade_type = sig.get("trade_type")
-            action = sig.get("action", "")
             if not trade_type:
                 continue
             # 模式过滤
             # Bug H: buy_sell模式只执行买卖信号，T0由t0模式单独执行
-            if mode == "buy_sell":
-                if trade_type not in BUY_SELL_TYPES:
-                    continue
-            elif mode == "t0":
-                if trade_type not in T0_TYPES:
-                    continue
+            if not signal_passes_mode_filter(trade_type, mode):
+                continue
             actionable.append((code, sig))
 
         # ═══ T0 单腿追价检测（每周期入口处调用）═══
@@ -1411,7 +1479,7 @@ class SignalExecutor:
                 or (trade_type == "t0" and "买入" in action)
             )
             is_sell_direction = (
-                trade_type in ("sell", "liquidate", "reduce")
+                trade_type in ("sell", "liquidate", "reduce", "reduce_half")
                 or (trade_type == "t0" and "卖出" in action)
             )
 
@@ -1587,14 +1655,14 @@ class SignalExecutor:
                 cmd = ["python3", trade_script, "sell", code, str(current_shares), f"{price:.3f}"]
                 label = f"清仓 {code} {current_shares}股 @{price:.3f}"
 
-            # ── 减仓 ──
-            elif trade_type == "reduce":
+            # ── 减仓 / 减半仓（reduce_half: strategy_v2 网格整体止损 -8% 减50%总仓）──
+            elif trade_type in ("reduce", "reduce_half"):
                 current_shares = self._get_position_shares(code)
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
                 if ratio > 0:
                     shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 else:
-                    shares = max(int(current_shares * 0.30 / 100) * 100, 5000)
+                    shares = max(int(current_shares * (0.50 if trade_type == "reduce_half" else 0.30) / 100) * 100, 5000)
                 if shares < 100 or shares > current_shares:
                     shares = min(current_shares, max(shares, 100))
                 if shares < 100 or current_shares < 100:
@@ -1602,7 +1670,7 @@ class SignalExecutor:
                     fail_count += 1
                     continue
                 cmd = ["python3", trade_script, "sell", code, str(shares), f"{price:.3f}"]
-                label = f"减仓 {code} {shares}股 @{price:.3f}"
+                label = f"{'减半仓' if trade_type == 'reduce_half' else '减仓'} {code} {shares}股 @{price:.3f}"
 
             else:
                 print(f"[EXECUTE] ⚠️ {code} 未知交易类型({trade_type})，跳过")
@@ -1661,8 +1729,9 @@ class SignalExecutor:
             except Exception as _intent_ex:
                 print(f"  ⚠️ [INTENT] 落盘失败: {_intent_ex}")
 
-            os.system("open -a 同花顺")
-            os.system("cliclick c:960,50")
+            # 下单走 frida 接口（进程内 RPC），不需要把同花顺拉到前台，
+            # 也不依赖 cliclick 点坐标（未安装时那条命令会直接失败）。
+            # 接口层自己会判断 App 是否在跑，失败会抛结构化异常，这里不做界面动作。
 
             _retry_proc = None  # 断连重试成功后，把 retry_r 注入下一轮，走完整成功路径
             # 下单前记录当前时刻，核验时只认 >= 该时刻的委托记录（防误匹配同日旧单）
@@ -1809,7 +1878,7 @@ class SignalExecutor:
                         self._write_intent_for_sg(code, sig_mode, sig_direction, shares=shares, price=price, status='filled')
 
                         # ═══ B4: 每笔成交后更新持仓状态(防超额卖出) ═══
-                        if trade_type in ("sell", "reduce", "t0"):
+                        if trade_type in ("sell", "reduce", "reduce_half", "t0"):
                             try:
                                 from state_center import load_portfolio, save_portfolio
                                 pf = load_portfolio()
@@ -1824,7 +1893,7 @@ class SignalExecutor:
                                 pass
 
                         # ═══ 【四】成交后更新 sell_pct 到 _signal_state.daily_trade_log ═══
-                        if trade_type in ("sell", "reduce") and before_shares > 0:
+                        if trade_type in ("sell", "reduce", "reduce_half") and before_shares > 0:
                             try:
                                 from state_center import load_portfolio, save_portfolio
                                 pf = load_portfolio()
@@ -1863,7 +1932,7 @@ class SignalExecutor:
                                 print(f"  [WARN] 做T计数更新失败: {_t0c_err}")
 
                         # ═══ 【二】普通卖出追价状态记录 ═══
-                        if trade_type in ("sell", "liquidate", "reduce"):
+                        if trade_type in ("sell", "liquidate", "reduce", "reduce_half"):
                             try:
                                 self._record_sell_chase_after_execute(code, shares)
                             except Exception as _sc_err:
@@ -1899,7 +1968,7 @@ class SignalExecutor:
                         # ═══ 记录交易 ═══
                         try:
                             _direction = "buy" if is_buy_direction else "sell"
-                            _tag = trade_type if trade_type in ("t0", "grid") else ("liquidate" if trade_type == "liquidate" else "reduce" if trade_type == "reduce" else "signal")
+                            _tag = trade_type if trade_type in ("t0", "grid") else ("liquidate" if trade_type == "liquidate" else "reduce" if trade_type in ("reduce", "reduce_half") else "signal")
                             get_recorder().record(
                                 code=code, direction=_direction, shares=shares,
                                 price=price, amount=shares * price,
@@ -1911,23 +1980,50 @@ class SignalExecutor:
                         break
 
                     elif err_type == "tonghuashun_disconnect":
-                        print(f"  ⚠️ 同花顺断连，尝试重启后重试")
-                        try:
-                            self._subprocess.run([sys.executable, os.path.join(script_dir, "scripts/restart_ths.py"), "--no-revoke"], timeout=30)
-                            time.sleep(3)
-                            # 重试下单
-                            retry_r = self._subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                            if retry_r.returncode == 0:
-                                # 重试成功：把 retry_r 注入下一轮，走与首次成功完全相同的后续处理
-                                # （持仓更新/write_order/做T配对/做T计数/trade_recorder），不在此 break
-                                _retry_proc = retry_r
-                                continue
-                            else:
-                                print(f"  ❌ {code} 重启后重试仍失败")
-                        except Exception as restart_err:
-                            print(f"  ❌ 重启失败: {restart_err}")
+                        # 结构化断连码（trade.py 退出码 20 或 ##ERRCODE## THS_DISCONNECT）：
+                        # 先查委托表，确认真的没下出去才重启重跑，防止同一笔下两次
+                        print(f"  ⚠️ 同花顺断连（结构化错误码），先核对委托表再决定是否重跑")
+                        _outcome, _retry_result = self._retry_after_disconnect(
+                            code, direction, shares, _order_since, cmd)
+                        if _outcome == 'already_placed':
+                            _retry_proc = _retry_result
+                            continue
+                        if _outcome == 'retried':
+                            _retry_proc = _retry_result
+                            continue
+                        if _outcome == 'unknown':
+                            alert_msg = (f"[ALERT] 🚨 {code} {direction}失败: 断连且委托表读不到，"
+                                         f"无法确认是否已下出，已停止重试（防重复下单），请人工核对委托表。")
+                            print(alert_msg, file=sys.stderr)
+                            final_error = err_detail
+                            final_error_type = "verify_unknown"
+                            break
+                        print(f"  ❌ {code} 重启后重试仍失败")
                         alert_msg = f"[ALERT] ❌ {code} {direction}失败: 同花顺断连，重启重试仍失败。"
                         print(alert_msg, file=sys.stderr)
+                        final_error = err_detail
+                        final_error_type = err_type
+                        break
+
+                    elif err_type == "pair_leg_failed":
+                        # 主腿已发出、配对腿没挂上 → 绝不重跑命令（否则主腿下两次）
+                        if stdout:
+                            print(stdout.strip())
+                        if stderr_out:
+                            print(f"  [stderr] {stderr_out.strip()}")
+                        alert_msg = (f"[ALERT] ❌ {code} {direction}失败: 做T主腿已成交、配对腿未挂上，"
+                                     f"禁止重跑（防主腿重复），请人工补挂。")
+                        print(alert_msg, file=sys.stderr)
+                        final_error = err_detail
+                        final_error_type = err_type
+                        break
+
+                    elif err_type == "order_not_confirmed":
+                        # 主腿未确认：重跑有重复下单风险，一律不重试
+                        if stdout:
+                            print(stdout.strip())
+                        if stderr_out:
+                            print(f"  [stderr] {stderr_out.strip()}")
                         final_error = err_detail
                         final_error_type = err_type
                         break
