@@ -498,24 +498,31 @@ def sync():
     """同步持仓到 portfolio.json（持有 sync 执行锁，覆盖整个读-改-写过程）。
 
     与 10:00 信号并发时：抢不到锁就跳过本次（退出码 0），绝不两进程同时改同一文件。
+    返回 False 表示未登录/持仓读不到（调用方据此退出非 0）。
     """
     from core.exec_lock import ExecLock
     lock = ExecLock('sync')
     if not lock.acquire():
         print("[SYNC] 未抢到 sync 锁（另一进程正在同步持仓），本次跳过，退出码 0")
-        return
+        return True
     try:
-        _sync_locked()
+        return _sync_locked()
     finally:
         lock.release()
 
 
 def _sync_locked():
-    """真正执行持仓同步（调用方已持 ExecLock('sync')）。
+    """真正执行持仓同步（调用方已持 ExecLock('sync')）。返回 False = 未登录/持仓读不到。
 
     数据通道（每段都打印实际来源）:
       - 持仓/委托/成交/资金: frida 接口（ths_cli --engine frida）→ 失败才回退 EvolvingSim
     """
+    from ths import check_tradable
+    ok, why = check_tradable()
+    if not ok:
+        print(f"  🚨 sync: {why}，跳过本次 sync（不写盘）")
+        return False
+
     if os.path.exists(PF_PATH):
         with open(PF_PATH) as f:
             pf = json.load(f)
@@ -550,8 +557,8 @@ def _sync_locked():
             pos_src = 'legacy'
             print(f"  [通道] 持仓: 旧通道 EvolvingSim.getHoldingShares  {len(positions)} 只")
         else:
-            print("  🚨 sync: frida 与旧通道均未取到持仓，跳过本次 sync（不写盘）")
-            return
+            print("  🚨 sync: 未登录/持仓读不到（frida 与旧通道均未取到持仓），跳过本次 sync（不写盘）")
+            return False
 
     # ── 2) 委托 ────────────────────────────────────────────────────
     orders = None
@@ -702,6 +709,7 @@ def _sync_locked():
     total_asset = pf.get('account', {}).get('total_asset', 0)
     print(f"✅ 同步: {len(pf['positions'])}只 | 总资产{total_asset:.0f} | "
           f"来源: 持仓={pos_src} 委托={ord_src} 成交={trd_src} 资金={acct_src or '保留上次'}")
+    return True
 
 
 # ─── 连续竞价判断 ──────────────────────────────────────────────────────
@@ -988,7 +996,8 @@ if __name__ == '__main__':
     cmd = sys.argv[1]
 
     if cmd == 'sync':
-        sync()
+        if not sync():
+            sys.exit(2)
 
     elif cmd == 'buy':
         if len(sys.argv) != 5:

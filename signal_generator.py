@@ -1149,6 +1149,13 @@ def _acquire_exec_locks(execute_flag, execute_mode):
 
 
 def main():
+    # ── 未登录/桥读不到 → 直接失败退出：别在没登录时静默产出空信号 ──
+    from ths import check_tradable
+    ok, why = check_tradable()
+    if not ok:
+        print(f"[FAIL] {why}，不生成信号（未登录/持仓读不到时退出码非 0）", file=sys.stderr)
+        return 2
+
     # ── 执行层互斥锁：同一 mode 同一时刻只允许一个进程从"读信号"到"下单完成" ──
     execute_flag, execute_mode = _parse_execute_args()
     locks = _acquire_exec_locks(execute_flag, execute_mode)

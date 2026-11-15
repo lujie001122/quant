@@ -69,12 +69,12 @@ _overnight_risk: list = []   # list of (code, shares) tuples
 # ══════════════════════════════════════════════════════════════════════════
 
 def _restart_ths() -> None:
-    """重启同花顺（--no-revoke 不撤单）。"""
+    """重启同花顺（--no-revoke 不撤单）。脚本自己等模拟仓登录完成，最多 120s。"""
     log.warning("  正在重启同花顺（--no-revoke）...")
     try:
         subprocess.run(
             [sys.executable, RESTART_PY, '--no-revoke'],
-            timeout=30, capture_output=True, text=True
+            timeout=180, capture_output=True, text=True
         )
     except Exception as ex:
         log.error(f"  重启同花顺异常: {ex}")

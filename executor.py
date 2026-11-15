@@ -1204,11 +1204,14 @@ class SignalExecutor:
                      contract=contract)
 
     def _restart_ths(self):
-        """重启同花顺（--no-revoke 不撤单），只走脚本，不抢焦点、不点坐标。"""
+        """重启同花顺（--no-revoke 不撤单），只走脚本，不抢焦点、不点坐标。
+
+        脚本自己会等模拟仓登录完成（最多 120s），超时退出码 2 → 调用方当失败处理。
+        """
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self._subprocess.run(
             [sys.executable, os.path.join(script_dir, "scripts/restart_ths.py"), "--no-revoke"],
-            timeout=30)
+            timeout=180)
         time.sleep(3)
 
     def _retry_after_disconnect(self, code, direction, shares, since, cmd):

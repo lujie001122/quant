@@ -12,7 +12,7 @@ import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-from ths_app import APP_PATH, app_pid  # 同花顺副本路径/进程的唯一入口
+from ths_app import APP_PATH, app_pid, screen_locked  # 同花顺副本路径/进程的唯一入口
 
 # ── JSON 输出 ─────────────────────────────────────────────────────────────────
 
@@ -334,20 +334,11 @@ end tell'''
         if result.get("moni_count", 0) > 0 and result.get("active_is_moni"):
             print("模拟仓登录完成（点击路径）", file=sys.stderr)
             return
-    locked = _screen_locked()
+    locked = screen_locked()
     hint = ("屏幕已锁定（CGSSessionScreenIsLocked=Yes），osascript 点击不可能生效" if locked
             else "窗口数为 0 或模拟按钮不可点")
     raise RuntimeError(f"等待模拟仓登录超时（60s）；点击兜底结果={click_msg or '(无输出)'}；{hint}。"
                        f"程序化登录失败请先看上面 loginMoni 的 error/steps")
-
-
-def _screen_locked() -> bool:
-    """读 CGSSessionScreenIsLocked（锁屏时任何点击都用不了）。"""
-    try:
-        r = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True, text=True, timeout=5)
-        return "CGSSessionScreenIsLocked" in r.stdout and "Yes" in r.stdout.split("CGSSessionScreenIsLocked")[1][:40]
-    except Exception:
-        return False
 
 
 def _call(method: str, params: dict = None) -> dict:

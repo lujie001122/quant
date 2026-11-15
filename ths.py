@@ -31,6 +31,9 @@ _TRD_FIELD_DATE = (2141,)        # 成交日期（委托行用 2139）
 _PRIME_ERR = ("cache_empty_need_prime", "need_open_positions_ui",
               "need_open_orders_ui", "need_open_trades_ui")
 
+LOGIN_WAIT_TIMEOUT = 120.0       # 重启后等模拟仓登录完成的上限（秒）
+LOGIN_WAIT_INTERVAL = 5.0        # 轮询间隔（秒）
+
 
 class ThsError(Exception):
     """桥调用失败。method=出错的桥方法，error=桥返回的原始错误，extra=附带明细。"""
@@ -228,6 +231,53 @@ class Ths:
         if st.get("active_is_moni"):
             return st
         return self.login()
+
+    # ── 重启后等登录真正可用 ────────────────────────────────────────────────
+    def cache_status(self):
+        return self._call("get_cache_status")
+
+    def positions_count(self) -> int:
+        return int((self.cache_status().get("positions") or {}).get("count") or 0)
+
+    def wait_login(self, timeout=None, interval=LOGIN_WAIT_INTERVAL, log=print):
+        """等登录真正可用：moni_count>0 且 active_is_moni=True 且 positions 缓存>0 行。
+
+        每轮先走仓库统一登录链 login()（loginMoni 锁屏也能完成 → loginSim → login），
+        再读 state；登录成功但持仓缓存为空时补抓一次 positions。
+        成功返回耗时秒数；超时抛 ThsError（extra['last'] 是最后一次状态）。
+        """
+        timeout = LOGIN_WAIT_TIMEOUT if timeout is None else timeout
+        start = time.time()
+        last = "未开始"
+        primed = False
+        while True:
+            try:
+                try:
+                    self.login()            # loginMoni→loginSim→login，锁屏可用
+                except ThsError as ex:
+                    last = f"登录失败: {ex.error}"
+                st = self.state()
+                last = (f"moni_count={st.get('moni_count')} "
+                        f"active_is_moni={st.get('active_is_moni')}")
+                if st.get("moni_count", 0) > 0 and st.get("active_is_moni"):
+                    n = self.positions_count()
+                    if n <= 0 and not primed:
+                        primed = True
+                        try:
+                            self._prime("positions")
+                        except ThsError as ex:
+                            last = f"{last} prime失败: {ex.error}"
+                        n = self.positions_count()
+                    last = f"{last} positions={n}"
+                    if n > 0:
+                        return time.time() - start
+            except (ThsError, OSError) as ex:
+                last = f"桥异常: {ex}"
+            elapsed = time.time() - start
+            if elapsed >= timeout:
+                raise ThsError("wait_login", f"{timeout:.0f}s 内未完成模拟仓登录", last=last)
+            log(f"  ⏳ 等登录 {elapsed:.0f}s/{timeout:.0f}s  {last}")
+            time.sleep(interval)
 
     # ── 数据 ────────────────────────────────────────────────────────────────
     def account(self):
@@ -556,3 +606,24 @@ end tell
 
     def sell(self, code, shares, price, wait=10.0):
         return self.place(code, "sell", shares, price, wait=wait)
+
+
+def check_tradable():
+    """读一次桥登录态，返回 (ok, 说明)。不触发登录、不点界面。
+
+    未登录 / 桥读不到都算不可用：上层据此退出非 0，别在没登录时静默产出空信号。
+    """
+    try:
+        t = Ths()
+    except ThsError as ex:
+        return False, f"未登录（桥不可用：{ex}）"
+    try:
+        st = t.state()
+        if not (st.get("moni_count", 0) > 0 and st.get("active_is_moni")):
+            return False, (f"未登录模拟仓（moni_count={st.get('moni_count')} "
+                           f"active_is_moni={st.get('active_is_moni')}）")
+        return True, f"已登录（moni_count={st.get('moni_count')}）"
+    except ThsError as ex:
+        return False, f"未登录（读 state 失败：{ex}）"
+    finally:
+        t.close()

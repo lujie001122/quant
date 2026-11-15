@@ -8,6 +8,7 @@
   3. 启动后等进程出现 + 窗口可用，都有超时，超时抛明确错误。
 """
 import os
+import re
 import signal
 import subprocess
 import time
@@ -38,6 +39,22 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def screen_locked() -> bool:
+    """CGSSessionScreenIsLocked=Yes → 屏幕已锁定。
+
+    锁屏时同花顺重启后登录回不来（loginZiYingFuWu 要网络+活跃会话），UI 点击也无效。
+    """
+    try:
+        out = subprocess.check_output(
+            ["ioreg", "-n", "Root", "-d1"], text=True,
+            stderr=subprocess.DEVNULL, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    m = re.search(r'"CGSSessionScreenIsLocked"\s*=\s*(Yes|No)', out)
+    return bool(m) and m.group(1) == "Yes"
 
 
 def app_pid():
