@@ -40,6 +40,7 @@ backtrader 回测引擎 v3: 9 ETF 共享资金池量化策略
 import sys
 import os
 import copy
+import json
 from datetime import datetime, timedelta
 import backtrader as bt
 import pandas as pd
@@ -127,11 +128,27 @@ CODES = {**ETF_CANDIDATES, **{k: v for k, v in _DEFAULT_CODES.items() if k not i
 #  Data fetch (腾讯前复权)
 # ═══════════════════════════════════════════════
 
+_KLINE_CACHE = os.environ.get("QR_KLINE_CACHE", "")
+
 def fetch_daily(code, sid, data_start=None, data_end=None):
-    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily"""
+    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily
+
+    研究用: 若设置 QR_KLINE_CACHE 目录, 直接从本地缓存(腾讯qfq落盘)读取,
+    保证同一批实验共用同一份数据口径, 且不受接口 WAF 降级影响。
+    """
     # 默认拉全量（回退用），调用方可传入 data_start/data_end 限制区间
     start = data_start or "20250101"
     end = data_end or "20261231"
+    if _KLINE_CACHE:
+        _p = os.path.join(_KLINE_CACHE, f"{code}.csv")
+        if os.path.exists(_p):
+            _df = pd.read_csv(_p, parse_dates=["date"]).set_index("date").sort_index()
+            _df = _df[["open", "high", "low", "close", "volume"]]
+            if data_start:
+                _df = _df[_df.index >= pd.Timestamp(data_start)]
+            if data_end:
+                _df = _df[_df.index <= pd.Timestamp(data_end)]
+            return _df if len(_df) else None
     klines = fetch_klines_daily(code, start=start, end=end)
     if not klines:
         return None
@@ -300,6 +317,24 @@ class ETFStrategy(bt.Strategy):
         ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
         ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
         ("enhanced_trend", False),  # 增强趋势止盈: MACD红柱缩短+RSI<60, 卖20%
+        # ── 研究(R1-R6)新增参数, 默认关闭, 不影响基线 ──
+        ("timing", False),  # R2 组合层择时: 510300状态 → 总仓位乘数 0.3/0.6/1.0
+        ("timing_levels", "0.3,0.6,1.0"),  # 三档乘数
+        ("timing_gross", 0.90),  # 满档目标总仓位(占总资产)
+        ("timing_trim", True),  # 降档时按比例减持已持仓
+        ("risk_parity", False),  # R3 风险平价: 20日波动率倒数分配
+        ("rp_cap", 0.5),  # 单票权重上限
+        ("rp_gross", 0.90),  # 风险平价目标总仓位
+        ("rp_band", 0.25),  # 再平衡容忍带(偏离目标比例)
+        ("mr_weight", 0.0),  # R4 均值回归子策略资金占比(0=关闭), 如0.3
+        ("mr_z", 2.0),  # 偏离MA20的z分数阈值
+        ("mr_slots", 3),  # 均值回归最多持仓数
+        ("mr_stop", 0.10),  # 均值回归单笔止损(相对买价)
+        ("hysteresis", 0.0),  # R5 换手控制: 新标的得分需超过旧标的h*|旧分| 才换
+        ("atr_trail_mult", 0.0),  # R6 ATR移动止盈倍数(0=关闭, 用trail_mode)
+        ("tp_ladder", False),  # R6 分档止盈: +10%/+20% 各卖1/3
+        ("mr_only", False),  # R4 只跑均值回归子策略(趋势侧不建仓)
+        ("rank_interval", 1),  # R5 排名/换仓频率(交易日): 1=日频, 5=周频, 10=双周
     )
 
     # 板块分类: 用于板块分散
@@ -367,6 +402,9 @@ class ETFStrategy(bt.Strategy):
                 "reached_5pct": False,  # 阶梯止盈5%标记
                 "reached_8pct_ladder": False,  # 阶梯止盈8%标记
                 "build_first_date": "",  # 首次建仓日期（AO超时兜底用）
+                # ── 研究: 均值回归子策略独立持仓状态 ──
+                "mr_held": False, "mr_entry": 0.0,
+                "tp1_done": False, "tp2_done": False,
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -376,6 +414,15 @@ class ETFStrategy(bt.Strategy):
         self._weekly_top3 = set()  # 当前TOP3 ETF代码
         self._weekly_rotation_day = 0  # 轮动日计数器
         self._last_rotation_date = ""  # 日期守卫: 同一天不重复计数
+
+        # ── 研究(R1-R6)状态 ──
+        self._entry_mult = 1.0  # 买入仓位乘数(择时层)
+        self._timing_level = 1.0  # 当前择时分档(已应用)
+        self._timing_score = 0
+        self._timing_hist = []  # (date, level)
+        self._exposure_hist = []  # (date, invested/total)
+        self._mr_capital = 0.0  # 均值回归子策略可用资金
+        self._mr_used = 0.0
 
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
@@ -456,8 +503,10 @@ class ETFStrategy(bt.Strategy):
         return self.getposition(data).size > 0
 
     def _buy(self, data, pct, reason):
-        """按比例追加买入（pct是本次追加比例，非目标总持仓比例）"""
+        """按比例追加买入（pct是本次追加比例，非目标总持仓比例）
+        组合层择时乘数 _entry_mult 在此统一生效(仅趋势子策略路径)。"""
         name = data._name
+        pct = pct * self._entry_mult
         target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * POSITION_CAP)
         price = data.close[0]
         need = max(int(target_value / price / 100) * 100, MIN_SHARES)  # BUGFIX: 追加模式，不计已有持仓
@@ -566,7 +615,7 @@ class ETFStrategy(bt.Strategy):
     def _calc_trail_params(self, price, avg, atr_pct):
         """移动止盈参数计算 → (trail_pct, trail_mult, trail_label, trail_activation, trail_lockin)"""
         trail_pct = self.p.trail_pct
-        if self.p.trail_mode == "e1":
+        if self.p.trail_mode in ("e1", "atr"):
             # strategy_v2: e1_activation 使用 v2 值（0.05）
             if is_v2_enabled():
                 trail_activation = CONF.get("strategy_v2", {}).get("e1_activation_v2", 0.05)
@@ -583,6 +632,12 @@ class ETFStrategy(bt.Strategy):
         if self.p.trail_mode == "fixed":
             trail_mult = 1 - trail_pct
             trail_label = f"{trail_pct*100:.0f}%"
+        elif self.p.trail_mode == "atr":
+            # R6: 连续ATR倍数移动止盈(替代e1的3%/5%/7%粗档)
+            _m = float(self.p.atr_trail_mult) if float(self.p.atr_trail_mult) > 0 else 2.5
+            _gap = max(_m * atr_pct / 100.0, 0.02)
+            trail_mult = max(1 - _gap, 0.70)
+            trail_label = f"ATR{_m:.1f}x({_gap*100:.1f}%)"
         elif self.p.trail_mode == "e1":
             if atr_pct > 5: trail_mult = 0.93; trail_label = "7%"
             elif atr_pct >= 3: trail_mult = 0.95; trail_label = "5%"
@@ -607,6 +662,290 @@ class ETFStrategy(bt.Strategy):
         if ps["trail"] > 0 and price <= ps["trail"]:
             return True, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}"
         return False, ""
+
+    # ═══════════════════════════════════════════════════════
+    #  研究(R1-R6)辅助方法
+    # ═══════════════════════════════════════════════════════
+
+    def _get_data(self, code):
+        for d in self.datas:
+            if d._name == code:
+                return d
+        return None
+
+    def _vol20(self, d):
+        """20日收益率标准差(年化前的日波动)"""
+        n = min(21, len(d.close))
+        if n < 6:
+            return None
+        rets = []
+        for i in range(1, n):
+            c0 = float(d.close[-i]); c1 = float(d.close[-i + 1])
+            if c0 > 0 and c1 > 0:
+                rets.append((c1 - c0) / c1)
+        if len(rets) < 5:
+            return None
+        m = sum(rets) / len(rets)
+        v = sum((r - m) ** 2 for r in rets) / (len(rets) - 1)
+        return v ** 0.5
+
+    def _timing_state(self):
+        """R2 组合层择时: 用510300判定大盘状态 → (level, score, detail)
+        三因子: 趋势结构(MA20/MA60+斜率) / 位置(60日新高新低) / 波动(ATR分位)
+        """
+        d = self._get_data("510300")
+        if d is None or len(d.close) < 65:
+            return 1.0, 0, "no-index"
+        price = float(d.close[0])
+        ma20 = float(self.ma20["510300"][0])
+        ma60 = float(self.ma60["510300"][0])
+        ma20_5 = float(self.ma20["510300"][-5])
+        slope = (ma20 - ma20_5) / ma20_5 if ma20_5 > 0 else 0
+        high60 = max(float(d.close[-i]) for i in range(60))
+        low60 = min(float(d.close[-i]) for i in range(60))
+        atr = float(self.atr["510300"].atr[0]) / price if price > 0 else 0
+        atr_hist = []
+        for i in range(120):
+            try:
+                p = float(d.close[-i])
+                a = float(self.atr["510300"].atr[-i])
+                if p > 0:
+                    atr_hist.append(a / p)
+            except Exception:
+                break
+        atr_hist.sort()
+        atr_med = atr_hist[len(atr_hist) // 2] if atr_hist else atr
+        score = 0
+        if price > ma20 and ma20 > ma60:
+            score += 1
+        if slope > 0:
+            score += 1
+        if high60 > 0 and (high60 - price) / high60 < 0.05:
+            score += 1
+        if low60 > 0 and (price - low60) / low60 < 0.03:
+            score -= 2
+        if atr > 0 and atr_med > 0 and atr > 1.5 * atr_med:
+            score -= 1
+        levels = [float(x) for x in str(self.p.timing_levels).split(",")]
+        if score >= 2:
+            lvl = levels[2]
+        elif score >= 0:
+            lvl = levels[1]
+        else:
+            lvl = levels[0]
+        detail = (f"px={price:.3f} ma20={ma20:.3f} ma60={ma60:.3f} slope20={slope*100:+.2f}% "
+                  f"hi60dd={(high60-price)/high60*100:.1f}% atr={atr*100:.2f}%(med{atr_med*100:.2f}%)")
+        return lvl, score, detail
+
+    def _inv_vol_weights(self, names, gross):
+        """R3 风险平价: 20日波动率倒数分配, 单票上限rp_cap, 上限用注水法再分配"""
+        vols = {}
+        for n in names:
+            d = self._get_data(n)
+            v = self._vol20(d) if d is not None else None
+            if v and v > 0:
+                vols[n] = v
+        if not vols:
+            return {}
+        raw = {n: 1.0 / v for n, v in vols.items()}
+        tot = sum(raw.values())
+        w = {n: raw[n] / tot for n in raw}
+        cap = float(self.p.rp_cap)
+        for _ in range(10):
+            over = {n: w[n] for n in w if w[n] > cap + 1e-9}
+            if not over:
+                break
+            excess = sum(w[n] - cap for n in over)
+            for n in over:
+                w[n] = cap
+            rest = [n for n in w if w[n] < cap - 1e-9]
+            base = sum(w[n] for n in rest)
+            if base <= 0:
+                break
+            for n in rest:
+                w[n] += excess * w[n] / base
+        return {n: w[n] * gross for n in w}
+
+    def _position_value(self, d):
+        return self.getposition(d).size * float(d.close[0])
+
+    def _gross_value(self):
+        return sum(self._position_value(d) for d in self.datas)
+
+    def _buy_value(self, d, value, reason):
+        """按目标市值买入(绕过POSITION_CAP, 风险平价/目标市值调仓用)"""
+        name = d._name
+        price = float(d.close[0])
+        if price <= 0 or value <= 0:
+            return False
+        need = int(value / price / 100) * 100
+        if need < MIN_SHARES:
+            return False
+        cost = need * price * (1 + SLIPPAGE_PCT) + FEE
+        if cost > self.broker.getcash():
+            need = int(self.broker.getcash() / price / 100) * 100
+            if need < MIN_SHARES:
+                return False
+        self._order_pending[name] = self.buy(data=d, size=need)
+        self.ps[name]['_last_entry_reason'] = reason
+        return True
+
+    def _sell_value(self, d, value, reason):
+        """按目标市值卖出"""
+        name = d._name
+        price = float(d.close[0])
+        shares = self._get_shares(d)
+        if price <= 0 or value <= 0 or shares < 100:
+            return False
+        sell_shares = int(value / price / 100) * 100
+        sell_shares = min(sell_shares, int(shares))
+        if sell_shares < 100:
+            return False
+        self._order_pending[name] = self.sell(data=d, size=sell_shares)
+        self.ps[name]['_last_exit_reason'] = reason
+        return True
+
+    def _buy_target_delta(self, d, target_value, reason):
+        """买/卖到目标市值(风险平价用), 带最小交易单位"""
+        cur = self._position_value(d)
+        delta = target_value - cur
+        price = float(d.close[0])
+        if price <= 0:
+            return False
+        if delta >= price * MIN_SHARES:
+            return self._buy_value(d, delta, reason)
+        if delta <= -price * MIN_SHARES:
+            return self._sell_value(d, -delta, reason)
+        return False
+
+    def _apply_hysteresis(self, ranked, top_n):
+        """R5 换手控制: 在位标的获得 h*|score| 的得分加成,
+        新标的必须超过在位标的 h 比例才顶替。"""
+        h = float(self.p.hysteresis)
+        if h <= 0:
+            return set(n for n, _ in ranked[:top_n] if ranked[0][1] > -999)
+        incumbents = {d._name for d in self.datas if self._has_position(d)}
+        adj = []
+        for n, s in ranked:
+            if s <= -999:
+                continue
+            bonus = h * abs(s) if n in incumbents else 0.0
+            adj.append((n, s + bonus))
+        adj.sort(key=lambda x: x[1], reverse=True)
+        return set(n for n, _ in adj[:top_n])
+
+    def _mr_exit_check(self, date_str):
+        """R4 均值回归: 回归MA20或触发止损则卖出(独立于趋势子策略)"""
+        for d in self.datas:
+            name = d._name
+            ps = self.ps[name]
+            if not ps.get("mr_held"):
+                continue
+            if name in self._order_pending or not self._has_position(d):
+                ps["mr_held"] = False
+                continue
+            price = float(d.close[0])
+            ma20 = float(self.ma20[name][0]) if len(d.close) >= 20 else price
+            entry = ps.get("mr_entry", 0.0)
+            if price >= ma20:
+                self._close(d, f"MR回归MA20卖出 price={price:.3f}>=MA20={ma20:.3f}")
+                ps["mr_held"] = False; ps["mr_entry"] = 0.0
+                self._full_liquidate_state(ps, date_str)
+                ps["mr_held"] = False
+            elif entry > 0 and price <= entry * (1 - float(self.p.mr_stop)):
+                self._close(d, f"MR止损{self.p.mr_stop*100:.0f}% entry={entry:.3f}")
+                ps["mr_held"] = False; ps["mr_entry"] = 0.0
+                self._full_liquidate_state(ps, date_str)
+                ps["mr_held"] = False
+
+    def _mr_entry_check(self, date_str):
+        """R4 均值回归: (close-MA20)/std20 <= -z 买入, 资金独立分仓"""
+        w = float(self.p.mr_weight)
+        if w <= 0:
+            return
+        equity = self.broker.getvalue()
+        budget = equity * 0.9 * w
+        slots = max(1, int(self.p.mr_slots))
+        per_slot = budget / slots
+        held = [n for n, p in self.ps.items() if p.get("mr_held")]
+        cands = []
+        for d in self.datas:
+            name = d._name
+            ps = self.ps[name]
+            if d.volume[0] < 0 or len(d.close) < 25:
+                continue
+            if name in self._order_pending or ps.get("mr_held") or self._has_position(d):
+                continue
+            price = float(d.close[0])
+            ma20 = float(self.ma20[name][0])
+            n = 20
+            closes = [float(d.close[-i]) for i in range(n)]
+            m = sum(closes) / n
+            sd = (sum((c - m) ** 2 for c in closes) / (n - 1)) ** 0.5
+            if sd <= 0 or ma20 <= 0:
+                continue
+            z = (price - ma20) / sd
+            if z <= -float(self.p.mr_z):
+                cands.append((z, name, price))
+        cands.sort()
+        _saved_mult = self._entry_mult
+        self._entry_mult = 1.0  # MR子策略仓位自带分配, 不叠加大盘择时乘数
+        for z, name, price in cands:
+            if len(held) >= slots:
+                break
+            d = self._get_data(name)
+            if d is None:
+                continue
+            pct = per_slot / self.p.fund_per_etf if self.p.fund_per_etf else 0
+            if pct <= 0:
+                continue
+            if self._buy(d, pct, f"MR超跌z={z:.2f} 买{per_slot/equity*100:.0f}%仓"):
+                self.ps[name]["mr_held"] = True
+                self.ps[name]["mr_entry"] = price
+                self._init_on_entry(self.ps[name], price, date_str)
+                self.ps[name]["mr_held"] = True
+                held.append(name)
+        self._entry_mult = _saved_mult
+
+    def _timing_trim(self, level, date_str):
+        """R2 降档/升档时把总仓位调整到 目标gross = timing_gross * level"""
+        if not self.p.timing_trim:
+            return
+        equity = self.broker.getvalue()
+        if equity <= 0:
+            return
+        gross = self._gross_value()
+        ratio = gross / equity
+        target = float(self.p.timing_gross) * level * (1.0 - float(self.p.mr_weight))
+        if ratio <= target + 0.10:
+            return
+        need = (ratio - target) / ratio  # 需减持的持仓比例
+        for d in self.datas:
+            if not self._has_position(d) or d._name in self._order_pending:
+                continue
+            if self.ps[d._name].get("mr_held"):
+                continue
+            self._sell(d, need * 100, f"择时降档减仓 level={level:.1f} 仓位{ratio*100:.0f}%→{target*100:.0f}%")
+
+    def _ladder_take_profit(self, date_str):
+        """R6 分档止盈: +10%卖1/3, +20%再卖1/3, 剩余交给移动止盈"""
+        if not self.p.tp_ladder:
+            return
+        for d in self.datas:
+            name = d._name
+            ps = self.ps[name]
+            if name in self._order_pending or not self._has_position(d) or ps.get("mr_held"):
+                continue
+            avg = self._get_avg_cost(d)
+            if avg <= 0:
+                continue
+            pp = (float(d.close[0]) - avg) / avg
+            if pp >= 0.20 and not ps.get("tp2_done"):
+                if self._sell(d, 33, f"分档止盈+20%卖1/3 (浮盈{pp*100:.1f}%)"):
+                    ps["tp2_done"] = True; ps["tp1_done"] = True
+            elif pp >= 0.10 and not ps.get("tp1_done"):
+                if self._sell(d, 33, f"分档止盈+10%卖1/3 (浮盈{pp*100:.1f}%)"):
+                    ps["tp1_done"] = True
 
     def _reset_daily(self, date_str):
         """每日重置: bought_today + empty_days
@@ -663,6 +1002,8 @@ class ETFStrategy(bt.Strategy):
         ps["reached_5pct"] = False  # 重置阶梯止盈5%标记
         ps["reached_8pct_ladder"] = False  # 重置阶梯止盈8%标记
         ps["build_first_date"] = ""  # 清空首次建仓日期
+        ps["mr_held"] = False; ps["mr_entry"] = 0.0  # 研究: 均值回归独立持仓状态
+        ps["tp1_done"] = False; ps["tp2_done"] = False  # 研究: 分档止盈标记
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -685,12 +1026,52 @@ class ETFStrategy(bt.Strategy):
 
         # ═══ 集中TOP N+50%建仓+趋势加码模式 ═══
         if self.p.concentrated_pyramid_mode:
+            # 交易日计数器(排名频率用)
+            if date_str != self._last_rotation_date:
+                self._last_rotation_date = date_str
+                self._weekly_rotation_day += 1
+            # ── R2 组合层择时: 510300 三因子 → 三档总仓位乘数 ──
+            if self.p.timing:
+                _lvl, _score, _tdetail = self._timing_state()
+                _prev = self._timing_level
+                self._timing_level = _lvl
+                self._timing_score = _score
+                self._entry_mult = _lvl
+                if getattr(self, "_last_timing_date", "") != date_str:
+                    self._last_timing_date = date_str
+                    self._timing_hist.append((date_str, _lvl, _score, round(self.broker.getvalue(), 2)))
+                if abs(_lvl - _prev) > 1e-9:
+                    self._timing_trim(_lvl, date_str)
+            else:
+                self._timing_level = 1.0
+                self._entry_mult = 1.0
+            self._entry_mult *= (1.0 - float(self.p.mr_weight))
+            if self.p.mr_only:
+                self._entry_mult = 0.0
+
             lb = self.p.lookback
-            momentum_scores, ranked = self._calc_momentum_scores(lb)
+            _ri = max(1, int(self.p.rank_interval))
+            if _ri == 1 or (self._weekly_rotation_day % _ri == 1) or not hasattr(self, "_cp_ranked"):
+                momentum_scores, ranked = self._calc_momentum_scores(lb)
+                self._cp_ranked, self._cp_scores = ranked, momentum_scores
+            else:
+                ranked, momentum_scores = self._cp_ranked, self._cp_scores
             top_n = self.p.top_n
             top_set = set(name for name, _ in ranked[:top_n])
+            if self.p.hysteresis > 0:  # R5 换手控制
+                top_set = self._apply_hysteresis(ranked, top_n)
             top_drop = set(name for name, _ in ranked[:top_n * 2])
+            if self.p.risk_parity:
+                _gross = float(self.p.rp_gross) * (self._timing_level if self.p.timing else 1.0) \
+                    * (1.0 - float(self.p.mr_weight))
+                _w = self._inv_vol_weights(sorted(top_set), _gross)
+                _eq = self.broker.getvalue()
+                self._rp_targets = {n: _eq * wv for n, wv in _w.items()}
+                self._rp_weights = _w
             self._reset_daily(date_str)
+            # R4 均值回归独立持仓退出 + R6 分档止盈
+            self._mr_exit_check(date_str)
+            self._ladder_take_profit(date_str)
 
             for d in self.datas:
                 name = d._name
@@ -710,6 +1091,9 @@ class ETFStrategy(bt.Strategy):
                 has_pos = self._has_position(d)
                 shares = self._get_shares(d)
                 avg = self._get_avg_cost(d)
+
+                if has_pos and ps.get("mr_held"):
+                    continue  # 均值回归子策略独立持仓: 走自己的止盈止损
 
                 if has_pos:
                     # 跌出TOP_N*2则清仓
@@ -842,6 +1226,14 @@ class ETFStrategy(bt.Strategy):
                         if self._execute_entry_result(d, name, entry_result, date_str, init_pct=0.50):
                             entered = True
 
+            # R4 均值回归子策略: 超跌买入
+            self._mr_entry_check(date_str)
+            # 诊断: 总仓位比例
+            if getattr(self, "_last_expo_date", "") != date_str:
+                self._last_expo_date = date_str
+                _eq2 = self.broker.getvalue()
+                self._exposure_hist.append((date_str, round(self._gross_value() / _eq2, 4) if _eq2 > 0 else 0.0))
+
             # 更新prev_macd_status
             self._update_prev_macd()
             return
@@ -857,6 +1249,26 @@ class ETFStrategy(bt.Strategy):
                 self._weekly_rotation_day += 1
             is_rotation_day = (self._weekly_rotation_day % self.p.rotation_interval == 1)
 
+            # ── R2 组合层择时: 510300 三因子 → 三档总仓位乘数 (作用于所有买入) ──
+            if self.p.timing:
+                _lvl, _score, _tdetail = self._timing_state()
+                _prev = self._timing_level
+                self._timing_level = _lvl
+                self._timing_score = _score
+                self._entry_mult = _lvl
+                if getattr(self, "_last_timing_date", "") != date_str:
+                    self._last_timing_date = date_str
+                    self._timing_hist.append((date_str, _lvl, _score, round(self.broker.getvalue(), 2)))
+                if is_rotation_day and abs(_lvl - _prev) > 1e-9:
+                    self._timing_trim(_lvl, date_str)
+            else:
+                self._timing_level = 1.0
+                self._entry_mult = 1.0
+            # R4 多策略并行: 趋势子策略资金让位给均值回归子策略
+            self._entry_mult *= (1.0 - float(self.p.mr_weight))
+            if self.p.mr_only:
+                self._entry_mult = 0.0
+
     # ── 动量评分 ──
             lb = self.p.lookback
             momentum_scores, ranked = self._calc_momentum_scores(lb)
@@ -864,8 +1276,15 @@ class ETFStrategy(bt.Strategy):
 
             # ── 板块分散 + 换仓延迟确认 ──
             top_set, top_drop = self._calc_top_sets(ranked, top_n)
+            if self.p.hysteresis > 0:  # R5 换手控制
+                top_set = self._apply_hysteresis(ranked, top_n)
             effective_top, effective_top_drop = self._update_confirm_tracker(momentum_scores, top_set, top_n)
             self._reset_daily(date_str)
+
+            # ── R4 均值回归子策略: 先处理独立持仓的退出 ──
+            self._mr_exit_check(date_str)
+            # ── R6 分档止盈(+10%/+20% 各卖1/3) ──
+            self._ladder_take_profit(date_str)
 
             # ── 每日风控: 止损/止盈 (不受轮动日限制) ──
             for d in self.datas:
@@ -878,6 +1297,8 @@ class ETFStrategy(bt.Strategy):
                     continue
                 if not self._has_position(d):
                     continue
+                if ps.get("mr_held"):
+                    continue  # 均值回归子策略独立持仓: 走自己的止盈止损
 
                 has_pos = self._has_position(d)
                 shares = self._get_shares(d)
@@ -914,9 +1335,22 @@ class ETFStrategy(bt.Strategy):
                 if liquidated:
                     continue
 
+            # ── R4 均值回归子策略: 超跌买入(独立资金/独立持仓) ──
+            self._mr_entry_check(date_str)
+
             # ── 轮动日: 基于排名换仓+建仓 ──
             if is_rotation_day:
                 self._weekly_top3 = top_set
+                # R3 风险平价: 轮动日重新计算目标市值(总资产×gross×逆波动权重)
+                self._rp_targets = {}
+                if self.p.risk_parity:
+                    _members = [n for n in effective_top]
+                    _gross = float(self.p.rp_gross) * (self._timing_level if self.p.timing else 1.0) \
+                        * (1.0 - float(self.p.mr_weight))
+                    _eq = self.broker.getvalue()
+                    _w = self._inv_vol_weights(_members, _gross)
+                    self._rp_targets = {n: _eq * wv for n, wv in _w.items()}
+                    self._rp_weights = _w
                 # 退出: 跌出TOP的持仓不再清仓，对齐实盘(只重置空仓状态)
                 for d in self.datas:
                     name = d._name
@@ -930,7 +1364,8 @@ class ETFStrategy(bt.Strategy):
                         self._full_liquidate_state(ps, date_str)
 
                 # ── 趋势加仓: 已持仓+仍在TOP+浮盈>3%+MA5>MA20 → 追加init_pct仓位 ──
-                if self.p.trend_entry:
+                # 风险平价模式下改由目标市值调仓接管, 不再做趋势加仓
+                if self.p.trend_entry and not self.p.risk_parity:
                     for d in self.datas:
                         name = d._name
                         ps = self.ps[name]
@@ -938,6 +1373,8 @@ class ETFStrategy(bt.Strategy):
                         if d.volume[0] < 0 or name in self._order_pending:
                             continue
                         if not self._has_position(d):
+                            continue
+                        if ps.get("mr_held"):
                             continue
                         if name not in effective_top:
                             continue
@@ -1089,7 +1526,15 @@ class ETFStrategy(bt.Strategy):
                         # 方案A: 趋势建仓通道 (--trend-entry) — 保留轮动模式专用快速建仓
                         if not entered and self.p.trend_entry:
                             if rsi_val is not None and rsi_val < 65:
-                                if self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
+                                if self.p.risk_parity:
+                                    _tgt = getattr(self, "_rp_targets", {}).get(name, 0.0)
+                                    _cur = self._position_value(d)
+                                    if _tgt > 0 and self._buy_value(
+                                            d, _tgt - _cur,
+                                            f"风险平价建仓 目标{_tgt/self.broker.getvalue()*100:.1f}%资产 MA多头 RSI={rsi_val:.1f}"):
+                                        self._init_on_entry(ps, price, date_str)
+                                        entered = True
+                                elif self._buy(d, 0.50, f"每周轮动趋势建仓50% MA多头排列 RSI={rsi_val:.1f}"):
                                     self._init_on_entry(ps, price, date_str)
                                     entered = True
 
@@ -1141,6 +1586,12 @@ class ETFStrategy(bt.Strategy):
                             if entry_result and entry_result[0] == "买入" and entry_result[2] == "buy":
                                 if self._execute_entry_result(d, name, entry_result, date_str, init_pct=self.p.init_pct):
                                     entered = True
+
+            # ── 诊断: 记录当日总仓位比例(供报告分析) ──
+            if getattr(self, "_last_expo_date", "") != date_str:
+                self._last_expo_date = date_str
+                _eq = self.broker.getvalue()
+                self._exposure_hist.append((date_str, round(self._gross_value() / _eq, 4) if _eq > 0 else 0.0))
 
             self._update_prev_macd()
             return
@@ -1939,6 +2390,14 @@ class ETFStrategy(bt.Strategy):
             pct = 0.30
 
         price = d.close[0]
+        if self.p.risk_parity:
+            _tgt = getattr(self, "_rp_targets", {}).get(name, 0.0)
+            if _tgt > 0:
+                _cur = self._position_value(d)
+                if self._buy_value(d, _tgt - _cur, f"风险平价建仓 {reason}"):
+                    self._init_on_entry(ps, price, date_str)
+                    return True
+                return False
         if self._buy(d, pct, reason):
             self._init_on_entry(ps, price, date_str)
             return True
@@ -2065,6 +2524,12 @@ def main():
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
     rotation_interval = 5  # 每周轮动间隔(天): 5天最优(周轮动) | 20天(月轮动)
+    # ── 研究(R1-R6)参数 ──
+    timing = False; timing_levels = "0.3,0.6,1.0"; timing_gross = 0.90; timing_trim = True
+    risk_parity = False; rp_cap = 0.5; rp_gross = 0.90; rp_band = 0.25
+    mr_weight = 0.0; mr_z = 2.0; mr_slots = 3; mr_stop = 0.10
+    hysteresis = 0.0; atr_trail_mult = 0.0; tp_ladder = False; mr_only = False; rank_interval = 1
+    universe_file = None
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -2115,6 +2580,43 @@ def main():
             if i + 1 < len(args):
                 rotation_interval = int(args[i + 1])
                 i += 1
+        # ── 研究(R1-R6) ──
+        elif arg == "--timing":
+            timing = True
+        elif arg.startswith("--timing-levels="):
+            timing_levels = arg.split("=", 1)[1]
+        elif arg.startswith("--timing-gross="):
+            timing_gross = float(arg.split("=", 1)[1])
+        elif arg == "--timing-no-trim":
+            timing_trim = False
+        elif arg == "--risk-parity":
+            risk_parity = True
+        elif arg.startswith("--rp-cap="):
+            rp_cap = float(arg.split("=", 1)[1])
+        elif arg.startswith("--rp-gross="):
+            rp_gross = float(arg.split("=", 1)[1])
+        elif arg.startswith("--rp-band="):
+            rp_band = float(arg.split("=", 1)[1])
+        elif arg.startswith("--mr="):
+            mr_weight = float(arg.split("=", 1)[1])
+        elif arg.startswith("--mr-z="):
+            mr_z = float(arg.split("=", 1)[1])
+        elif arg.startswith("--mr-slots="):
+            mr_slots = int(arg.split("=", 1)[1])
+        elif arg.startswith("--mr-stop="):
+            mr_stop = float(arg.split("=", 1)[1])
+        elif arg.startswith("--hysteresis="):
+            hysteresis = float(arg.split("=", 1)[1])
+        elif arg.startswith("--atr-mult="):
+            atr_trail_mult = float(arg.split("=", 1)[1])
+        elif arg == "--tp-ladder":
+            tp_ladder = True
+        elif arg == "--mr-only":
+            mr_only = True
+        elif arg.startswith("--rank-interval="):
+            rank_interval = int(arg.split("=", 1)[1])
+        elif arg.startswith("--universe-file="):
+            universe_file = arg.split("=", 1)[1]
         i += 1
 
     # --stop-loss 是历史遗留的空参数：全仓 0 处使用，回测止损完全由 risk_manager 配置决定。
@@ -2149,15 +2651,29 @@ def main():
 
     # 每周轮动模式: 将候选池(rotation.py ETF_CANDIDATES)中的ETF也加入数据加载范围
     if run_weekly_rotation:
-        candidate_added = 0
-        for code, cfg in ETF_CANDIDATES.items():
-            if code not in active_codes:
-                active_codes[code] = {"name": cfg["name"], "sid": cfg["sid"]}
-                candidate_added += 1
-        # 510300 沪深300ETF 作为大盘自适应仓位指标，不参与候选池
-        if "510300" not in active_codes:
-            active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
-        print(f"▸ 每周轮动: 候选池新增 {candidate_added} 只ETF (共{len(active_codes)}只)")
+        if universe_file:
+            # R1 研究: 用自定义候选池替换原候选池(只保留文件内标的 + 大盘指标)
+            with open(universe_file) as _f:
+                _u = json.load(_f)
+            _pool = _u.get("pool", _u)
+            active_codes = {}
+            for code, cfg in _pool.items():
+                if isinstance(cfg, str):
+                    cfg = {"name": cfg, "sid": ("sh" if code.startswith("5") else "sz") + code}
+                active_codes[code] = {"name": cfg["name"], "sid": cfg.get("sid") or (("sh" if code.startswith("5") else "sz") + code)}
+            if "510300" not in active_codes:
+                active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
+            print(f"▸ R1 自定义候选池: {len(active_codes)} 只 (含大盘指标510300)")
+        else:
+            candidate_added = 0
+            for code, cfg in ETF_CANDIDATES.items():
+                if code not in active_codes:
+                    active_codes[code] = {"name": cfg["name"], "sid": cfg["sid"]}
+                    candidate_added += 1
+            # 510300 沪深300ETF 作为大盘自适应仓位指标，不参与候选池
+            if "510300" not in active_codes:
+                active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
+            print(f"▸ 每周轮动: 候选池新增 {candidate_added} 只ETF (共{len(active_codes)}只)")
 
     print("▸ 拉取历史K线 (腾讯前复权 API)...")
     # 计算K线拉取起始日: trade_start 往前推 120 个交易日（预热期）
@@ -2260,6 +2776,23 @@ def main():
                         rsi_entry_max=rsi_entry_max,
                         rotation_interval=rotation_interval,
                         enhanced_trend=run_enhanced_trend,
+                        timing=timing,
+                        timing_levels=timing_levels,
+                        timing_gross=timing_gross,
+                        timing_trim=timing_trim,
+                        risk_parity=risk_parity,
+                        rp_cap=rp_cap,
+                        rp_gross=rp_gross,
+                        rp_band=rp_band,
+                        mr_weight=mr_weight,
+                        mr_z=mr_z,
+                        mr_slots=mr_slots,
+                        mr_stop=mr_stop,
+                        hysteresis=hysteresis,
+                        atr_trail_mult=atr_trail_mult,
+                        tp_ladder=tp_ladder,
+                        mr_only=mr_only,
+                        rank_interval=rank_interval,
     )
 
     # Analyzers
@@ -2325,6 +2858,22 @@ def main():
     print(f"  交易笔数:     {total_trades:>11d}")
     print(f"  胜率:         {win_rate:>11.1f}%")
     print(f"  盈亏比:       {pf:>11.2f}")
+
+    # ── 研究诊断 ──
+    _eh = getattr(strat, "_exposure_hist", [])
+    if _eh:
+        _avg = sum(x for _, x in _eh) / len(_eh)
+        print(f"  平均总仓位:   {_avg*100:>11.1f}%")
+    if timing:
+        _th = getattr(strat, "_timing_hist", [])
+        if _th:
+            from collections import Counter
+            _c = Counter(l for _, l, _, _ in _th)
+            _dist = " ".join(f"{k:.1f}:{v/len(_th)*100:.0f}%" for k, v in sorted(_c.items()))
+            print(f"  择时分档占比: {_dist}")
+    if mr_weight > 0:
+        _mr_n = sum(1 for p in strat.ps.values() if p.get("mr_held"))
+        print(f"  MR子策略:     {mr_weight*100:.0f}%资金 z={mr_z} 期末持仓{_mr_n}只")
 
     print(f"\n{'─' * 70}")
     print(f"  {'ETF':<8} {'名称':<12} {'持仓':>10} {'市值':>12} {'状态':>8}")
