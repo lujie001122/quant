@@ -27,7 +27,34 @@ backtest:
   trade_start: '2024-07-01'
 broker_type: sim
 concentrated_mode: true
-concentrated_top_n: 3
+concentrated_top_n: 5      # 集中持仓 TOP N（研究结论: 3→5, 全期年化 0.29%→7.08%）
+concentrated_sizing_n: 3   # 单票资金基数除数：扩到 5 只时单票基数不缩小（对齐实盘固定30%/笔）
+# ── 组合层择时（R2）: 510300 三因子打分 → 三档总仓位乘数 ──
+# 回测 backtest_bt.py 与实盘 signal_generator.py 共用 timing.py + 这一段配置，口径唯一。
+timing:
+  enabled: true
+  index_code: '510300'      # 大盘状态判定标的（沪深300ETF）
+  ma_fast: 20               # 快线周期
+  ma_slow: 60               # 慢线周期
+  slope_days: 5             # 斜率对比回看的交易日数
+  high_window: 60           # 距 N 日最高价回撤
+  low_window: 60            # 距 N 日最低价的距离（贴地判据）
+  high_dd_pct: 0.05         # 距最高价回撤 < 5% 计 +1
+  low_near_pct: 0.03        # 距最低价 < 3% 计 -2
+  atr_period: 14            # ATR 周期
+  atr_window: 120           # ATR 中位数回看窗口
+  atr_spike_mult: 1.5       # ATR > 1.5×中位数 计 -1
+  score_full: 2             # 得分 >= 2 → 满档
+  score_mid: 0              # 得分 >= 0 → 中档
+  levels: [0.5, 0.8, 1.0]   # 三档总仓位乘数（低/中/满）
+  gross: 0.90               # 满档目标总仓位
+  trim: true                # 档位下调时按比例减持，把总仓位压到 gross×档位
+  trim_band: 0.10           # 超目标 10 个百分点以内不调仓
+  insufficient_level: 1.0   # 指数历史不足时的兜底档位
+# ── 数据口径 ──
+data:
+  # 腾讯前复权日K本地缓存（回测优先读，保证可复现；缓存缺失的标的才走实时接口）
+  kline_qfq_cache: data/kline_qfq
 cooldown_days: 2
 dead_ratio: 0.3
 defense_code: '159611'

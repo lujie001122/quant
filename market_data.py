@@ -25,6 +25,48 @@ API_DELAY = 1  # akshare调用间隔(秒)
 
 
 # ============================================================
+# 数据源断言（禁止静默降级）
+#   腾讯前复权是唯一可信口径；Sina 是未复权（ETF 份额折算会产生
+#   +221% / -50% 的假跳空），akshare 口径不一。任何降级都必须:
+#     1) 打印醒目 [!数据源降级!] 前缀
+#     2) 记进本进程的数据源台账，收尾时打印"本次使用数据源=..."
+# ============================================================
+DATA_SOURCE_LOG = []  # [(code, source)]
+
+_SOURCE_CN = {
+    "tencent": "腾讯前复权(qfq)",
+    "sina": "Sina(未复权)",
+    "akshare": "akshare",
+    "cache_qfq": "腾讯qfq本地缓存",
+}
+_DEGRADED_SOURCES = ("sina", "akshare")
+
+
+def record_data_source(code, source):
+    """登记一次取数的数据源（回测/实盘收尾统一汇总）。"""
+    DATA_SOURCE_LOG.append((str(code), str(source)))
+
+
+def data_source_report():
+    """返回 (汇总文案, 是否发生降级)。"""
+    if not DATA_SOURCE_LOG:
+        return "[数据源] 本次使用数据源=无取数记录", False
+    by_source = {}
+    for code, source in DATA_SOURCE_LOG:
+        by_source.setdefault(source, set()).add(code)
+    degraded = any(s in _DEGRADED_SOURCES for s in by_source)
+    parts = []
+    for source, codes in by_source.items():
+        parts.append(f"{_SOURCE_CN.get(source, source)}×{len(codes)}只")
+    head = "[数据源] ⚠️ 本次使用数据源=" if degraded else "[数据源] 本次使用数据源="
+    text = head + " + ".join(parts)
+    if degraded:
+        text += "  ← 含未复权降级数据(Sina/akshare), 数字不可与腾讯qfq口径直接对比"
+    return text, degraded
+
+
+
+# ============================================================
 # 数据获取层（腾讯前复权 + akshare降级）
 # ============================================================
 
@@ -206,6 +248,7 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             # 数据源标识: 腾讯主源
             for k in klines:
                 k["source"] = "tencent"
+            record_data_source(code, "tencent")
             # 按 start/end 过滤（start/end 为 YYYYMMDD 格式，K线日期为 YYYY-MM-DD）
             start_dt = datetime.strptime(start, "%Y%m%d").strftime("%Y-%m-%d")
             end_dt = datetime.strptime(end, "%Y%m%d").strftime("%Y-%m-%d")
@@ -213,7 +256,7 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             return klines
     except Exception as e:
         logger.warning(f"{code} 腾讯接口失败: {e}, 降级为Sina")
-        print(f"[WARN] {code} 腾讯接口失败: {e}, 降级为Sina")
+        print(f"[!数据源降级!] {code} 腾讯qfq失败({e}) → 尝试 Sina(未复权)")
 
     # 降级: Sina (新浪财经K线)
     try:
@@ -247,11 +290,13 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             klines = [k for k in klines if start_dt <= k["date"] <= end_dt]
             for k in klines:
                 k["source"] = "sina"
+            record_data_source(code, "sina")
             logger.warning(f"{code} 使用降级数据源 Sina，指标计算可能偏差")
+            print(f"[!数据源降级!] {code} 本次使用 Sina(未复权) ← 份额折算会产生假跳空, 该段涨幅不可信")
             return klines
     except Exception as e2:
         logger.warning(f"{code} Sina接口失败: {e2}, 降级为akshare")
-        print(f"[WARN] {code} Sina接口失败: {e2}, 降级为akshare")
+        print(f"[!数据源降级!] {code} Sina也失败({e2}) → 尝试 akshare")
 
     # 降级: akshare
     try:
@@ -274,6 +319,8 @@ def fetch_klines_daily(code, start="20250101", end="20261231", adjust="qfq"):
             logger.warning(f"{code} 使用降级数据源 akshare，指标计算可能偏差")
             for k in klines:
                 k["source"] = "akshare"
+            record_data_source(code, "akshare")
+            print(f"[!数据源降级!] {code} 本次使用 akshare ← 非腾讯qfq口径, 不做跨源对比")
             return klines
     except Exception as e2:
         raise RuntimeError(f"{code} 所有K线数据源均不可用: {e2}")

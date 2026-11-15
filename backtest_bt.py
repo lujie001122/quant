@@ -51,7 +51,8 @@ with open(_CONFIG_PATH) as f:
     CONF = yaml.safe_load(f)
 
 # Phase 3: 引用 market_data + position_info + strategies 模块
-from market_data import fetch_klines_daily
+from market_data import fetch_klines_daily, record_data_source, data_source_report
+import timing as _timing
 from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS, MIN_SHARES
 
 class _AddonEvalPos(PositionInfo):
@@ -127,11 +128,30 @@ CODES = {**ETF_CANDIDATES, **{k: v for k, v in _DEFAULT_CODES.items() if k not i
 #  Data fetch (腾讯前复权)
 # ═══════════════════════════════════════════════
 
+# 腾讯前复权日K本地缓存（config.yaml: data.kline_qfq_cache）
+_KLINE_CACHE_DIR = ""
+_QOFQ_CACHE = (CONF.get("data") or {}).get("kline_qfq_cache") or ""
+if _QOFQ_CACHE and not os.path.isabs(_QOFQ_CACHE):
+    _KLINE_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), _QOFQ_CACHE)
+
+
 def fetch_daily(code, sid, data_start=None, data_end=None):
-    """获取前复权日K线数据 → 委托 market_data.fetch_klines_daily"""
+    """获取前复权日K线数据 → 优先本地腾讯qfq缓存, 缺失才走 market_data.fetch_klines_daily"""
     # 默认拉全量（回退用），调用方可传入 data_start/data_end 限制区间
     start = data_start or "20250101"
     end = data_end or "20261231"
+    _cache_path = os.path.join(_KLINE_CACHE_DIR, f"{code}.csv") if _KLINE_CACHE_DIR else ""
+    klines = None
+    if _cache_path and os.path.exists(_cache_path):
+        _df = pd.read_csv(_cache_path, parse_dates=["date"]).set_index("date").sort_index()
+        _df = _df[["open", "high", "low", "close", "volume"]]
+        if data_start:
+            _df = _df[_df.index >= pd.Timestamp(data_start)]
+        if data_end:
+            _df = _df[_df.index <= pd.Timestamp(data_end)]
+        if len(_df):
+            record_data_source(code, "cache_qfq")
+            return _df
     klines = fetch_klines_daily(code, start=start, end=end)
     if not klines:
         return None
@@ -300,6 +320,7 @@ class ETFStrategy(bt.Strategy):
         ("rsi_entry_max", 55),  # RSI抄底上限: 集中模式通道1的RSI阈值(默认55)
         ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
         ("enhanced_trend", False),  # 增强趋势止盈: MACD红柱缩短+RSI<60, 卖20%
+        ("timing", None),  # 组合层择时: None=跟随 config.yaml timing.enabled; True/False=强制
     )
 
     # 板块分类: 用于板块分散
@@ -376,6 +397,19 @@ class ETFStrategy(bt.Strategy):
         self._weekly_top3 = set()  # 当前TOP3 ETF代码
         self._weekly_rotation_day = 0  # 轮动日计数器
         self._last_rotation_date = ""  # 日期守卫: 同一天不重复计数
+
+        # 组合层择时状态（R2）
+        self._timing_cfg = _timing.load_config()
+        self._timing_on = (bool(self._timing_cfg.get("enabled", True))
+                           if self.p.timing is None else bool(self.p.timing))
+        self._entry_mult = 1.0       # 当前买入仓位乘数
+        self._timing_level = 1.0     # 当前档位
+        self._timing_prev = None     # 昨日档位（None=首日）
+        self._timing_score = 0
+        self._timing_hist = []       # [(date, level, score)]
+        self._timing_last_date = ""
+        self._exposure_hist = []     # [(date, invested/total)]
+        self._timing_trim_count = 0
 
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
@@ -456,8 +490,14 @@ class ETFStrategy(bt.Strategy):
         return self.getposition(data).size > 0
 
     def _buy(self, data, pct, reason):
-        """按比例追加买入（pct是本次追加比例，非目标总持仓比例）"""
+        """按比例追加买入（pct是本次追加比例，非目标总持仓比例）
+
+        组合层择时: 所有趋势买入的 pct 统一乘 _entry_mult（0.5/0.8/1.0）。
+        """
         name = data._name
+        if self._timing_on and self._entry_mult != 1.0:
+            reason = f"{reason} [择时×{self._entry_mult:.1f}]"
+            pct = pct * self._entry_mult
         target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * POSITION_CAP)
         price = data.close[0]
         need = max(int(target_value / price / 100) * 100, MIN_SHARES)  # BUGFIX: 追加模式，不计已有持仓
@@ -608,6 +648,77 @@ class ETFStrategy(bt.Strategy):
             return True, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}"
         return False, ""
 
+    # ── 组合层择时（R2, 与实盘 signal_generator.py 共用 timing.py）──
+    def _get_data(self, code):
+        for d in self.datas:
+            if d._name == code:
+                return d
+        return None
+
+    def _position_value(self, d):
+        return self.getposition(d).size * float(d.close[0])
+
+    def _gross_value(self):
+        return sum(self._position_value(d) for d in self.datas)
+
+    def _timing_state(self):
+        """计算大盘指数状态 → (level, score, detail, source)
+
+        ATR 是 Wilder 递归平滑，必须喂 510300 的完整历史（截断会翻档）。
+        """
+        cfg = self._timing_cfg
+        d = self._get_data(cfg["index_code"])
+        if d is None:
+            return float(cfg["insufficient_level"]), 0, "no-index", "none"
+        n = len(d)
+        st = _timing.evaluate_arrays(list(d.close.get(size=n)),
+                                     list(d.high.get(size=n)),
+                                     list(d.low.get(size=n)),
+                                     cfg=cfg, data_source="cache_qfq")
+        return st["level"], st["score"], st["detail"], st["data_source"]
+
+    def _update_timing(self, date_str):
+        """每日更新档位；档位变化时按 gross×档位 压缩总仓位。"""
+        if not self._timing_on:
+            self._entry_mult = 1.0
+            self._timing_level = 1.0
+            return
+        level, score, detail, _source = self._timing_state()
+        prev = self._timing_prev
+        self._timing_level = level
+        self._timing_score = score
+        self._entry_mult = level
+        if self._timing_last_date != date_str:
+            self._timing_last_date = date_str
+            self._timing_hist.append((date_str, level, score))
+            eq = self.broker.getvalue()
+            self._exposure_hist.append((date_str, round(self._gross_value() / eq, 4) if eq > 0 else 0.0))
+        if prev is not None and abs(level - prev) > 1e-9:
+            print(f"[择时] {date_str} 档位 {prev:.1f}→{level:.1f} (得分{score:+d}) {detail}")
+            self._timing_trim(level, date_str)
+        self._timing_prev = level
+
+    def _timing_trim(self, level, date_str):
+        """档位下调: 把总仓位压到 timing.gross × level（容忍带 trim_band 内不动）。"""
+        cfg = self._timing_cfg
+        if not cfg.get("trim", True):
+            return
+        equity = self.broker.getvalue()
+        if equity <= 0:
+            return
+        gross = self._gross_value()
+        ratio = gross / equity
+        target = float(cfg["gross"]) * level
+        if ratio <= target + float(cfg["trim_band"]):
+            return
+        need = (ratio - target) / ratio  # 需减持的持仓比例
+        for d in self.datas:
+            if not self._has_position(d) or d._name in self._order_pending:
+                continue
+            if self._sell(d, need * 100,
+                          f"择时降档减仓 档位={level:.1f} 仓位{ratio*100:.0f}%→{target*100:.0f}%"):
+                self._timing_trim_count += 1
+
     def _reset_daily(self, date_str):
         """每日重置: bought_today + empty_days
         Bug9: 加日期守卫防同一天重复重置
@@ -682,6 +793,9 @@ class ETFStrategy(bt.Strategy):
         if date_str != self._last_date:
             self._last_date = date_str
             self._day_count += 1
+
+        # ── 组合层择时: 每日更新 510300 档位乘数（买入仓位 × 档位, 降档按比例减仓）──
+        self._update_timing(date_str)
 
         # ═══ 集中TOP N+50%建仓+趋势加码模式 ═══
         if self.p.concentrated_pyramid_mode:
@@ -2052,7 +2166,7 @@ def main():
     momentum_mode = "c2"  # simple | c2
     trail_mode = "fixed"  # fixed | e1 | e2
     init_pct = 0.30       # 0.30 | 0.50
-    top_n = 3             # 集中持仓TOP N只ETF
+    top_n = int(CONF.get("concentrated_top_n", 5))  # 集中持仓TOP N只ETF: 默认读 config.yaml
     lookback = 20         # 动量回看期(日)
     ma60_filter = False   # MA60趋势过滤
     dynamic_pct = False   # 动态仓位
@@ -2065,6 +2179,7 @@ def main():
     trend_entry = False   # 趋势建仓通道
     rsi_entry_max = 55    # RSI抄底上限
     rotation_interval = 5  # 每周轮动间隔(天): 5天最优(周轮动) | 20天(月轮动)
+    timing_override = None  # None=跟随 config.yaml timing.enabled; --no-timing 可做基线对照
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -2115,6 +2230,10 @@ def main():
             if i + 1 < len(args):
                 rotation_interval = int(args[i + 1])
                 i += 1
+        elif arg == "--no-timing":
+            timing_override = False
+        elif arg == "--timing":
+            timing_override = True
         i += 1
 
     # --stop-loss 是历史遗留的空参数：全仓 0 处使用，回测止损完全由 risk_manager 配置决定。
@@ -2260,6 +2379,7 @@ def main():
                         rsi_entry_max=rsi_entry_max,
                         rotation_interval=rotation_interval,
                         enhanced_trend=run_enhanced_trend,
+                        timing=timing_override,
     )
 
     # Analyzers
@@ -2325,6 +2445,31 @@ def main():
     print(f"  交易笔数:     {total_trades:>11d}")
     print(f"  胜率:         {win_rate:>11.1f}%")
     print(f"  盈亏比:       {pf:>11.2f}")
+
+    # ── 组合层择时统计（证明三档真的在切换，不是一直满仓）──
+    _th = getattr(strat, "_timing_hist", [])
+    if _th:
+        from collections import Counter
+        _c = Counter(lvl for _, lvl, _ in _th)
+        print(f"  平均总仓位:   {sum(x for _, x in strat._exposure_hist) / len(strat._exposure_hist) * 100:>10.1f}%"
+              if strat._exposure_hist else "")
+        print(f"  择时交易日:   {len(_th):>11d} 天 (三档切换 {len([1 for i in range(1, len(_th)) if abs(_th[i][1] - _th[i-1][1]) > 1e-9])} 次, "
+              f"降档减仓 {strat._timing_trim_count} 笔)")
+        _order = sorted(_c.keys(), reverse=True)
+        _desc = "  ".join(f"{lvl:.1f}档={_c[lvl]}天({_c[lvl]/len(_th)*100:.1f}%)" for lvl in _order)
+        print(f"  择时分档分布: {_desc}")
+        _by_year = {}
+        for dt, lvl, _s in _th:
+            _by_year.setdefault(dt[:4], Counter())[lvl] += 1
+        for y in sorted(_by_year):
+            yc = _by_year[y]
+            yt = sum(yc.values())
+            yd = " ".join(f"{lvl:.1f}:{yc[lvl]}({yc[lvl]/yt*100:.0f}%)" for lvl in sorted(yc, reverse=True))
+            print(f"    {y}: {yd}")
+        print(f"  择时最终档位: {strat._timing_level:.1f} (得分 {strat._timing_score:+d})")
+
+    # ── 数据源断言: 收尾打印本次实际用的是哪个源 ──
+    print("\n" + data_source_report()[0])
 
     print(f"\n{'─' * 70}")
     print(f"  {'ETF':<8} {'名称':<12} {'持仓':>10} {'市值':>12} {'状态':>8}")

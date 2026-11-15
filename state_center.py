@@ -354,10 +354,13 @@ def get_etfs_config(fund_per_etf=None):
             # Bug8: 集中模式预留20%现金 — cash_reserve_ratio
             cash_reserve_ratio = _cfg.get('cash_reserve_ratio', 0.20)
             investable_fund = int(max_per_etf * (1 - cash_reserve_ratio))
-            # 集中模式：每只ETF分一半资金
+            # 集中模式：单票资金基数 = 可投资金 / concentrated_sizing_n
+            # （concentrated_top_n 是持仓只数；扩到 5 只时单票基数不缩小，
+            #   与实盘"每笔买入固定 30% 总资产"的口径一致）
             if _cfg.get('concentrated_mode', False):
                 top_n = _cfg.get('concentrated_top_n', 3)
-                fund_per_etf = investable_fund // top_n
+                sizing_n = int(_cfg.get('concentrated_sizing_n', top_n) or top_n)
+                fund_per_etf = investable_fund // max(1, sizing_n)
             else:
                 pool = _load_pool()
                 n_etfs = len(pool['etf_pool']) if pool else len(_DEFAULT_CODES)

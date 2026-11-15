@@ -14,6 +14,7 @@
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -25,8 +26,10 @@ from market_data import (
     fetch_realtime_quotes, fetch_klines_daily, fetch_klines_5min,
     calc_ma, calc_rsi_wilder, calc_macd, calc_atr, calc_ao,
     calc_vol_ratio_120min, calc_5min_indicators, dynamic_spacing,
-    ETFS,
+    ETFS, data_source_report,
 )
+# ── 组合层择时（与 backtest_bt.py 共用同一份实现 + config.yaml）──
+import timing as _timing_mod
 
 # ── 持仓信息模型 + 常量 ──
 from position_info import (
@@ -449,6 +452,44 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     _allocated_funds = _pm.allocate_fund(active_codes, actual_total_asset=_total_asset_for_alloc)
     if _DEBUG:
         print(f"[PM] 资金分配(总资产={_total_asset_for_alloc:.0f}): {_allocated_funds}")
+
+    # ══════════════════════════════════════════════════════════
+    # 组合层择时（R2）: 与回测 backtest_bt.py 共用 timing.py + config.yaml
+    #   输出: 三档总仓位乘数（0.5/0.8/1.0），买入目标仓位统一乘该系数
+    # ══════════════════════════════════════════════════════════
+    _timing_cfg = _timing_mod.load_config()
+    _timing_mult = 1.0
+    _timing_score = 0
+    _timing_detail = "timing-disabled"
+    _timing_source = "none"
+    _timing_degraded = False
+    _timing_prev_level = None
+    try:
+        _timing_prev_level = _load_gate_state().get("timing_level")
+    except Exception:
+        _timing_prev_level = None
+    _timing_enabled = bool(_timing_cfg.get("enabled", True))
+    if _timing_enabled:
+        try:
+            import datetime as _dt_tm
+            _tm_end = _dt_tm.date.today().strftime("%Y%m%d")
+            _tm_start = (_dt_tm.date.today() - _dt_tm.timedelta(days=760)).strftime("%Y%m%d")
+            _idx_klines = fetch_klines_daily(_timing_cfg["index_code"], start=_tm_start, end=_tm_end)
+            _tst = _timing_mod.evaluate(_idx_klines or [], _timing_cfg)
+            _timing_mult = _tst["level"]
+            _timing_score = _tst["score"]
+            _timing_detail = _tst["detail"]
+            _timing_source = _tst["data_source"]
+            _timing_degraded = bool(_tst["degraded"])
+            print(f"[择时] 指数={_timing_cfg['index_code']} 状态={_timing_mod.state_label(_timing_score, _timing_source)} "
+                  f"档位乘数={_timing_mult:.2f} | {_timing_detail} | 数据源={_timing_source}")
+            if _timing_degraded:
+                print(f"[!数据源降级!] 择时指数 {_timing_cfg['index_code']} 用了未复权源({_timing_source})，"
+                      f"档位可能失真，禁止与回测口径直接对比")
+        except Exception as _tm_err:
+            print(f"[择时] 计算失败({_tm_err})，本次按满档 1.0 执行")
+    else:
+        print("[择时] config.yaml timing.enabled=false，本次按满档 1.0 执行")
 
     # ── Kelly公式辅助: 从近60日交易计算Kelly比例 ──
     try:
@@ -972,6 +1013,29 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         if _orphan_tag:
             reason = reason + _orphan_tag if reason else _orphan_tag.strip()
 
+        # ── 组合层择时: 所有趋势买入的目标仓位统一乘档位系数 ──
+        # 最终 target 金额/股数由 executor 按同一 position_ratio 下单，不另算一套
+        _ratio_raw = position_ratio
+        _mult_applied = 1.0
+        _target_amount = None
+        _target_shares = None
+        if trade_type == "buy":
+            _m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)%", str(position_ratio))
+            if _m and price > 0:
+                _raw_pct = float(_m.group(1)) / 100.0
+                _final_pct = _raw_pct * _timing_mult
+                _suffix = str(position_ratio)[_m.end():]
+                position_ratio = f"{_final_pct * 100:.0f}%{_suffix}"
+                _mult_applied = _timing_mult
+                # 目标金额/股数用 executor 的唯一计算处（calc_order_amount），避免两套算法
+                _plan_t = _pm.calc_order_amount(
+                    _total_asset_for_alloc, _final_pct * 100, price=price,
+                    static_fund=cfg.get("fund", 44000))
+                _target_amount = _plan_t["amount"]
+                _target_shares = _plan_t["shares"]
+                reason = (f"{reason} [择时档位{_timing_mult:.1f}: "
+                          f"{_raw_pct*100:.0f}%→{_final_pct*100:.0f}%]")
+
         signals_output[code] = {
             "price": f"{price:.3f}",
             "rsi": t["rsi"],
@@ -988,6 +1052,12 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             "t0_signal": t0_signal,
             "stop_signal": stop_signal,
             "position_ratio": position_ratio,
+            "position_ratio_raw": _ratio_raw,
+            "timing_level": _timing_mult,
+            "timing_multiplier": _mult_applied,
+            "timing_score": _timing_score,
+            "target_amount": round(_target_amount, 2) if _target_amount is not None else None,
+            "target_shares": _target_shares,
             "reason": reason,
             "trade_type": trade_type,
             "stop_level": pos.stop_level,
@@ -1000,6 +1070,82 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
             "market_weak": defense_weak if code != DEFENSE_CODE else False,
             "t0_pair": t0_pair,
         }
+
+    # ── 择时降档: 把总仓位压到 gross×档位（与回测 _timing_trim 同一口径）──
+    _timing_trimmed = []
+    if _timing_enabled and pf_data:
+        _equity = _total_asset_for_alloc
+        _mv_total = 0.0
+        for _c, _s in signals_output.items():
+            _sh = int(pf_data.get("positions", {}).get(_c, {}).get("shares", 0) or 0)
+            _mv_total += _sh * float(_s.get("price", 0) or 0)
+        _ratio = _mv_total / _equity if _equity > 0 else 0.0
+        _target = float(_timing_cfg["gross"]) * _timing_mult
+        _need = 0.0
+        if (_timing_prev_level is not None
+                and _timing_mult < float(_timing_prev_level) - 1e-9
+                and _ratio > _target + float(_timing_cfg["trim_band"])):
+            _need = (_ratio - _target) / _ratio
+        if _need > 0:
+            print(f"[择时降档] 档位 {float(_timing_prev_level):.1f}→{_timing_mult:.1f} "
+                  f"总仓位{_ratio*100:.0f}% > 目标{_target*100:.0f}% → 各持仓减{_need*100:.0f}%")
+            for _c, _s in signals_output.items():
+                if _s.get("trade_type") is not None:
+                    continue  # 已有卖出/清仓/买入信号的标的优先，不叠加择时减仓
+                _pd = pf_data.get("positions", {}).get(_c, {})
+                _sh = int(_pd.get("shares", 0) or 0)
+                _avail = int(_pd.get("available", _sh) or _sh)
+                if _sh <= 0 or _avail <= 0:
+                    continue
+                _trim_sh = min(int(_sh * _need / 100) * 100, (_avail // 100) * 100)
+                if _trim_sh < 100:
+                    continue
+                _s.update({
+                    "action": "减仓",
+                    "trade_type": "reduce",
+                    "position_ratio": f"{_need*100:.0f}%",
+                    "reduce_shares": _trim_sh,
+                    "reason": (f"择时降档减仓 档位{_timing_mult:.1f} "
+                               f"仓位{_ratio*100:.0f}%→{_target*100:.0f}%"),
+                })
+                _timing_trimmed.append((_c, _trim_sh))
+
+    # 记录本次档位，次日只在"降档"当天触发减仓
+    try:
+        _gs2 = _load_gate_state()
+        _gs2.update({"timing_level": _timing_mult, "timing_score": _timing_score,
+                     "timing_detail": _timing_detail, "timing_date": today_str,
+                     "timing_source": _timing_source})
+        _save_gate_state(_gs2)
+    except Exception:
+        pass
+
+    # ── 目标仓位明细（含择时乘数, 一眼看出这单是否被压过）──
+    print(f"[目标仓位] 总资产¥{_total_asset_for_alloc:,.0f} | 择时状态={_timing_mod.state_label(_timing_score, _timing_source)} "
+          f"| 档位乘数={_timing_mult:.2f}")
+    print(f"  {'代码':<8}{'名称':<14}{'现价':>8}{'当前股数':>10}{'乘数':>6}{'乘数前':>8}{'乘数后':>8}"
+          f"{'目标金额':>12}{'目标股数':>10}  动作")
+    for _c, _s in signals_output.items():
+        _sh = int(pf_data.get("positions", {}).get(_c, {}).get("shares", 0) or 0) if pf_data else 0
+        _tt = _s.get("trade_type")
+        if _tt != "buy" and _sh <= 0:
+            continue
+        _px = float(_s.get("price", 0) or 0)
+        _mult_s = f"{_timing_mult:.2f}"
+        if _tt == "buy":
+            _raw = _s.get("position_ratio_raw", "-")
+            _fin = _s.get("position_ratio", "-")
+            _amt = _s.get("target_amount")
+            _tsh = _s.get("target_shares")
+            _amt_s = f"¥{_amt:,.0f}" if _amt is not None else "-"
+            _sh_s = f"{_tsh:,}" if _tsh is not None else "-"
+        else:
+            _raw = "-"
+            _fin = "-"
+            _amt_s = f"¥{_sh * _px:,.0f}"
+            _sh_s = f"{_sh:,}"
+        print(f"  {_c:<8}{ETFS.get(_c, {}).get('name', _c):<14}{_px:>8.3f}{_sh:>10,}"
+              f"{_mult_s:>6}{_raw:>8}{_fin:>8}{_amt_s:>12}{_sh_s:>10}  {_s.get('action', '')}")
 
     # 可读汇总(用trade_type精确匹配, 不依赖中文字符串)
     liquid_s = [c for c, s in signals_output.items() if s.get("trade_type") == "liquidate"]
@@ -1043,6 +1189,17 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         "version": "v3.1",
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "signals": signals_output,
+        "timing": {
+            "index_code": _timing_cfg.get("index_code"),
+            "enabled": _timing_enabled,
+            "score": _timing_score,
+            "level": _timing_mult,
+            "detail": _timing_detail,
+            "data_source": _timing_source,
+            "degraded": _timing_degraded,
+            "prev_level": _timing_prev_level,
+            "trimmed": _timing_trimmed,
+        },
         "market_environment": "全市场弱势(515080也破MA20)" if defense_weak else "正常",
         "human_readable": human_readable,
         "strategy_policy": {
@@ -1097,6 +1254,9 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         except Exception:
             pass
 
+    # ── 数据源断言: 本次取数用了腾讯还是降级源，必须留痕 ──
+    _ds_txt, _ = data_source_report()
+    print(_ds_txt)
     return result
 
 

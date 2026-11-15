@@ -78,6 +78,9 @@ class PositionManager:
         self.min_shares = self._config.get("trade", {}).get("min_shares", 5000)
         self.concentrated_mode = self._config.get("concentrated_mode", False)
         self.concentrated_top_n = self._config.get("concentrated_top_n", 3)
+        # 单票资金基数分母（与 state_center.get_etfs_config 同键）：top_n 扩到 5 时基数不缩小
+        self.concentrated_sizing_n = int(self._config.get(
+            "concentrated_sizing_n", self.concentrated_top_n) or self.concentrated_top_n)
 
     @staticmethod
     def _load_config(config_path: str) -> dict:
@@ -449,12 +452,13 @@ class PositionManager:
     # ══════════════════════════════════════════════
 
     def fund_slots(self) -> int:
-        """每只ETF资金基数的分母：集中模式=top_n，否则=池内标的数。
+        """每只ETF资金基数的分母：集中模式=concentrated_sizing_n，否则=池内标的数。
 
-        与 state_center.get_etfs_config() 的分母算法保持一致。
+        与 state_center.get_etfs_config() 的分母算法保持一致：
+        top_n 是持仓只数，sizing_n 是单票资金基数分母（top5 时仍按 3 份切）。
         """
         if self.concentrated_mode:
-            return max(int(self.concentrated_top_n or 1), 1)
+            return max(int(self.concentrated_sizing_n or 1), 1)
         try:
             pool_path = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "etf_pool.json")

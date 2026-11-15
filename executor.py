@@ -1643,8 +1643,19 @@ class SignalExecutor:
                 # 下单金额 = 当前实际总资产 × 配置比例（与回测 backtest_bt.py:_buy 同口径）
                 # config 静态 fund 只做兜底/单笔上限
                 _static_fund = self._ETFS.get(code, {}).get("fund", 44000)
-                _plan = self._calc_order_amount(self._get_total_asset(), ratio, price=price,
+                _ta = self._get_total_asset()
+                _plan = self._calc_order_amount(_ta, ratio, price=price,
                                                 static_fund=_static_fund)
+                # ── 择时乘数: 下单金额只认信号里的最终比例，这里只打印乘数前后对照 ──
+                _mult = sig.get("timing_multiplier")
+                if _mult is not None:
+                    _raw_ratio = self._parse_position_ratio(sig.get("position_ratio_raw", ""))
+                    _plan_before = self._calc_order_amount(
+                        _ta, _raw_ratio, price=price, static_fund=_static_fund)
+                    print(f"[择时] {code} 大盘状态={sig.get('timing_score')}分 档位乘数={_mult:.2f} | "
+                          f"乘数前目标金额=¥{_plan_before['amount']:,.0f} "
+                          f"乘数后目标金额=¥{_plan['amount']:,.0f} "
+                          f"({sig.get('position_ratio_raw', '-')}→{sig.get('position_ratio', '-')})")
                 print(f"[下单金额] {code} 总资产={_plan['total_asset']:.0f} "
                       f"基数={_plan['base']:.0f}({_plan['source']}) 比例={_plan['ratio']:.0%} "
                       f"金额={_plan['amount']:.0f} 股数={_plan['shares']} 现价={price:.3f}")
@@ -1688,7 +1699,10 @@ class SignalExecutor:
             elif trade_type in ("reduce", "reduce_half"):
                 current_shares = self._get_position_shares(code)
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
-                if ratio > 0:
+                if sig.get("reduce_shares"):
+                    # 择时降档减仓: signal_generator 已算好精确股数（不套 5000 股下限）
+                    shares = min(int(sig["reduce_shares"]), current_shares)
+                elif ratio > 0:
                     shares = max(int(current_shares * ratio / 100) * 100, 5000)
                 else:
                     shares = max(int(current_shares * (0.50 if trade_type == "reduce_half" else 0.30) / 100) * 100, 5000)

@@ -1,5 +1,5 @@
 {
-  "date": "2026-11-14",
+  "date": "2026-11-16",
   "status": "allowed",
   "momentum": 0.4428,
   "rotation_triggered_date": "2026-11-13",
@@ -7,5 +7,10 @@
     "159928",
     "512800",
     "159770"
-  ]
+  ],
+  "timing_level": 0.5,
+  "timing_score": -2,
+  "timing_detail": "px=4.083 ma20=4.142 ma60=4.422 slope5=-1.03% hi60dd=15.0% atr=1.66%(med1.71%)",
+  "timing_date": "2026-11-16",
+  "timing_source": "sina"
 }
