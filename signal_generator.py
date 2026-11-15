@@ -32,6 +32,7 @@ from market_data import (
 import timing as _timing_mod
 
 # ── 持仓信息模型 + 常量 ──
+import trailing
 from position_info import (
     PositionInfo,
     DEAD_RATIO, ACTIVE_RATIO, TOTAL_FUND, DEFENSE_CODE, MAX_POSITION_RATIO,
@@ -1228,7 +1229,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                 f"+硬止损(峰值回撤{_hs}%)"
                 "+分级减仓(破MA20→30%, DIF<0→30%, 趋势恶化→清仓)"
             ),
-            "profit_take": f"移动止盈(8%后成本+5%, 15%后峰值回撤5%)+硬止盈({_htp}%)→清仓",
+            "profit_take": f"{trailing.describe_long()}+硬止盈({_htp}%)→清仓",
             "t0_signal": "弹性做T(5分钟分时:RSI5m<50买入+MACD5m金叉/红柱+量比<1.5; RSI5m>50卖出+MACD5m死叉/绿柱+量比>1.2,30%数量,开盘后即可运行)",
             "entry": "4通道(RSI抄底/趋势跟踪/突破入场/分批建仓)统一30%→确认2次→补仓15%",
             "frequency": "正常1买2T/天, ATR>5%时2买3T/天",

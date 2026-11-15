@@ -76,5 +76,18 @@ def describe():
     """诊断用: 当前生效口径"""
     m = mode()
     if m == 'atr':
-        return f"atr x{float(TRAILING.get('atr_mult', 2.0)):.1f}"
+        return f"ATRx{float(TRAILING.get('atr_mult', 2.0)):.1f}"
     return m
+
+
+def describe_long():
+    """人读口径（报告/推送用，避免硬编码描述与实际配置漂移）"""
+    m = mode()
+    act, lock, _ = params(0.0)
+    if m == 'atr':
+        return (f"移动止盈(浮盈{act*100:.1f}%激活, {lock*100:.0f}%锁盈后"
+                f"峰值回撤ATRx{float(TRAILING.get('atr_mult', 2.0)):.1f})")
+    if m == 'e1':
+        return (f"移动止盈(浮盈{act*100:.1f}%激活, {lock*100:.0f}%锁盈后"
+                f"峰值回撤3%/5%/7%按ATR分档)")
+    return f"移动止盈(固定{float(TRAIL_PCT)*100:.0f}%峰值回撤)"
