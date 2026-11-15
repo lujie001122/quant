@@ -324,6 +324,7 @@ class ETFStrategy(bt.Strategy):
         ("rotation_interval", 5),  # 每周轮动间隔(天): 每N天重算TOP排名, 默认5天
         ("enhanced_trend", False),  # 增强趋势止盈: MACD红柱缩短+RSI<60, 卖20%
         ("timing", None),  # 组合层择时: None=跟随 config.yaml timing.enabled; True/False=强制
+        ("index_only", ""),  # 只做择时指标、不参与选股/不可交易的标的(修复金字塔模式择时静默失效)
     )
 
     # 板块分类: 用于板块分散
@@ -543,6 +544,8 @@ class ETFStrategy(bt.Strategy):
         momentum_scores = {}
         for d in self.datas:
             name = d._name
+            if self.p.index_only and name == self.p.index_only:
+                continue  # 择时指数不参与动量排名/选股
             if d.volume[0] < 0:
                 momentum_scores[name] = -999
             elif len(d.close) >= lb + 1:
@@ -838,6 +841,8 @@ class ETFStrategy(bt.Strategy):
 
                 if d.volume[0] < 0:
                     continue
+                if self.p.index_only and name == self.p.index_only:
+                    continue  # 择时指数只做指标, 不可交易
                 if name in self._order_pending:
                     continue
 
@@ -2318,6 +2323,12 @@ def main():
             active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
         print(f"▸ 每周轮动: 候选池新增 {candidate_added} 只ETF (共{len(active_codes)}只)")
 
+    # 修复: 集中金字塔模式择时静默失效 — 510300 必须进数据范围
+    # (仅作择时指标, 不参与选股/不可交易; 实盘 signal_generator.py 一直直接用 510300 算档位)
+    if run_concentrated_pyramid and "510300" not in active_codes:
+        active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
+        print("▸ 集中金字塔: 510300 仅作择时指标(不参与选股/不可交易)")
+
     # 中枪提醒: 未显式给 --momentum 时默认 c2(多因子), 而研究与实盘验证口径是 simple。
     # c2 在同一窗口/同一宇宙下 2019-2026 是 -26.18%/回撤91.01%(simple 为 +0.29%/34.35%)。
     if not momentum_given:
@@ -2431,6 +2442,7 @@ def main():
                         rotation_interval=rotation_interval,
                         enhanced_trend=run_enhanced_trend,
                         timing=timing_override,
+                        index_only=("510300" if run_concentrated_pyramid else ""),
     )
 
     # Analyzers
