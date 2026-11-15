@@ -36,6 +36,7 @@ from datetime import datetime
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Optional
 from trade import is_filled_status
+import risk_manager as _risk   # 实盘风控闸门（日亏限额/连亏熔断/单票上限）+ 成交记账
 
 
 # ═══════════════════════════════════════════════════════
@@ -1705,6 +1706,29 @@ class SignalExecutor:
                 fail_count += 1
                 continue
 
+            # ═══ 实盘下单前风控闸门（a 日亏限额 → b 连亏熔断 → c 单票仓位上限）═══
+            # 只拦买入/加仓（含做T买入腿）；卖出/减仓/止损/做T平仓一律免检。
+            if is_buy_direction:
+                try:
+                    _gate = _risk.pre_trade_gate(
+                        code, price, shares, trade_type=trade_type,
+                        total_asset=self._get_total_asset(), quotes=live_quotes,
+                        today_str=today_str)
+                except Exception as _gate_ex:
+                    print(f"[RISK] ⚠️ 闸门检查异常({_gate_ex})，本次放行")
+                    _gate = {'ok': True, 'shares': shares, 'reason': '闸门异常放行'}
+                if not _gate['ok']:
+                    print(f"  ⛔ [{code}] 风控拦下，不下单: {_gate['reason']}")
+                    skip_count += 1
+                    continue
+                if int(_gate['shares']) != shares:
+                    shares = int(_gate['shares'])
+                    if trade_type == "buy":
+                        cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
+                        label = f"买入 {code} {shares}股 @{price:.3f}"
+            else:
+                print(f"[RISK] 免检 {code} {trade_type}：卖出/减仓/止损/做T平仓不新增风险敞口")
+
             # ═══ 执行命令（含重试） ═══
             direction = self._signal_direction(sig)
             print(f"\n[{i+1}/{len(actionable)}] {label}")
@@ -2091,6 +2115,23 @@ class SignalExecutor:
                     final_error = str(e)
                     final_error_type = "exception"
                     break
+
+            # ═══ 每笔成交后风控记账（当日盈亏 + 逐笔结果 → 连亏熔断数据源）═══
+            if success:
+                try:
+                    _st = _risk.record_trade_result(
+                        code, direction, shares, price, today_str=today_str,
+                        quotes=live_quotes, total_asset=self._get_total_asset())
+                    _cfg_risk = _risk.risk_config()
+                    print(f"  [RISK] 记账 {code} {direction} {shares}股 @{price:.3f}："
+                          f"当日已实现 {float(_st.get('daily_realized_pnl', 0)):+.0f}元，"
+                          f"当日盈亏 {float(_st.get('daily_pnl', 0)):+.0f}元"
+                          f"({float(_st.get('daily_pnl_pct', 0))*100:+.2f}%)，"
+                          f"连亏 {int(_st.get('consecutive_losses', 0))}/{_cfg_risk['consecutive_loss_count']} 笔"
+                          + (f"，熔断至 {_st.get('circuit_breaker_until')}"
+                             if _st.get('circuit_breaker_until') else ""))
+                except Exception as _pnh_ex:
+                    print(f"  [WARN] 风控记账失败: {_pnh_ex}")
 
             if not success:
                 fail_count += 1

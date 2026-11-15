@@ -73,6 +73,11 @@ risk:
   max_consecutive_loss_days: 3
   max_daily_sell_pct: 0.5
   min_daily_loss_pct: 0.01
+  # ── 实盘下单前风控闸门（仅 executor 实盘路径读取；回测不读这些键）──
+  daily_loss_limit: 0.03        # 当日已实现+浮动亏损达 -3% → 禁止新开仓
+  consecutive_loss_count: 4     # 连续 4 笔亏损 → 熔断
+  cooldown_days: 3              # 熔断冷却 3 天
+  single_position_cap: 0.50     # 单票目标市值 / 总资产上限 50%
 signal:
   before_11: '11:00'
   max_retries: 3

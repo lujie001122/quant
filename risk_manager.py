@@ -45,6 +45,427 @@ _V2_ENABLED = bool(_v2_cfg.get('enabled', False))
 _V2_E1_ACTIVATION = float(_v2_cfg.get('e1_activation_v2', 0.05))
 _V2_TIER1_PCT = float(_v2_cfg.get('tier1_pct_v2', 0.06))
 
+from datetime import datetime as _dt, timedelta as _td
+
+# ═══════════════════════════════════════════════════════════════
+# 实盘风控闸门（只被 executor 实盘下单路径调用；回测不经过这里）
+#   闸门1 日亏限额  闸门2 连亏熔断  闸门3 单票仓位上限
+#   状态落盘 logs/risk_state.json（原子写），拦截写 logs/alerts/alert_YYYY-MM-DD.log
+# ═══════════════════════════════════════════════════════════════
+
+_ROOT = _os.path.dirname(_os.path.abspath(__file__))
+RISK_STATE_PATH = _os.path.join(_ROOT, 'logs', 'risk_state.json')
+RISK_ALERT_DIR = _os.path.join(_ROOT, 'logs', 'alerts')
+
+# 阈值全部来自 config.yaml risk 段；缺省值保守但不激进
+_RISK_DEFAULTS = {
+    'daily_loss_limit': 0.03,
+    'consecutive_loss_count': 4,
+    'cooldown_days': 3,
+    'single_position_cap': 0.50,
+}
+
+
+def risk_config():
+    """读取 config.yaml risk 段阈值（运行期读取，便于测试与调参）"""
+    r = (_cfg.get('risk', {}) or {})
+    return {
+        'daily_loss_limit': float(r.get('daily_loss_limit', _RISK_DEFAULTS['daily_loss_limit'])),
+        'consecutive_loss_count': int(r.get('consecutive_loss_count', _RISK_DEFAULTS['consecutive_loss_count'])),
+        'cooldown_days': int(r.get('cooldown_days', _RISK_DEFAULTS['cooldown_days'])),
+        'single_position_cap': float(r.get('single_position_cap', _RISK_DEFAULTS['single_position_cap'])),
+    }
+
+
+def _today_str():
+    return _dt.now().strftime('%Y-%m-%d')
+
+
+def _empty_risk_state(today_str):
+    return {
+        'date': today_str,
+        'daily_realized_pnl': 0.0,
+        'daily_float_pnl': 0.0,
+        'daily_pnl': 0.0,
+        'daily_pnl_pct': 0.0,
+        'total_asset': 0.0,
+        'consecutive_losses': 0,
+        'loss_streak_started': '',
+        'circuit_breaker_until': '',
+        'circuit_breaker_reason': '',
+        'trades': [],
+        'updated_at': '',
+    }
+
+
+def load_risk_state(today_str=None):
+    """读取风控状态（文件损坏/缺失时自动从 .bak 恢复，仍无则返回空状态）"""
+    from core.atomic_writer import atomic_read_json
+    st = atomic_read_json(RISK_STATE_PATH, default=None)
+    if not isinstance(st, dict):
+        st = {}
+    base = _empty_risk_state(today_str or _today_str())
+    for k, v in base.items():
+        st.setdefault(k, v)
+    if not isinstance(st.get('trades'), list):
+        st['trades'] = []
+    return st
+
+
+def save_risk_state(state):
+    """原子写风控状态（临时文件 + fsync + rename，并发写不会出现半截 JSON）"""
+    from core.atomic_writer import atomic_write_json
+    state['updated_at'] = _dt.now().strftime('%Y-%m-%d %H:%M:%S')
+    return atomic_write_json(RISK_STATE_PATH, state)
+
+
+def _roll_risk_day(state, today_str):
+    """日切：重置当日盈亏/当日逐笔，保留连亏计数与熔断截止日"""
+    if state.get('date') == today_str:
+        return False
+    state['date'] = today_str
+    for k in ('daily_realized_pnl', 'daily_float_pnl', 'daily_pnl', 'daily_pnl_pct'):
+        state[k] = 0.0
+    state['trades'] = []
+    return True
+
+
+def _portfolio_positions():
+    try:
+        from state_center import load_portfolio
+        return ((load_portfolio() or {}).get('positions') or {})
+    except Exception:
+        return {}
+
+
+def _portfolio_total_asset():
+    try:
+        from state_center import load_portfolio
+        ta = float(((load_portfolio() or {}).get('account') or {}).get('total_asset') or 0)
+        if ta > 0:
+            return ta
+    except Exception:
+        pass
+    return float(TOTAL_FUND)
+
+
+def calc_floating_pnl(quotes=None):
+    """当日浮动盈亏 = Σ 持仓股数 ×（现价 − 昨收）；无昨收数据的标的不计入。"""
+    total = 0.0
+    for code, pos in _portfolio_positions().items():
+        try:
+            shares = int(pos.get('shares', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if shares <= 0:
+            continue
+        q = (quotes or {}).get(code) or {}
+        try:
+            price = float(q.get('price') or 0)
+            prev = float(q.get('prev_close') or 0)
+        except (TypeError, ValueError):
+            continue
+        if price > 0 and prev > 0:
+            total += (price - prev) * shares
+    return round(total, 2)
+
+
+def get_daily_loss_info(today_str=None, quotes=None, total_asset=None):
+    """闸门1 数据：当日已实现 + 浮动盈亏、占总资产比例、限额"""
+    today_str = today_str or _today_str()
+    cfg = risk_config()
+    st = load_risk_state(today_str)
+    rolled = _roll_risk_day(st, today_str)
+    realized = float(st.get('daily_realized_pnl', 0) or 0)
+    if quotes:
+        floating = calc_floating_pnl(quotes)
+    else:
+        floating = float(st.get('daily_float_pnl', 0) or 0)
+    ta = float(total_asset or 0) or _portfolio_total_asset()
+    daily_pnl = round(realized + floating, 2)
+    pct = daily_pnl / ta if ta > 0 else 0.0
+    if rolled:
+        st['daily_pnl'] = daily_pnl
+        st['daily_pnl_pct'] = round(pct, 6)
+        st['daily_float_pnl'] = floating
+        st['total_asset'] = round(ta, 2)
+        save_risk_state(st)
+    return {
+        'ok': pct > -cfg['daily_loss_limit'],
+        'daily_pnl': daily_pnl,
+        'realized': realized,
+        'floating': floating,
+        'pct': pct,
+        'limit': cfg['daily_loss_limit'],
+        'total_asset': ta,
+        'state': st,
+    }
+
+
+def check_daily_loss_limit(today_str=None, quotes=None, total_asset=None):
+    """闸门1 日亏限额：当日亏损达到阈值 → 禁止新开仓。
+
+    返回 (ok: bool, reason: str)；reason 带具体数值。
+    """
+    info = get_daily_loss_info(today_str, quotes=quotes, total_asset=total_asset)
+    if not info['ok']:
+        return False, (
+            f"当日亏损 {info['pct']*100:.1f}% 已触达日亏限额 -{info['limit']*100:.1f}%"
+            f"（已实现 {info['realized']:+.0f}元 + 浮动 {info['floating']:+.0f}元）")
+    return True, (
+        f"当日盈亏 {info['pct']*100:+.2f}%（已实现 {info['realized']:+.0f} + "
+        f"浮动 {info['floating']:+.0f} = {info['daily_pnl']:+.0f}元），"
+        f"限额 -{info['limit']*100:.1f}%")
+
+
+def get_consecutive_loss_info(today_str=None):
+    """闸门2 数据：连亏笔数、熔断截止日、阈值；冷却到期自动解锁并清零连亏"""
+    today_str = today_str or _today_str()
+    cfg = risk_config()
+    st = load_risk_state(today_str)
+    until = str(st.get('circuit_breaker_until') or '')
+    if until and today_str > until:
+        # 冷却到期 → 复位，重新计数
+        st['circuit_breaker_until'] = ''
+        st['circuit_breaker_reason'] = ''
+        st['consecutive_losses'] = 0
+        st['loss_streak_started'] = ''
+        save_risk_state(st)
+        until = ''
+    streaks = int(st.get('consecutive_losses', 0) or 0)
+    active = bool(until) and today_str <= until
+    return {
+        'consecutive_losses': streaks,
+        'consecutive_loss_count': cfg['consecutive_loss_count'],
+        'cooldown_days': cfg['cooldown_days'],
+        'circuit_breaker_active': active,
+        'circuit_breaker_until': until,
+        'circuit_breaker_reason': str(st.get('circuit_breaker_reason') or ''),
+        'loss_streak_started': str(st.get('loss_streak_started') or ''),
+        'last_pnl_date': str(st.get('date') or ''),
+    }
+
+
+def check_consecutive_loss(today_str=None):
+    """闸门2 连亏熔断：熔断期内禁止新开仓。
+
+    返回 (blocked: bool, reason: str)；reason 带具体数值。
+    """
+    info = get_consecutive_loss_info(today_str)
+    n = info['consecutive_losses']
+    threshold = info['consecutive_loss_count']
+    if info['circuit_breaker_active']:
+        return True, f"熔断中（连亏 {n} 笔，冷却至 {info['circuit_breaker_until']}）"
+    if n > 0:
+        return False, f"连亏 {n}/{threshold} 笔，未触发熔断"
+    return False, f"连亏 0/{threshold} 笔，无冷却"
+
+
+def reset_circuit_breaker(today_str=None):
+    """手动/自动解除熔断：清空连亏计数与冷却截止日"""
+    today_str = today_str or _today_str()
+    st = load_risk_state(today_str)
+    st['consecutive_losses'] = 0
+    st['loss_streak_started'] = ''
+    st['circuit_breaker_until'] = ''
+    st['circuit_breaker_reason'] = ''
+    save_risk_state(st)
+    return get_consecutive_loss_info(today_str)
+
+
+def check_single_position_cap(code, price, shares, total_asset=None, quotes=None,
+                              allow_compress=True):
+    """闸门3 单票仓位上限：目标市值（当前+本次买入）/ 总资产 > 上限。
+
+    超限时优先压缩到上限（压到不足 100 股则拒绝），返回 dict：
+      {ok, shares, cur_ratio, target_ratio, cap, compressed, reason}
+    """
+    cfg = risk_config()
+    cap = cfg['single_position_cap']
+    ta = float(total_asset or 0) or _portfolio_total_asset()
+    pos = _portfolio_positions().get(code, {}) or {}
+    try:
+        cur_shares = int(pos.get('shares', 0) or 0)
+    except (TypeError, ValueError):
+        cur_shares = 0
+    px = float(((quotes or {}).get(code) or {}).get('price') or 0) or float(price or 0)
+    new_shares = int(shares or 0)
+    if ta <= 0 or px <= 0:
+        return {'ok': True, 'shares': new_shares, 'cur_ratio': 0.0, 'target_ratio': 0.0,
+                'cap': cap, 'compressed': False, 'reason': '缺总资产/价格，跳过单票上限校验'}
+
+    from core.position_manager import PositionManager
+    pm = PositionManager(total_fund=ta)
+    pm.max_position_ratio = cap   # 阈值以 config.yaml risk.single_position_cap 为准
+    cur_mv = cur_shares * px
+    cur_ratio = pm.position_value_ratio(code, {code: {'market_value': cur_mv}})
+    room = pm.available_position_ratio(code, {code: {'market_value': cur_mv}})
+    target_ratio = (cur_mv + new_shares * px) / ta
+
+    if target_ratio <= cap:
+        return {'ok': True, 'shares': new_shares, 'cur_ratio': cur_ratio,
+                'target_ratio': target_ratio, 'cap': cap, 'compressed': False,
+                'reason': (f"目标占比 {target_ratio*100:.1f}% ≤ 上限 {cap*100:.0f}%"
+                           f"（当前 {cur_ratio*100:.1f}%，剩余额度 {room*100:.1f}%）")}
+
+    if allow_compress:
+        max_by_cap = int(max(cap * ta - cur_mv, 0.0) / px / 100) * 100
+        if max_by_cap >= 100:
+            new_ratio = (cur_mv + max_by_cap * px) / ta
+            return {'ok': True, 'shares': max_by_cap, 'cur_ratio': cur_ratio,
+                    'target_ratio': target_ratio, 'cap': cap, 'compressed': True,
+                    'reason': (f"单票占比 {target_ratio*100:.0f}% > 上限 {cap*100:.0f}%，"
+                               f"压缩股数 {new_shares}→{max_by_cap}（占比降至 {new_ratio*100:.1f}%）")}
+
+    return {'ok': False, 'shares': 0, 'cur_ratio': cur_ratio, 'target_ratio': target_ratio,
+            'cap': cap, 'compressed': False,
+            'reason': f"单票占比 {target_ratio*100:.0f}% > 上限 {cap*100:.0f}%"}
+
+
+def _write_risk_alert(line, today_str=None):
+    """拦截记录落 alerts 日志（logs/alerts/alert_YYYY-MM-DD.log）"""
+    today_str = today_str or _today_str()
+    try:
+        _os.makedirs(RISK_ALERT_DIR, exist_ok=True)
+        path = _os.path.join(RISK_ALERT_DIR, f'alert_{today_str}.log')
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(f"[{_dt.now().strftime('%H:%M:%S')}] [RISK] {line}\n")
+    except Exception as ex:
+        print(f"[RISK] ⚠️ 告警日志写入失败: {ex}")
+
+
+def _risk_block(line, today_str=None):
+    print(f"[RISK] {line}")
+    _write_risk_alert(line, today_str)
+    return {'ok': False, 'shares': 0, 'reason': line}
+
+
+def pre_trade_gate(code, price, shares, trade_type='buy', total_asset=None,
+                   quotes=None, today_str=None):
+    """实盘下单前统一风控闸门（executor 唯一调用点）。
+
+    只拦买入/加仓（trade_type=buy 或做T买入腿）；卖出/减仓/止损/做T平仓由调用方免检。
+    按 a 日亏限额 → b 连亏熔断 → c 单票上限 顺序校验，每道打印结论（含数值）。
+
+    返回 {'ok': bool, 'shares': int, 'reason': str}（压缩时 shares 为压缩后股数）
+    """
+    today_str = today_str or _today_str()
+    shares = int(shares or 0)
+    allow_compress = (trade_type == 'buy')   # 做T买入腿不改股数（配对单已定）
+
+    # a. 日亏限额
+    d_ok, d_reason = check_daily_loss_limit(today_str, quotes=quotes, total_asset=total_asset)
+    if not d_ok:
+        return _risk_block(f"拒绝开仓 {code}：{d_reason}", today_str)
+    print(f"[RISK] PASS 日亏限额 {code}：{d_reason}")
+
+    # b. 连亏熔断
+    c_blocked, c_reason = check_consecutive_loss(today_str)
+    if c_blocked:
+        return _risk_block(f"{c_reason}，拒绝开仓 {code}", today_str)
+    print(f"[RISK] PASS 连亏熔断 {code}：{c_reason}")
+
+    # c. 单票仓位上限
+    cap = check_single_position_cap(code, price, shares, total_asset=total_asset,
+                                    quotes=quotes, allow_compress=allow_compress)
+    if not cap['ok']:
+        return _risk_block(f"拒绝开仓 {code}：{cap['reason']}", today_str)
+    if cap['compressed']:
+        print(f"[RISK] 压缩开仓 {code}：{cap['reason']}")
+    else:
+        print(f"[RISK] PASS 单票上限 {code}：{cap['reason']}")
+
+    return {'ok': True, 'shares': int(cap['shares']), 'reason': '通过'}
+
+
+def record_daily_pnl(today_str=None, pnl_amount=None, trade=None, quotes=None,
+                     total_asset=None):
+    """成交后记账：当日盈亏 + 逐笔结果；日切自动重置当日字段。
+
+    trade: {'code','direction','shares','price','pnl'}，pnl 为已实现盈亏（无成本基准时 None）。
+    连亏计数：pnl<0 记 1 笔亏损，pnl>=0 清零；达到 consecutive_loss_count 笔 → 熔断 cooldown_days 天。
+    返回写入后的状态 dict。
+    """
+    today_str = today_str or _today_str()
+    cfg = risk_config()
+    st = load_risk_state(today_str)
+    _roll_risk_day(st, today_str)
+
+    if trade:
+        pnl = trade.get('pnl')
+        try:
+            pnl = round(float(pnl), 2) if pnl is not None else None
+        except (TypeError, ValueError):
+            pnl = None
+        st['trades'].append({
+            'time': _dt.now().strftime('%H:%M:%S'),
+            'code': trade.get('code', ''),
+            'direction': trade.get('direction', ''),
+            'shares': int(trade.get('shares', 0) or 0),
+            'price': float(trade.get('price', 0) or 0),
+            'pnl': pnl,
+            'result': 'unknown' if pnl is None else ('loss' if pnl < 0 else 'win'),
+        })
+        st['trades'] = st['trades'][-200:]
+        if pnl is not None:
+            st['daily_realized_pnl'] = round(float(st.get('daily_realized_pnl', 0) or 0) + pnl, 2)
+            if pnl < 0:
+                if int(st.get('consecutive_losses', 0) or 0) == 0:
+                    st['loss_streak_started'] = today_str
+                st['consecutive_losses'] = int(st.get('consecutive_losses', 0) or 0) + 1
+            else:
+                st['consecutive_losses'] = 0
+                st['loss_streak_started'] = ''
+            if int(st['consecutive_losses']) >= cfg['consecutive_loss_count']:
+                until = (_dt.strptime(today_str, '%Y-%m-%d')
+                         + _td(days=cfg['cooldown_days'])).strftime('%Y-%m-%d')
+                st['circuit_breaker_until'] = until
+                st['circuit_breaker_reason'] = f"连亏 {st['consecutive_losses']} 笔"
+
+    if pnl_amount is not None:
+        st['daily_pnl'] = round(float(pnl_amount), 2)
+        st['daily_float_pnl'] = round(st['daily_pnl'] - float(st.get('daily_realized_pnl', 0) or 0), 2)
+    else:
+        floating = calc_floating_pnl(quotes) if quotes else float(st.get('daily_float_pnl', 0) or 0)
+        st['daily_float_pnl'] = floating
+        st['daily_pnl'] = round(float(st.get('daily_realized_pnl', 0) or 0) + floating, 2)
+
+    ta = float(total_asset or 0) or _portfolio_total_asset()
+    st['total_asset'] = round(ta, 2)
+    st['daily_pnl_pct'] = round(st['daily_pnl'] / ta, 6) if ta > 0 else 0.0
+    save_risk_state(st)
+    return st
+
+
+def record_trade_result(code, direction, shares, price, today_str=None, quotes=None,
+                        total_asset=None, trade_type=''):
+    """成交后记账统一入口：卖出/减仓/止损按 entry_avg_cost 算本笔已实现盈亏。
+
+    direction: '买入' / '卖出'（也接受 buy/sell）
+    买入笔 pnl=None（不产生已实现盈亏，也不影响连亏计数）。
+    """
+    shares = int(shares or 0)
+    price = float(price or 0)
+    is_sell = str(direction) in ('卖出', 'sell', 'SELL', 'Sell')
+    pnl = None
+    entry_cost = 0.0
+    if is_sell and shares > 0 and price > 0:
+        try:
+            from state_center import load_portfolio
+            pf = load_portfolio() or {}
+            sig = (pf.get('_signal_state') or {}).get(code) or {}
+            entry_cost = float(sig.get('entry_avg_cost') or 0)
+            if entry_cost <= 0:
+                entry_cost = float(((pf.get('positions') or {}).get(code) or {}).get('avg_cost') or 0)
+        except Exception:
+            entry_cost = 0.0
+        if entry_cost > 0:
+            pnl = round((price - entry_cost) * shares, 2)
+    return record_daily_pnl(
+        today_str, trade={'code': code, 'direction': str(direction), 'shares': shares,
+                          'price': price, 'pnl': pnl},
+        quotes=quotes, total_asset=total_asset)
+
 
 class RiskManager:
     """风险管理器 — 统一处理止损、仓位上限、日亏损限额、连续亏损熔断"""
@@ -67,71 +488,41 @@ class RiskManager:
         # 增强趋势止盈模式
         self.enhanced_trend = enhanced_trend
 
-    def record_daily_pnl(self, today_str, pnl_amount=None):
-        """记录每日盈亏，更新连续亏损计数
+    def record_daily_pnl(self, today_str, pnl_amount=None, trade=None, quotes=None,
+                         total_asset=None):
+        """记录当日盈亏 + 逐笔成交结果（落盘 logs/risk_state.json，原子写）"""
+        st = record_daily_pnl(today_str, pnl_amount=pnl_amount, trade=trade,
+                              quotes=quotes, total_asset=total_asset)
+        self.daily_pnl = float(st.get('daily_pnl', 0) or 0)
+        self.consecutive_loss_days = int(st.get('consecutive_losses', 0) or 0)
+        self.last_pnl_date = st.get('date')
+        self._circuit_breaker_active = bool(st.get('circuit_breaker_until'))
+        self._circuit_breaker_reason = str(st.get('circuit_breaker_reason') or '')
+        return st
 
-        参数:
-          today_str: 日期字符串 "YYYY-MM-DD"
-          pnl_amount: 当日盈亏金额（None 则从 state_center 获取）
-        """
-        if pnl_amount is None:
-            pnl_amount = self._state.get_daily_pnl()
-
-        if self.last_pnl_date == today_str:
-            return  # 同一天不重复记录
-
-        total_asset = self._state.get_total_asset()
-        if total_asset <= 0:
-            return
-
-        loss_pct = abs(pnl_amount) / total_asset if pnl_amount < 0 else 0
-
-        if loss_pct >= self.MIN_DAILY_LOSS_PCT:
-            self.consecutive_loss_days += 1
-        else:
-            self.consecutive_loss_days = 0
-
-        self.last_pnl_date = today_str
-
-        # 更新熔断状态
-        if self.consecutive_loss_days >= self.MAX_CONSECUTIVE_LOSS_DAYS:
-            self._circuit_breaker_active = True
-            self._circuit_breaker_reason = (
-                f"连续{self.consecutive_loss_days}天亏损"
-                f"(日亏损>{self.MIN_DAILY_LOSS_PCT:.0%})，"
-                f"触发熔断保护"
-            )
-        else:
-            self._circuit_breaker_active = False
-            self._circuit_breaker_reason = ""
-
-    def check_consecutive_loss(self):
-        """检查连续亏损熔断状态
+    def check_consecutive_loss(self, today_str=None):
+        """检查连续亏损熔断状态（读落盘状态，冷却到期自动解锁）
 
         返回:
           (blocked: bool, reason: str)
         """
-        if self._circuit_breaker_active:
-            return True, self._circuit_breaker_reason
-        return False, ""
+        blocked, reason = check_consecutive_loss(today_str)
+        self._circuit_breaker_active = blocked
+        self._circuit_breaker_reason = reason
+        return blocked, reason
 
     def reset_circuit_breaker(self):
-        """重置熔断状态（手动恢复或盈利日后自动重置）"""
+        """重置熔断状态（手动恢复；盈利笔也会自动清零）"""
+        info = reset_circuit_breaker()
         self._circuit_breaker_active = False
         self._circuit_breaker_reason = ""
         self.consecutive_loss_days = 0
         self.last_pnl_date = None
+        return info
 
-    def get_consecutive_loss_info(self):
+    def get_consecutive_loss_info(self, today_str=None):
         """获取连续亏损状态信息"""
-        return {
-            "consecutive_loss_days": self.consecutive_loss_days,
-            "circuit_breaker_active": self._circuit_breaker_active,
-            "circuit_breaker_reason": self._circuit_breaker_reason,
-            "last_pnl_date": self.last_pnl_date,
-            "max_consecutive_loss_days": self.MAX_CONSECUTIVE_LOSS_DAYS,
-            "min_daily_loss_pct": self.MIN_DAILY_LOSS_PCT,
-        }
+        return get_consecutive_loss_info(today_str)
 
     # ═══════════════════════════════════════════════
     # 5. 综合工具
@@ -314,7 +705,7 @@ class RiskManager:
 
     @staticmethod
     def is_position_capped(pos, price, total_fund=None):
-        """检查是否已达仓位上限 (50%)
+        """检查是否已达单票仓位上限（config.yaml risk.single_position_cap，默认50%）
 
         参数:
           pos: PositionInfo 实例
@@ -328,7 +719,7 @@ class RiskManager:
         if not pos.has_position or total_fund <= 0:
             return False, 0.0
         ratio = pos.shares * price / total_fund
-        return ratio >= MAX_POSITION_RATIO, ratio
+        return ratio >= risk_config()['single_position_cap'], ratio
 
     @staticmethod
     def get_position_ratio(pos, price, total_fund=None):
@@ -347,17 +738,25 @@ class RiskManager:
     # 3. 日亏损限额检查
     # ═══════════════════════════════════════════════
 
-    def check_daily_loss_limit(self, order_intent=None) -> Tuple[bool, str]:
-        """检查当日亏损是否已达上限（已取消：此功能在极限方案C中永久禁用，始终返回True）"""
-        # 日亏损限额已取消，保留方法签名以兼容调用方
-        return True, "日亏损限额已取消"
+    def check_daily_loss_limit(self, order_intent=None, today_str=None, quotes=None,
+                               total_asset=None) -> Tuple[bool, str]:
+        """闸门1 日亏限额：当日已实现+浮动亏损达到 config risk.daily_loss_limit → 禁止新开仓"""
+        return check_daily_loss_limit(today_str, quotes=quotes, total_asset=total_asset)
+
+    def check_single_position_cap(self, code, price, shares, total_asset=None, quotes=None,
+                                  allow_compress=True):
+        """闸门3 单票仓位上限（config risk.single_position_cap）"""
+        return check_single_position_cap(code, price, shares, total_asset=total_asset,
+                                         quotes=quotes, allow_compress=allow_compress)
+
+    def pre_trade_gate(self, code, price, shares, trade_type='buy', total_asset=None,
+                       quotes=None, today_str=None):
+        """三道闸门统一入口（买入/加仓前调用）"""
+        return pre_trade_gate(code, price, shares, trade_type=trade_type,
+                              total_asset=total_asset, quotes=quotes, today_str=today_str)
 
     def check_order(self, order_intent) -> Tuple[bool, str]:
-        """统一风控入口（P0 修复）
-
-        检查顺序:
-          1. 日亏损限额检查（每日最多亏损5%）
-          2. 仓位上限检查（单只不超过50%）
+        """统一风控入口：卖出类免检，买入类走 a日亏 → b连亏 → c单票上限
 
         参数:
           order_intent: 订单意图（字典或对象，含 code/price/shares/direction 等字段）
@@ -365,29 +764,13 @@ class RiskManager:
         返回:
           (ok: bool, reason: str)
         """
-        # 1. 日亏损限额检查
-        ok, msg = self.check_daily_loss_limit(order_intent)
-        if not ok:
-            return False, msg
-
-        # 2. 仓位上限检查（买入信号）
-        if hasattr(order_intent, 'is_buy') and order_intent.is_buy():
-            from state_center import get_position_info
-            pos_data = get_position_info(order_intent.code)
-            if pos_data.get("shares", 0) > 0:
-                from position_info import PositionInfo
-                pos = PositionInfo()
-                pos.shares = pos_data.get("shares", 0)
-                pos.avg_cost = pos_data.get("avg_cost", 0.0)
-                pos.cost = pos.avg_cost * pos.shares
-                capped, ratio = self.is_position_capped(pos, order_intent.price)
-                if capped:
-                    return False, (
-                        f"{order_intent.code} 仓位{ratio*100:.0f}%已达50%上限，"
-                        f"跳过买入"
-                    )
-
-        return True, "通过"
+        if hasattr(order_intent, 'is_sell') and order_intent.is_sell():
+            return True, "免检（卖出/减仓/止损/做T平仓不增加风险敞口）"
+        code = getattr(order_intent, 'code', '')
+        price = float(getattr(order_intent, 'price', 0) or 0)
+        shares = int(getattr(order_intent, 'shares', 0) or 0)
+        res = pre_trade_gate(code, price, shares, trade_type='buy')
+        return res['ok'], res['reason']
 
 
 # ═══════════════════════════════════════════════

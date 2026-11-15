@@ -11,6 +11,7 @@
 import io
 import os
 import sys
+import tempfile
 from contextlib import redirect_stdout, redirect_stderr
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,7 @@ sys.path.insert(0, REPO_DIR)
 import state_center
 import executor
 import trade
+import risk_manager
 
 
 # ─── 替身 ────────────────────────────────────────────────────
@@ -76,7 +78,10 @@ class StubRecorder:
         return None
 
 
-# ─── 隔离层：禁止测试写真实 portfolio/订单/intent ────────────
+# ─── 隔离层：禁止测试写真实 portfolio/订单/intent/风控状态 ──
+_RISK_TMP = tempfile.mkdtemp(prefix="live_guard_risk_")
+risk_manager.RISK_STATE_PATH = os.path.join(_RISK_TMP, "risk_state.json")
+risk_manager.RISK_ALERT_DIR = os.path.join(_RISK_TMP, "alerts")
 state_center.load_portfolio = lambda: {"positions": {}, "account": {}}
 state_center.save_portfolio = lambda pf: None
 state_center.write_intent = lambda *a, **k: None
