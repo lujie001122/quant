@@ -244,6 +244,26 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
                         if p.has_position and p.build_phase == 0:
                             p.build_phase = 1
                             p.add_count = 0
+                        # 反向死锁修复: build_phase>0 但无持仓(下单失败/未成交) → 复位,
+                        # 否则 evaluate_entry 的 phase 分支永远不命中, 该标的永久无法再建仓
+                        if (not p.has_position) and p.build_phase and p.build_first_date:
+                            try:
+                                _stuck_days = (datetime.strptime(today_str, "%Y-%m-%d")
+                                               - datetime.strptime(p.build_first_date, "%Y-%m-%d")).days
+                            except Exception:
+                                _stuck_days = 0
+                            if _stuck_days >= 2:
+                                print(f"[状态自愈] {code} build_phase={p.build_phase} 但持仓0股"
+                                      f"(首批{_stuck_days}天前) → 复位为未建仓")
+                                p.build_phase = 0
+                                p.build_first_price = 0.0
+                                p.build_first_date = None
+                                p.peak_price = 0.0
+                                p.entry_avg_cost = 0.0
+                                p.add_count = 0
+                                p.confirm_batch_count = 0
+                                p.confirm_batch_date = None
+                                p.trailing_stop_price = 0.0
                         # entry_avg_cost初始化: 如果为0但实际有持仓, 用当前avg_cost
                         if p.entry_avg_cost == 0 and p.shares > 0:
                             p.entry_avg_cost = p.avg_cost
@@ -632,7 +652,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
         if pos.has_position:
             if price > pos.peak_price:
                 pos.peak_price = price
-            pos.update_trailing_stop(price)
+            pos.update_trailing_stop(price, atr_pct)
 
         # ── 网格解冻: 站上MA5解冻 ──
         if pos.grid_frozen and t["ma5"] and price > t["ma5"]:

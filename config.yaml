@@ -154,6 +154,14 @@ total_fund: 220000
 trade:
   min_shares: 100
 trail_pct: 0.12
+# 移动止盈口径（与回测 --trail / --atr-mult 同一实现，唯一真相源）
+#   mode=atr : 止损线 = 峰值 × (1 - atr_mult × ATR%)，浮盈≥activation 即跟踪，≥lockin 锁成本×(1+lockin_floor)
+#   mode=e1  : 回测 e1 粗档，ATR>5%→7% / ≥3%→5% / <3%→3%
+#   mode=fixed: 旧行为，峰值回撤 trail_pct，浮盈≥trail_pct+1% 激活、≥trail_pct+8% 锁盈
+trailing:
+  mode: e1             # e1(回测同口径, 实测最优) | atr(--atr-mult) | fixed(旧12%口径)
+  atr_mult: 2.0
+  lockin_floor: 0.05
 trend:
   empty_days_threshold: 5
   ma20_slope_period: 5

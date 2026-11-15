@@ -53,6 +53,7 @@ with open(_CONFIG_PATH) as f:
 # Phase 3: 引用 market_data + position_info + strategies 模块
 from market_data import fetch_klines_daily, record_data_source, data_source_report
 import timing as _timing
+import trailing
 from position_info import PositionInfo, DEFENSE_CODE, TREND_PROFIT_MAX_DAILY, TREND_PROFIT_COOLDOWN_DAYS, MIN_SHARES
 
 class _AddonEvalPos(PositionInfo):
@@ -305,7 +306,8 @@ class ETFStrategy(bt.Strategy):
         ("concentrated_pyramid_mode", False),  # 集中TOP N+50%建仓+趋势加码
         ("pyramid_mode", False),  # 趋势加码: 盈利后金字塔加仓
         ("momentum_mode", "c2"),  # 动量评分: simple(20日涨幅) | c2(多因子加权)
-        ("trail_mode", "fixed"),  # 移动止盈: fixed(固定7%) | e1(ATR自适应) | e2(ATR自适应2)
+        ("trail_mode", None),  # 移动止盈: None=跟随config trailing.mode | fixed | e1 | e2 | atr
+        ("atr_trail_mult", 0.0),  # atr模式倍数(0=读config trailing.atr_mult)
         ("init_pct", 0.30),  # 建仓比例: 0.30(30%) | 0.50(50%)
         ("top_n", 3),  # 集中持仓TOP N只ETF
         ("lookback", 20),  # 动量回看期(日)
@@ -314,6 +316,7 @@ class ETFStrategy(bt.Strategy):
         ("rebalance", 5),  # 重平衡周期(天): 每N天重排名换仓，默认5天
         ("stop_loss", 0.25),  # 固定止损比例: 对齐config.yaml stop_loss.hard_stop_pct=0.25
         ("trail_pct", 0.12),  # 移动止盈回撤比例(fixed模式): peak_price*(1-trail_pct)
+        ("trade_start", ""),  # 预热修复(--warmup): 指标用完整历史, 只在此日期后交易
         ("sector_diversify", False),  # 板块分散: TOP3必须来自不同板块
         ("confirm_days", 0),  # 换仓延迟确认天数: 连续N天在/不在TOP N才换仓
         ("trend_entry", False),  # 趋势建仓通道: TOP3+多头排列+空仓时直接50%建仓
@@ -620,7 +623,11 @@ class ETFStrategy(bt.Strategy):
             trail_activation = trail_pct + 0.01
             trail_lockin = trail_pct + 0.08
 
-        if self.p.trail_mode == "fixed":
+        if self.p.trail_mode == "atr":
+            _m = float(self.p.atr_trail_mult or (trailing.TRAILING.get('atr_mult', 2.0)))
+            _gap = min(max(_m * atr_pct / 100.0, 0.02), 0.30)
+            trail_mult = 1 - _gap; trail_label = f"ATR{_m:.1f}x({_gap*100:.1f}%)"
+        elif self.p.trail_mode == "fixed":
             trail_mult = 1 - trail_pct
             trail_label = f"{trail_pct*100:.0f}%"
         elif self.p.trail_mode == "e1":
@@ -634,18 +641,34 @@ class ETFStrategy(bt.Strategy):
         return trail_pct, trail_mult, trail_label, trail_activation, trail_lockin
 
     def _update_trail_state(self, ps, price, avg, atr_pct):
-        """更新移动止盈状态，返回 (should_close, reason)"""
-        pp = (price - avg) / avg if avg > 0 else 0
-        trail_pct, trail_mult, trail_label, trail_activation, trail_lockin = self._calc_trail_params(price, avg, atr_pct)
-        if pp >= trail_activation and not ps["reached_activation"]:
+        """更新移动止盈状态，返回 (should_close, reason)
+
+        统一走 trailing.py（与实盘 signal_generator → position_info 同一实现）。
+        e2 保留历史口径。
+        """
+        mode = self.p.trail_mode or trailing.mode()
+        if mode == "e2":
+            trail_pct, trail_mult, trail_label, trail_activation, trail_lockin = self._calc_trail_params(price, avg, atr_pct)
+            pp = (price - avg) / avg if avg > 0 else 0
+            if pp >= trail_activation and not ps["reached_activation"]:
+                ps["reached_activation"] = True
+            if pp >= trail_lockin and not ps["reached_lockin"]:
+                ps["reached_lockin"] = True
+                ps["trail"] = avg * 1.05
+            if ps["reached_lockin"] and ps["peak_price"] > 0:
+                ps["trail"] = ps["peak_price"] * trail_mult
+            if ps["trail"] > 0 and price <= ps["trail"]:
+                return True, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}"
+            return False, ""
+        line, act_hit, lock_hit, should_close = trailing.update(
+            avg, ps["peak_price"], price, atr_pct / 100.0, ps["reached_lockin"], mode_override=mode)
+        if act_hit:
             ps["reached_activation"] = True
-        if pp >= trail_lockin and not ps["reached_lockin"]:
-            ps["reached_lockin"] = True
-            ps["trail"] = avg * 1.05
-        if ps["reached_lockin"] and ps["peak_price"] > 0:
-            ps["trail"] = ps["peak_price"] * trail_mult
-        if ps["trail"] > 0 and price <= ps["trail"]:
-            return True, f"移动止盈{trail_label} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}"
+        ps["reached_lockin"] = lock_hit
+        if line > 0:
+            ps["trail"] = line
+        if should_close:
+            return True, f"移动止盈{trailing.label(atr_pct / 100.0, mode)} ATR={atr_pct:.1f}% trail={ps['trail']:.3f}"
         return False, ""
 
     # ── 组合层择时（R2, 与实盘 signal_generator.py 共用 timing.py）──
@@ -788,6 +811,8 @@ class ETFStrategy(bt.Strategy):
 
     def next(self):
         date_str = self.data.datetime.date(0).strftime("%Y-%m-%d")
+        if self.p.trade_start and date_str < self.p.trade_start:
+            return  # 预热期: 只喂指标, 不交易
 
         # 交易日计数: 每天递增，用于重平衡周期判断
         if date_str != self._last_date:
@@ -2164,7 +2189,8 @@ def main():
 
     # 集中持仓策略参数
     momentum_mode = "c2"  # simple | c2
-    trail_mode = "fixed"  # fixed | e1 | e2
+    trail_mode = None     # None=跟随 config trailing.mode | fixed | e1 | e2 | atr
+    atr_trail_mult = 0.0  # atr模式倍数(0=读config trailing.atr_mult)
     init_pct = 0.30       # 0.30 | 0.50
     top_n = int(CONF.get("concentrated_top_n", 5))  # 集中持仓TOP N只ETF: 默认读 config.yaml
     lookback = 20         # 动量回看期(日)
@@ -2180,6 +2206,7 @@ def main():
     rsi_entry_max = 55    # RSI抄底上限
     rotation_interval = 5  # 每周轮动间隔(天): 5天最优(周轮动) | 20天(月轮动)
     timing_override = None  # None=跟随 config.yaml timing.enabled; --no-timing 可做基线对照
+    warmup_fix = "--warmup" in sys.argv  # 预热修复: 指标吃满120日预热, 只从trade_start开始交易
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -2213,6 +2240,8 @@ def main():
         elif arg.startswith("--stop-loss="):
             stop_loss = float(arg.split("=", 1)[1])
             stop_loss_given = True
+        elif arg.startswith("--atr-mult="):
+            atr_trail_mult = float(arg.split("=", 1)[1])
         elif arg.startswith("--trail-pct="):
             trail_pct = float(arg.split("=", 1)[1])
         elif arg == "--sector-diversify":
@@ -2321,7 +2350,9 @@ def main():
     # backtrader要求所有数据都就绪才触发next(), 如果588170从2025年才有数据,
     # 则前3.5年的next()都不会被调用. 解决方案: 用首根K线价格回填上市前日期,
     # 策略中通过volume<0标记跳过未上市ETF.
-    all_dates = pd.date_range(start=start, end=end, freq="B")  # 工作日
+    # --warmup: 预热期K线保留给指标(MACD/MA60/ATR), 否则预热被丢弃→窗口前60个交易日无信号
+    _cal_start = pd.Timestamp(data_start) if warmup_fix else start
+    all_dates = pd.date_range(start=_cal_start, end=end, freq="B")  # 工作日
     for code in dataframes:
         df = dataframes[code]
         # 记录原始上市日期(reindex前)
@@ -2365,6 +2396,8 @@ def main():
                         pyramid_mode=run_pyramid,
                         momentum_mode=momentum_mode,
                         trail_mode=trail_mode,
+                        atr_trail_mult=atr_trail_mult,
+                        trade_start=(trade_start if warmup_fix else ""),
                         init_pct=init_pct,
                         top_n=top_n,
                         lookback=lookback,
