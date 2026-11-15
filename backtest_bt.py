@@ -2188,7 +2188,8 @@ def main():
     run_enhanced_trend = "--enhanced-trend" in sys.argv  # 增强趋势止盈
 
     # 集中持仓策略参数
-    momentum_mode = "c2"  # simple | c2
+    momentum_mode = "c2"  # simple | c2 (默认值仅兼容旧命令; 验证口径/研究基线一律 simple)
+    momentum_given = False  # 是否显式传了 --momentum=X
     trail_mode = None     # None=跟随 config trailing.mode | fixed | e1 | e2 | atr
     atr_trail_mult = 0.0  # atr模式倍数(0=读config trailing.atr_mult)
     init_pct = 0.30       # 0.30 | 0.50
@@ -2221,6 +2222,7 @@ def main():
             custom_end = arg.split("=", 1)[1]
         elif arg.startswith("--momentum="):
             momentum_mode = arg.split("=", 1)[1]
+            momentum_given = True
         elif arg.startswith("--trail="):
             trail_mode = arg.split("=", 1)[1]
         elif arg.startswith("--init-pct="):
@@ -2271,12 +2273,11 @@ def main():
         print(f"[WARN] --stop-loss={stop_loss:g} 该参数当前不影响结果，"
               f"止损由 risk_manager 配置决定（config.yaml: stop_loss 段）", file=sys.stderr)
 
-    # --period X 支持: 从 config.yaml 读取
-    period_map = CONF['backtest']['periods']
+    # --period=2y / 6m / 3m: 距今 N 年/月/日，实时计算（不再读 config 里写死的旧窗口）
     period = None
     for arg in sys.argv:
         if arg.startswith("--period="):
-            period = arg.split("=")[1]
+            period = arg.split("=", 1)[1].strip().lower()
             break
 
     if run_000725:
@@ -2288,9 +2289,19 @@ def main():
     elif custom_start and custom_end:
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = custom_start, custom_end
-    elif period and period in period_map:
+    elif period:
+        import re as _re
+        _m = _re.fullmatch(r"(\d+)([ymd])", period)
+        if not _m:
+            print(f"✗ --period={period} 非法: 只支持 N+M 形式, 如 2y / 6m / 3m / 30d", file=sys.stderr)
+            sys.exit(2)
+        _n, _unit = int(_m.group(1)), _m.group(2)
+        _end_ts = pd.Timestamp.today().normalize()
+        _kw = {"y": "years", "m": "months", "d": "days"}[_unit]
+        _start_ts = _end_ts - pd.DateOffset(**{_kw: _n})
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
-        trade_start, trade_end = period_map[period]
+        trade_start, trade_end = _start_ts.strftime("%Y-%m-%d"), _end_ts.strftime("%Y-%m-%d")
+        print(f"▸ --period={period} → 距今 {_n}{_unit}: {trade_start} → {trade_end} (按今天 {_end_ts.date()} 实时计算)")
     else:
         active_codes = {k: v for k, v in CODES.items() if k != "000725"}
         trade_start, trade_end = TRADE_START, TRADE_END
@@ -2306,6 +2317,13 @@ def main():
         if "510300" not in active_codes:
             active_codes["510300"] = {"name": "沪深300ETF", "sid": "sh510300"}
         print(f"▸ 每周轮动: 候选池新增 {candidate_added} 只ETF (共{len(active_codes)}只)")
+
+    # 中枪提醒: 未显式给 --momentum 时默认 c2(多因子), 而研究与实盘验证口径是 simple。
+    # c2 在同一窗口/同一宇宙下 2019-2026 是 -26.18%/回撤91.01%(simple 为 +0.29%/34.35%)。
+    if not momentum_given:
+        print("[WARN] 未指定 --momentum, 使用默认 c2(多因子波动率加权)。"
+              "该口径不是验证口径, 2019-2026 会跑出 -26%/91% 回撤; 对照/实盘口径请加 --momentum=simple",
+              file=sys.stderr)
 
     print("▸ 拉取历史K线 (腾讯前复权 API)...")
     # 计算K线拉取起始日: trade_start 往前推 120 个交易日（预热期）
@@ -2468,7 +2486,11 @@ def main():
     print("\n" + "=" * 70)
     print("                    回 测 结 果 (backtrader)")
     print("=" * 70)
-    print(f"\n  初始资金:    ¥{TOTAL_FUND:>12,.0f}")
+    print(f"\n  口径:         momentum={momentum_mode}{'' if momentum_given else '(默认,非验证口径)'} "
+          f"trail={trail_mode or CONF.get('trailing', {}).get('mode', 'fixed')} top_n={top_n} "
+          f"lookback={lookback} timing={'on' if (timing_override if timing_override is not None else CONF.get('timing', {}).get('enabled')) else 'off'} "
+          f"窗口={trade_start}→{trade_end}")
+    print(f"  初始资金:    ¥{TOTAL_FUND:>12,.0f}")
     print(f"  最终资金:    ¥{final:>12,.0f}")
     print(f"  总收益:       {total_ret:>+11.2f}%")
     print(f"  年化收益:     {annual_ret:>+11.2f}%")
