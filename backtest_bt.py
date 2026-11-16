@@ -302,6 +302,7 @@ class ETFStrategy(bt.Strategy):
         ("max_per_etf", MAX_PER_ETF),
         ("cooldown_days", COOLDOWN_DAYS),
         ("fund_per_etf", 0),  # 每只ETF资金基数，默认0（与实盘一致）
+        ("sizing", "fixed"),  # 单槽口径: fixed=静态绝对额(基线, 不变) | equity=按当前总资产动态重算(实盘口径)
         ("rotation_mode", False),  # 全仓轮动: 每周一满仓动量第1名
         ("concentrated_mode", False),  # 集中持仓: 只持有TOP N最强ETF
         ("weekly_rotation_mode", False),  # 每周轮动: 每5日从候选池重算TOP3动量排名
@@ -452,6 +453,11 @@ class ETFStrategy(bt.Strategy):
         self._exposure_hist = []     # [(date, invested/total)]
         self._timing_trim_count = 0
 
+        # 单槽口径(equity): 直接复用实盘 core/position_manager.calc_order_amount。
+        # fixed 口径完全不碰这两个属性, 基线逐字节不变。
+        self._pm_inst = None
+        self._dyn_slot_base = 0.0    # 实盘公式返回的动态单槽基数(仅 equity)
+
         # 统计
         self.trades = []; self.win_trades = 0; self.loss_trades = 0
         self.win_amount = 0.0; self.loss_amount = 0.0
@@ -572,6 +578,29 @@ class ETFStrategy(bt.Strategy):
     def _has_position(self, data):
         return self.getposition(data).size > 0
 
+    # ─── 单槽口径辅助(仅 sizing=equity 生效) ───
+
+    def _pm(self):
+        """实盘仓位管理器单例(与 executor 同一个: core.position_manager)"""
+        if self._pm_inst is None:
+            from core.position_manager import get_position_manager
+            self._pm_inst = get_position_manager()
+        return self._pm_inst
+
+    def _slot_base(self):
+        """单槽资金基数: equity=实盘公式返回的动态 base, fixed=静态 fund_per_etf(基线)"""
+        if self.p.sizing == "equity" and self._dyn_slot_base > 0:
+            return self._dyn_slot_base
+        return self.p.fund_per_etf
+
+    def _total_capital(self):
+        """单票上限的分母: equity=当前总资产, fixed=静态 TOTAL_FUND(基线)"""
+        if self.p.sizing == "equity":
+            v = self.broker.getvalue()
+            if v > 0:
+                return v
+        return TOTAL_FUND
+
     def _fill_meta(self, data, kind, reason, stype):
         """记录下单时的上下文, 供 notify_order 结算逐笔盈亏(仅研究用, 不影响交易逻辑)"""
         name = data._name
@@ -602,10 +631,23 @@ class ETFStrategy(bt.Strategy):
                 _m = min(1.5, max(0.5, self.p.vol_target / _v))
                 reason = f"{reason} [波动加权×{_m:.2f}]"
                 pct = pct * _m
-        _pcap = self.p.order_cap if self.p.order_cap > 0 else POSITION_CAP
-        target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * _pcap)
         price = data.close[0]
-        need = max(int(target_value / price / 100) * 100, MIN_SHARES)  # BUGFIX: 追加模式，不计已有持仓
+        if self.p.sizing == "equity":
+            # ── equity 口径: 单槽基数 = 当前总资产×(1-现金预留)÷份数, 直接调实盘唯一计算处 ──
+            # 调用方式与实盘 executor.py(普通买入分支) 逐参对齐: (当前总资产, 目标比例, 价, static_fund)
+            # 取整(100股)、最小股数(5000)、单票上限(base×entry.position_cap) 全部由
+            # core.position_manager.calc_order_amount 内部决定, 此处不重写任何公式, 避免二次漂移。
+            plan = self._pm().calc_order_amount(self.broker.getvalue(), pct, price=price,
+                                                static_fund=self.p.fund_per_etf)
+            self._dyn_slot_base = float(plan.get("base") or 0.0)
+            if not plan.get("ok"):
+                return False
+            need = int(plan["shares"])
+        else:
+            _pcap = self.p.order_cap if self.p.order_cap > 0 else POSITION_CAP
+            target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * _pcap)
+            need = max(int(target_value / price / 100) * 100, MIN_SHARES)  # BUGFIX: 追加模式，不计已有持仓
+
         # 资金约束
         cost = need * price * (1 + SLIPPAGE_PCT) + FEE
         if cost > self.broker.getcash():
@@ -1455,10 +1497,10 @@ class ETFStrategy(bt.Strategy):
                         ma20_v = self.ma20[name][0]
                         if not (ma5_v and ma20_v and ma5_v > ma20_v):
                             continue
-                        # 仓位上限: 不超过fund_per_etf的120%
+                        # 仓位上限: 不超过单槽基数的120% (equity 口径下基数随总资产走)
                         shares = self._get_shares(d)
                         pos_value = shares * price
-                        max_value = self.p.fund_per_etf * 1.2
+                        max_value = self._slot_base() * 1.2
                         if pos_value >= max_value:
                             continue
                         add_pct = self.p.init_pct * 0.5  # 加仓半仓
@@ -1969,15 +2011,16 @@ class ETFStrategy(bt.Strategy):
                         if "pyramid_count" not in ps:
                             ps["pyramid_count"] = 0
                         current_value = shares * price
-                        max_value = TOTAL_FUND * POSITION_CAP
+                        # 单票累计上限 = 总资产×POSITION_CAP (equity 口径分母随总资产走, 同实盘 single_position_cap)
+                        max_value = self._total_capital() * POSITION_CAP
                         if ps["pyramid_count"] == 0 and float_profit > 0.05:
-                            add_value = self.p.fund_per_etf * 0.30
+                            add_value = self._slot_base() * 0.30
                             if current_value + add_value <= max_value:
                                 if self._buy(d, 0.30, f"金字塔加仓1 浮盈{float_profit*100:.1f}%"):
                                     ps["pyramid_count"] = 1
                                     ps["bought_today"] = True
                         elif ps["pyramid_count"] == 1 and float_profit > 0.10:
-                            add_value = self.p.fund_per_etf * 0.30
+                            add_value = self._slot_base() * 0.30
                             if current_value + add_value <= max_value:
                                 if self._buy(d, 0.30, f"金字塔加仓2 浮盈{float_profit*100:.1f}%"):
                                     ps["pyramid_count"] = 2
@@ -2599,6 +2642,7 @@ def main():
     addon_profit = None; addon_profit_atr = 0.0
     winner_addon = 0; winner_days = 20; hold_floor = 0
     order_cap = 0.0; addon_pct = 0.0; vol_max = 0.0; vol_min = 0.0
+    sizing = "fixed"   # 单槽口径: fixed(默认, 静态绝对额=基线) | equity(按当前总资产动态重算=实盘口径)
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -2649,6 +2693,18 @@ def main():
             drop_need_trend = True
         elif arg == "--drop-half":
             drop_half = True
+        elif arg.startswith("--sizing="):
+            sizing = arg.split("=", 1)[1].strip().lower()
+            if sizing not in ("fixed", "equity"):
+                print(f"✗ --sizing={sizing} 非法: 只支持 fixed | equity", file=sys.stderr)
+                sys.exit(2)
+        elif arg == "--sizing":
+            if i + 1 < len(args):
+                sizing = args[i + 1].strip().lower()
+                i += 1
+                if sizing not in ("fixed", "equity"):
+                    print(f"✗ --sizing={sizing} 非法: 只支持 fixed | equity", file=sys.stderr)
+                    sys.exit(2)
         elif arg.startswith("--addon-profit="):
             addon_profit = float(arg.split("=", 1)[1])
         elif arg.startswith("--addon-profit-atr="):
@@ -2843,6 +2899,16 @@ def main():
         df.loc[df.index < first_date, "volume"] = -1.0
         dataframes[code] = df
 
+    # 单槽口径 banner + equity 下的单槽比例上限覆盖(与实盘 PositionManager.max_position_ratio 同一参)
+    if sizing == "equity":
+        from core.position_manager import get_position_manager as _gpm
+        _pm_scan = _gpm()
+        if order_cap > 0:
+            _pm_scan.max_position_ratio = order_cap
+        print(f"▸ 单槽口径: equity — 基数=当前总资产×{1 - float(CONF.get('cash_reserve_ratio', 0.20) or 0):.0%}"
+              f"÷{_pm_scan.fund_slots()}份, 计算处=core.position_manager.calc_order_amount(实盘同一函数), "
+              f"单槽比例上限={_pm_scan.max_position_ratio:.0%}")
+
     # 研究开关: 单标的累计上限 / 加仓批次上限（默认不改 = 基线）
     if pos_cap > 0:
         import strategies.rsi_macd as _rm_mod
@@ -2926,6 +2992,7 @@ def main():
                         timing=timing_override,
                         index_only=("510300" if run_concentrated_pyramid else ""),
                         dump=dump_path,
+                        sizing=sizing,
                         vol_confirm=vol_confirm,
                         mom_quality=mom_quality,
                         rs_filter=rs_filter,
