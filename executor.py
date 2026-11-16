@@ -766,6 +766,69 @@ def _lookup_contract_status(contract: str):
 
 
 # ═══════════════════════════════════════════════════════
+# 尾盘撤单（flow 模式 14:45 后把当日未成交挂单全撤）
+# ═══════════════════════════════════════════════════════
+
+# 已经是"终态"的委托状态：不撤
+_CANCEL_SKIP_STATUS = ('全部成交', '已成交', '全部撤单', '已撤单', '已撤', '废单',
+                       '已报待撤', '待撤')
+
+
+def cancel_pending_at_close(real=True, verbose=True):
+    """撤销当日所有**未成交**的委托（T0 配对单、普通限价单一起撤）。
+
+    返回撤单成功笔数。读不到委托/接口异常时返回 0 并打印原因（不抛异常）。
+    所有挂单必须在收盘前清掉：留一半在收盘后既不能成交，还会锁住可用股数，
+    第二天 flow 减仓/换出会拿不到可卖数量。
+    """
+    today = time.strftime("%Y%m%d")
+    try:
+        from broker_frida import get_ths_broker
+        orders = get_ths_broker().get_orders() or []
+    except Exception as ex:
+        print(f"[CANCEL] ⚠️ 读委托失败({ex})，无法撤单")
+        return 0
+    todo = []
+    for o in orders:
+        st = str(o.get('status') or '')
+        if str(o.get('date') or '') != today:
+            continue
+        if any(k in st for k in _CANCEL_SKIP_STATUS):
+            continue
+        if not o.get('contract'):
+            continue
+        todo.append(o)
+    if not todo:
+        if verbose:
+            print(f"[CANCEL] 当日无未成交委托（共 {len(orders)} 笔）")
+        return 0
+    if verbose:
+        print(f"[CANCEL] 当日未成交 {len(todo)} 笔，开始撤单")
+    n = 0
+    for o in todo:
+        c = str(o.get('code') or '')
+        contract = str(o.get('contract'))
+        print(f"  [CANCEL] {c} {o.get('direction')} {o.get('shares')}股 "
+              f"合同号={contract} status={o.get('status')}")
+        if not real:
+            print("    [DRY-RUN] 未真实撤单")
+            continue
+        try:
+            ok = _cancel_contract(contract)
+        except Exception as ex:
+            print(f"    ⚠️ 撤单异常: {ex}")
+            ok = False
+        if ok:
+            n += 1
+            print("    ✅ 已撤")
+        else:
+            print("    ❌ 撤单失败，需人工处理")
+    if verbose:
+        print(f"[CANCEL] 完成: 撤单 {n}/{len(todo)} 笔")
+    return n
+
+
+# ═══════════════════════════════════════════════════════
 # 信号执行器 (P2-9: 从 signal_generator.py 迁移)
 # ═══════════════════════════════════════════════════════
 
@@ -1196,6 +1259,36 @@ class SignalExecutor:
             pass
         return float(self._TOTAL_FUND)
 
+    # ── flow 模式（宽组合）用到的两个小工具 ──
+    def _flow_cfg(self) -> Dict:
+        """config.yaml -> flow 段（每次读，改配置不用重启进程）。"""
+        try:
+            return (_load_config() or {}).get("flow") or {}
+        except Exception:
+            return {}
+
+    def _flow_cap_pct(self) -> float:
+        """单只单次下单上限（占总资产比例）。flow 模式分批建仓用；pyramid 不用。"""
+        try:
+            return float(self._flow_cfg().get("max_order_pct", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _maybe_cancel_pending(self):
+        """尾盘撤单：到了 flow.cancel_pending_at（默认 14:45）就把当日未成交挂单全撤。
+
+        只在 cancel_pending_at ~ 15:00 之间触发：09:30 建仓/盘中执行不受影响。
+        没成交的 T0 配对单/限价单不撤会挂到收盘变成"单腿"，当天回补不了
+        （2026-11-16 512800 就是这种情况）。
+        """
+        at = str(self._flow_cfg().get("cancel_pending_at") or "14:45")
+        hm = time.strftime("%H:%M")
+        if not (at <= hm < "15:00"):
+            return False
+        print(f"\n[CANCEL] {hm} ≥ {at}：收盘前撤销当日未成交挂单")
+        cancel_pending_at_close()
+        return True
+
     def _write_intent_for_sg(self, code, mode, direction, shares=None, price=None,
                              status='pending', contract=None):
         """写 intent 文件（下单前落盘，作为在途去重依据；成交后改 filled）。"""
@@ -1452,6 +1545,10 @@ class SignalExecutor:
         if mode in ('buy_sell', None):
             self._run_sell_chase_cycle()
 
+        # ═══ 尾盘撤单：cancel_pending_at 之后把当日未成交挂单全撤，本次不再下新单 ═══
+        if mode in ('buy_sell', None) and self._maybe_cancel_pending():
+            return
+
         if not actionable:
             print("[EXECUTE] 无交易信号，跳过执行")
             return
@@ -1639,44 +1736,73 @@ class SignalExecutor:
 
             # ── 普通买入 ──
             elif trade_type == "buy":
-                ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
-                # 下单金额 = 当前实际总资产 × 配置比例（与回测 backtest_bt.py:_buy 同口径）
-                # config 静态 fund 只做兜底/单笔上限
-                _static_fund = self._ETFS.get(code, {}).get("fund", 44000)
-                _ta = self._get_total_asset()
-                _plan = self._calc_order_amount(_ta, ratio, price=price,
-                                                static_fund=_static_fund)
-                # ── 择时乘数: 下单金额只认信号里的最终比例，这里只打印乘数前后对照 ──
-                _mult = sig.get("timing_multiplier")
-                if _mult is not None:
-                    _raw_ratio = self._parse_position_ratio(sig.get("position_ratio_raw", ""))
-                    _plan_before = self._calc_order_amount(
-                        _ta, _raw_ratio, price=price, static_fund=_static_fund)
-                    print(f"[择时] {code} 大盘状态={sig.get('timing_score')}分 档位乘数={_mult:.2f} | "
-                          f"乘数前目标金额=¥{_plan_before['amount']:,.0f} "
-                          f"乘数后目标金额=¥{_plan['amount']:,.0f} "
-                          f"({sig.get('position_ratio_raw', '-')}→{sig.get('position_ratio', '-')})")
-                print(f"[下单金额] {code} 总资产={_plan['total_asset']:.0f} "
-                      f"基数={_plan['base']:.0f}({_plan['source']}) 比例={_plan['ratio']:.0%} "
-                      f"金额={_plan['amount']:.0f} 股数={_plan['shares']} 现价={price:.3f}")
-                if not _plan["ok"]:
-                    print(f"[EXECUTE] ⚠️ {code} 买入金额/股数无效({_plan['reason']})，跳过")
-                    fail_count += 1
-                    continue
-                shares = _plan["shares"]
-                cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
-                label = f"买入 {code} {shares}股 @{price:.3f}"
+                _flow_sh = sig.get("flow_shares")
+                if _flow_sh:
+                    # ── flow 模式：股数由 flow_strategy 按目标权重算好（已按资金约束分批）──
+                    shares = int(_flow_sh)
+                    _cap_pct = self._flow_cap_pct()
+                    _ta_now = self._get_total_asset()
+                    if price > 0 and _cap_pct > 0:
+                        _max_sh = int(_ta_now * _cap_pct / price / 100) * 100
+                        if _max_sh > 0 and shares > _max_sh:
+                            print(f"[FLOW] {code} 单只单次上限 {_cap_pct:.0%}×总资产"
+                                  f"(¥{_ta_now * _cap_pct:,.0f}) → 股数 {shares}→{_max_sh}"
+                                  f"（剩余下一交易日继续）")
+                            shares = _max_sh
+                    print(f"[FLOW] {code} 目标股数={sig.get('target_shares')} "
+                          f"今日买入={shares} 金额≈¥{shares * price:,.0f} | {sig.get('reason', '')}")
+                    if shares < 100:
+                        print(f"[EXECUTE] ⚠️ {code} flow 买入股数不足({shares})，跳过")
+                        fail_count += 1
+                        continue
+                    cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
+                    label = f"流买入 {code} {shares}股 @{price:.3f}"
+                else:
+                    ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
+                    # 下单金额 = 当前实际总资产 × 配置比例（与回测 backtest_bt.py:_buy 同口径）
+                    # config 静态 fund 只做兜底/单笔上限
+                    _static_fund = self._ETFS.get(code, {}).get("fund", 44000)
+                    _ta = self._get_total_asset()
+                    _plan = self._calc_order_amount(_ta, ratio, price=price,
+                                                    static_fund=_static_fund)
+                    # ── 择时乘数: 下单金额只认信号里的最终比例，这里只打印乘数前后对照 ──
+                    _mult = sig.get("timing_multiplier")
+                    if _mult is not None:
+                        _raw_ratio = self._parse_position_ratio(sig.get("position_ratio_raw", ""))
+                        _plan_before = self._calc_order_amount(
+                            _ta, _raw_ratio, price=price, static_fund=_static_fund)
+                        print(f"[择时] {code} 大盘状态={sig.get('timing_score')}分 档位乘数={_mult:.2f} | "
+                              f"乘数前目标金额=¥{_plan_before['amount']:,.0f} "
+                              f"乘数后目标金额=¥{_plan['amount']:,.0f} "
+                              f"({sig.get('position_ratio_raw', '-')}→{sig.get('position_ratio', '-')})")
+                    print(f"[下单金额] {code} 总资产={_plan['total_asset']:.0f} "
+                          f"基数={_plan['base']:.0f}({_plan['source']}) 比例={_plan['ratio']:.0%} "
+                          f"金额={_plan['amount']:.0f} 股数={_plan['shares']} 现价={price:.3f}")
+                    if not _plan["ok"]:
+                        print(f"[EXECUTE] ⚠️ {code} 买入金额/股数无效({_plan['reason']})，跳过")
+                        fail_count += 1
+                        continue
+                    shares = _plan["shares"]
+                    cmd = ["python3", trade_script, "buy", code, str(shares), f"{price:.3f}"]
+                    label = f"买入 {code} {shares}股 @{price:.3f}"
 
             # ── 普通卖出 ──
             elif trade_type == "sell":
                 current_shares = self._get_position_shares(code)
-                ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
-                if ratio > 0:
-                    shares = max(int(current_shares * ratio / 100) * 100, 5000)
+                _flow_sh = sig.get("flow_shares")
+                if _flow_sh:
+                    # ── flow 模式：精确股数（减到目标权重），不允许超过真实持仓 ──
+                    shares = min(int(_flow_sh), int(current_shares or 0))
+                    print(f"[FLOW] {code} 目标股数={sig.get('target_shares')} "
+                          f"今日卖出={shares}(持仓{current_shares}) | {sig.get('reason', '')}")
                 else:
-                    shares = current_shares
-                if shares < 100 or shares > current_shares:
-                    shares = current_shares
+                    ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
+                    if ratio > 0:
+                        shares = max(int(current_shares * ratio / 100) * 100, 5000)
+                    else:
+                        shares = current_shares
+                if shares < 100 or shares > (current_shares or 0):
+                    shares = int(current_shares or 0)
                 if shares < 100:
                     print(f"[EXECUTE] ⚠️ {code} 卖出股数不足(current={current_shares}, shares={shares})，跳过")
                     fail_count += 1
@@ -2182,3 +2308,25 @@ _executor = SignalExecutor()
 def execute_signals(result, mode=None):
     """遍历信号执行交易（快捷函数，向后兼容 signal_generator.execute_signals）"""
     return _executor.execute_signals(result, mode=mode)
+
+def main():
+    """executor 独立入口：只做"收盘前撤单"这一类维护动作，不在这里下新单。
+
+    .venv/bin/python3 executor.py --cancel-pending           # 真实撤单
+    .venv/bin/python3 executor.py --cancel-pending --dry-run # 只看要撤哪些
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description="信号执行器维护命令（下单走 signal_generator.py --execute）")
+    ap.add_argument("--cancel-pending", action="store_true",
+                    help="撤销当日全部未成交挂单（T0 配对单/限价单）")
+    ap.add_argument("--dry-run", action="store_true", help="只打印，不真撤")
+    a = ap.parse_args()
+    if a.cancel_pending:
+        cancel_pending_at_close(real=not a.dry_run)
+        return 0
+    ap.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

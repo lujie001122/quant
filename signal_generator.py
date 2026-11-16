@@ -1329,6 +1329,169 @@ def _acquire_exec_locks(execute_flag, execute_mode):
     return locks
 
 
+def _strategy_mode():
+    """config.yaml -> strategy.mode（缺省 flow）。"""
+    try:
+        import yaml as _y
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")) as _f:
+            return str(((_y.safe_load(_f) or {}).get("strategy") or {}).get("mode", "flow")).lower()
+    except Exception:
+        return "flow"
+
+
+def _parse_strategy_mode():
+    """策略模式: flow(宽组合流量倾斜) | pyramid(旧集中金字塔)。
+
+    优先级: --mode=flow / --mode flow  >  config.yaml strategy.mode  >  默认 flow。
+    一键切回旧策略: python3 signal_generator.py --mode=pyramid
+    """
+    argv = sys.argv[1:]
+    for i, arg in enumerate(argv):
+        if arg.startswith("--mode="):
+            val = arg.split("=", 1)[1].strip().lower()
+            if val in ("flow", "pyramid"):
+                return val
+            print(f"[WARN] 无效的 --mode 值: {val}, 按 config.yaml 走")
+        elif arg == "--mode" and i + 1 < len(argv):
+            val = argv[i + 1].strip().lower()
+            if val in ("flow", "pyramid"):
+                return val
+    return _strategy_mode()
+
+
+def build_flow_signals():
+    """mode=flow 的信号：宽组合 20 只等权 + 流量倾斜 + 溢价风控 + 低换手。
+
+    策略/数据全部在 flow_strategy.py（与 2015-2024 回测同一套代码、同一份缓存），
+    这里只做两件事：把目标权重换算成"今天下多少股"，再套成和 pyramid 一样的信号格式
+    （price / target_amount / target_shares / action / trade_type / reason），
+    另加 flow_shares = 今日实际下单股数（已按"单只一次 ≤ 总资产5%"和可用资金约束算好）。
+
+    不择时：flow 模式不乘 timing 档位（研究结论: 宽书上做趋势/择时把超额打掉）。
+    """
+    import flow_strategy as _fs
+    cfg = _fs.load_cfg()
+    plan = _fs.build_plan(cfg=cfg)
+    names = _fs._pool_names()
+    as_of = plan["as_of"]
+
+    signals = {}
+
+    # ① 卖出（先卖后买：A 股卖出回款当日可用于买入）
+    for r in plan["rows"]:
+        if r["sell_shares"] <= 0:
+            continue
+        full_exit = r["cur_shares"] > 0 and r["sell_shares"] >= r["cur_shares"]
+        if full_exit:
+            act, tt = "清仓(换出)", "liquidate"
+            reason = f"掉出流量目标20/缓冲带(当前排名{r['rank'] or '-'}) → 换出"
+        else:
+            act, tt = "减仓(回目标)", "sell"
+            reason = f"超目标权重 {r['weight']:.1%} → 减到 {r['target_shares']:,} 股"
+        signals[r["code"]] = dict(
+            price=f"{r['price']:.3f}", action=act, trade_type=tt,
+            flow_shares=int(r["sell_shares"]), target_shares=int(r["target_shares"]),
+            target_amount=r["target_amount"],
+            position_ratio=f"{r['weight'] * 100:.0f}%",
+            position_ratio_raw=f"{r['weight'] * 100:.0f}%",
+            timing_level=1.0, timing_multiplier=1.0, timing_score=None,
+            prem=r["prem"], flow_rank=r["rank"], reason=reason, t0_pair=None,
+        )
+
+    # ② 买入
+    for r in plan["rows"]:
+        if r["buy_shares"] <= 0:
+            continue
+        prem_s = f"{r['prem']:+.1%}" if r["prem"] is not None else "-"
+        signals[r["code"]] = dict(
+            price=f"{r['price']:.3f}", action="买入(建仓)", trade_type="buy",
+            flow_shares=int(r["buy_shares"]), target_shares=int(r["target_shares"]),
+            target_amount=r["target_amount"],
+            position_ratio=f"{max(r['weight'], cfg['max_order_pct']) * 100:.0f}%",
+            position_ratio_raw=f"{r['weight'] * 100:.0f}%",
+            timing_level=1.0, timing_multiplier=1.0, timing_score=None,
+            prem=r["prem"], flow_rank=r["rank"],
+            reason=(f"流量倾斜 排名{r['rank']}/N 目标权重{r['weight']:.1%} "
+                    f"溢价{prem_s} 信号周{as_of}"),
+            t0_pair=None,
+        )
+
+    # ③ 持有 / 跳过（1 手都买不起的高价票）
+    for r in plan["rows"]:
+        if r["code"] in signals or not r["in_target"]:
+            continue
+        _skip = r.get("skip_reason")
+        signals[r["code"]] = dict(
+            price=f"{r['price']:.3f}",
+            action=("跳过" if _skip else "持有"), trade_type=None,
+            flow_shares=0, target_shares=int(r["target_shares"]),
+            target_amount=r["target_amount"],
+            position_ratio=f"{r['weight'] * 100:.0f}%",
+            position_ratio_raw=f"{r['weight'] * 100:.0f}%",
+            timing_level=1.0, timing_multiplier=1.0, timing_score=None,
+            prem=r["prem"], flow_rank=r["rank"],
+            reason=(_skip or f"目标持仓 权重{r['weight']:.1%} 已在位"), t0_pair=None,
+        )
+
+    buys = [r for r in plan["rows"] if r["buy_shares"] > 0]
+    sells = [r for r in plan["rows"] if r["sell_shares"] > 0]
+    n_hold = len([r for r in plan["rows"] if r["in_target"] and not r.get("skip_reason")]) - len(
+        [r for r in buys if r["in_target"]]) - len([r for r in sells if r["in_target"]])
+    # ── 目标仓位明细（与 pyramid 同一张表格式）──
+    print(f"[目标仓位] 总资产¥{plan['total_asset']:,.0f} | 流量宽组合 N={cfg['n']} 等权 "
+          f"| 信号周={as_of} | 价格日={plan['price_date']} | 无择时（flow 不乘档位）")
+    print(f"  {'代码':<8}{'名称':<14}{'现价':>8}{'当前股数':>10}{'乘数':>6}{'乘数前':>8}{'乘数后':>8}"
+          f"{'目标金额':>12}{'目标股数':>10}  动作")
+    for r in plan["rows"]:
+        act = ("跳过" if r.get("skip_reason") else
+               "买入" if r["buy_shares"] > 0 else
+               "卖出" if r["sell_shares"] > 0 else
+               ("持有" if r["in_target"] else "空"))
+        print(f"  {r['code']:<8}{(r['name'] or names.get(r['code'], ''))[:13]:<14}"
+              f"{r['price']:>8.3f}{r['cur_shares']:>10,}{'1.00':>6}{'-':>8}{'-':>8}"
+              f"{'¥' + format(r['target_amount'], ',.0f'):>12}{r['target_shares']:>10,}  {act}")
+
+    human = (f"流量宽组合(信号周{as_of})：买{len(buys)}只 ¥{plan['buy_total']:,.0f}，"
+             f"卖{len(sells)}只 ¥{plan['sell_total']:,.0f}，持{n_hold}只，"
+             f"执行后现金 ¥{plan['cash_after']:,.0f}")
+    over = [r for r in plan["rows"]
+            if r["prem"] is not None and r["prem"] == r["prem"]
+            and r["prem"] > cfg["premium_cap"]]
+    if over:
+        print(f"[溢价风控] {len(over)} 只溢价 > {cfg['premium_cap']:.0%}："
+              f"{','.join(r['code'] for r in over)} → 不新建仓（已有持仓不强制卖）")
+
+    return {
+        "version": "v3.1-flow",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "strategy_mode": "flow",
+        "signals": signals,
+        "timing": {"index_code": None, "enabled": False, "score": None, "level": 1.0,
+                   "detail": "flow 模式不择时", "data_source": "flow", "degraded": False,
+                   "prev_level": None, "trimmed": False},
+        "market_environment": "流量宽组合(等权20只, 无择时)",
+        "human_readable": human,
+        "flow": {
+            "as_of": as_of, "price_date": plan["price_date"],
+            "total_asset": plan["total_asset"], "cash": plan["cash"],
+            "budget": plan["budget"], "buy_total": plan["buy_total"],
+            "want_total": plan["want_total"], "sell_total": plan["sell_total"],
+            "cash_after": plan["cash_after"], "n_targets": plan["n_targets"],
+            "pool": plan["pool"], "cfg": plan["cfg"],
+            "holdings_source": plan["holdings_source"],
+            "account_source": plan["account_source"],
+        },
+        "strategy_policy": {
+            "select": f"份额周变动截面百分位(反向)平滑{cfg['smooth_weeks']}周 → 取{cfg['n']}只等权",
+            "buffer": f"缓冲带 {cfg['buffer_n']} 名（已在持仓不掉出前{cfg['buffer_n']}不卖）",
+            "min_hold": f"新买入持有期下限 {cfg['min_hold_weeks']} 周",
+            "partial": f"分批换仓 每周只换 {cfg['partial']:.0%}",
+            "premium": f"溢价 >{cfg['premium_cap']:.0%} 不新建仓（已有持仓不强制卖）",
+            "cost": f"单边成本 {cfg['cost']:.2%}；单只单次下单 ≤ 总资产{cfg['max_order_pct']:.0%}",
+        },
+    }
+
+
 def main():
     # ── 未登录/桥读不到 → 直接失败退出：别在没登录时静默产出空信号 ──
     from ths import check_tradable
@@ -1345,7 +1508,11 @@ def main():
 
     try:
         try:
-            result = generate_signals()
+            mode = _parse_strategy_mode()
+            if mode == "flow":
+                result = build_flow_signals()
+            else:
+                result = generate_signals()
             json_str = json.dumps(result, indent=2, ensure_ascii=False)
             if sys.stdout.encoding != "utf-8":
                 sys.stdout.reconfigure(encoding="utf-8")

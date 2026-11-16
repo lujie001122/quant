@@ -1,0 +1,33 @@
+{
+  "date": "2026-11-16",
+  "daily_realized_pnl": 440.0,
+  "daily_float_pnl": 196.3,
+  "daily_pnl": 636.3,
+  "daily_pnl_pct": 0.003189,
+  "total_asset": 199518.04,
+  "consecutive_losses": 0,
+  "loss_streak_started": "",
+  "circuit_breaker_until": "",
+  "circuit_breaker_reason": "",
+  "trades": [
+    {
+      "time": "10:03:10",
+      "code": "512800",
+      "direction": "卖出",
+      "shares": 5000,
+      "price": 0.906,
+      "pnl": 210.0,
+      "result": "win"
+    },
+    {
+      "time": "13:11:30",
+      "code": "512800",
+      "direction": "卖出",
+      "shares": 5000,
+      "price": 0.91,
+      "pnl": 230.0,
+      "result": "win"
+    }
+  ],
+  "updated_at": "2026-11-16 13:11:30"
+}
