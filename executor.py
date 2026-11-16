@@ -829,6 +829,55 @@ def cancel_pending_at_close(real=True, verbose=True):
 
 
 # ═══════════════════════════════════════════════════════
+# flow 模式挂单限价（跳空缓冲，仅 flow 分支使用）
+# ═══════════════════════════════════════════════════════
+
+_FLOW_DEFAULT_LIMIT_BUFFER_PCT = 0.01
+
+
+def price_tick(code: str) -> float:
+    """最小价位：ETF（5/1 开头）0.001，股票 0.01（本系统只交易 ETF）。"""
+    return 0.001 if str(code or "").strip()[:1] in ("5", "1") else 0.01
+
+
+def flow_limit_price(code, live_price, is_buy, buffer_pct, prev_close=None):
+    """flow 模式限价：实时价 ± 跳空缓冲，夹在涨跌停内，取整到最小价位。
+
+    ⚠️ 为什么这不算破坏「回测=实盘」：
+    回测假设"次日开盘价成交"。挂一个比开盘价高 buffer_pct 的可成交限价单，
+    实际成交价仍是开盘价（交易所价格优先，限价单按更优的卖一价成交），
+    反而更贴近回测。原来的等价限价单一旦跳空高开就整笔不成交、账户空仓，
+    那才是偏离回测。
+
+    涨跌停沿用 money_manager.day_price_limits（按代码判定 10%/20%）。
+    返回 {price, limit_up, limit_down, buffered, clamped, tick}。
+    """
+    from money_manager import day_price_limits
+
+    try:
+        live_price = float(live_price)
+        buffer_pct = max(float(buffer_pct or 0.0), 0.0)
+    except (TypeError, ValueError):
+        live_price, buffer_pct = 0.0, 0.0
+    tick = price_tick(code)
+    limit_down, limit_up = day_price_limits(code, prev_close, live_price)
+    if live_price <= 0:
+        return {"price": 0.0, "limit_up": limit_up, "limit_down": limit_down,
+                "buffered": 0.0, "clamped": False, "tick": tick}
+
+    buffered = (max(live_price, live_price * (1 + buffer_pct)) if is_buy
+                else live_price * (1 - buffer_pct))
+    price = round(round(buffered / tick) * tick, 3)
+    clamped = False
+    if is_buy and limit_up > 0 and price > limit_up:
+        price, clamped = limit_up, True
+    elif not is_buy and limit_down > 0 and price < limit_down:
+        price, clamped = limit_down, True
+    return {"price": price, "limit_up": limit_up, "limit_down": limit_down,
+            "buffered": round(buffered, 3), "clamped": clamped, "tick": tick}
+
+
+# ═══════════════════════════════════════════════════════
 # 信号执行器 (P2-9: 从 signal_generator.py 迁移)
 # ═══════════════════════════════════════════════════════
 
@@ -1274,6 +1323,32 @@ class SignalExecutor:
         except Exception:
             return 0.0
 
+    def _flow_buffer_pct(self) -> float:
+        """flow 限价跳空缓冲（config flow.limit_buffer_pct，默认 1%）。"""
+        try:
+            return max(float(self._flow_cfg().get(
+                "limit_buffer_pct", _FLOW_DEFAULT_LIMIT_BUFFER_PCT) or 0.0), 0.0)
+        except Exception:
+            return _FLOW_DEFAULT_LIMIT_BUFFER_PCT
+
+    def _flow_limit_price(self, code, price, is_buy, live):
+        """flow 分支专用：限价加跳空缓冲 → 夹涨跌停 → 取整，并打印对照。"""
+        live_price = float((live or {}).get("price") or 0.0)
+        if live_price <= 0:
+            return price
+        buf = self._flow_buffer_pct()
+        res = flow_limit_price(code, live_price, is_buy, buf,
+                               (live or {}).get("prev_close"))
+        if res["price"] <= 0:
+            return price
+        side = "涨停" if is_buy else "跌停"
+        limit_px = res["limit_up"] if is_buy else res["limit_down"]
+        note = f",{side}夹" if res["clamped"] else ""
+        print(f"[FLOW] {code} 限价 {live_price:.3f} → {res['price']:.3f}"
+              f"(缓冲{buf * 100:.1f}%{note}) 现价 {live_price:.3f} "
+              f"{side} {limit_px:.3f}")
+        return res["price"]
+
     def _maybe_cancel_pending(self):
         """尾盘撤单：到了 flow.cancel_pending_at（默认 14:45）就把当日未成交挂单全撤。
 
@@ -1518,9 +1593,11 @@ class SignalExecutor:
         today_str = datetime.now().strftime("%Y-%m-%d")
 
         # ═══ 获取当前实时价 ═══
+        # 必须按信号代码取：不带参数只读 etf_pool.json（旧池 6 只），flow 的 20 只
+        # 会全部拿不到实时价 → 限价退回信号价、跳空缓冲失效。
         live_quotes = {}
         try:
-            live_quotes = self._fetch_realtime_quotes()
+            live_quotes = self._fetch_realtime_quotes(list(signals.keys()))
             print(f"[EXECUTE] 获取实时行情: {len(live_quotes)} 只ETF")
         except Exception as e:
             print(f"[EXECUTE] ⚠️ 获取实时行情失败: {e}，将使用信号价作为兜底")
@@ -1738,6 +1815,8 @@ class SignalExecutor:
             elif trade_type == "buy":
                 _flow_sh = sig.get("flow_shares")
                 if _flow_sh:
+                    # 跳空缓冲只加在 flow 分支；pyramid 的限价修正逻辑保持原样。
+                    price = self._flow_limit_price(code, price, True, live)
                     # ── flow 模式：股数由 flow_strategy 按目标权重算好（已按资金约束分批）──
                     shares = int(_flow_sh)
                     _cap_pct = self._flow_cap_pct()
@@ -1791,6 +1870,8 @@ class SignalExecutor:
                 current_shares = self._get_position_shares(code)
                 _flow_sh = sig.get("flow_shares")
                 if _flow_sh:
+                    # 跳空缓冲只加在 flow 分支；pyramid 限价逻辑保持原样。
+                    price = self._flow_limit_price(code, price, False, live)
                     # ── flow 模式：精确股数（减到目标权重），不允许超过真实持仓 ──
                     shares = min(int(_flow_sh), int(current_shares or 0))
                     print(f"[FLOW] {code} 目标股数={sig.get('target_shares')} "
@@ -1812,6 +1893,9 @@ class SignalExecutor:
 
             # ── 清仓 ──
             elif trade_type == "liquidate":
+                if sig.get("flow_shares"):
+                    # flow 换出清仓同样加卖出缓冲（pyramid 清仓不经过这里）
+                    price = self._flow_limit_price(code, price, False, live)
                 current_shares = self._get_position_shares(code)
                 shares = current_shares
                 if current_shares < 100:
