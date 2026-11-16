@@ -1,0 +1,32 @@
+{
+ "selection": {
+  "2022": "B3_RS20",
+  "2023": "C1_首笔30%",
+  "2024": "叠加",
+  "2025": "R3_RS20",
+  "2026": "叠加"
+ },
+ "candidates": {
+  "基线": [],
+  "B3_RS20": [
+   "--rs-filter=20"
+  ],
+  "C1_首笔30%": [
+   "--pyramid-init=0.30"
+  ],
+  "S_综合分": null,
+  "V_波动加权": null,
+  "叠加": [
+   "--rs-filter=20",
+   "--entry-rank=3",
+   "--pyramid-init=0.30"
+  ],
+  "C1_30": [
+   "--pyramid-init=0.30"
+  ],
+  "R3_RS20": [
+   "--entry-rank=3",
+   "--rs-filter=20"
+  ]
+ }
+}

@@ -22,6 +22,7 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 with open(_CONFIG_PATH) as f:
     _CONF = yaml.safe_load(f)
 EMPTY_DAYS_THRESHOLD = _CONF['trend']['empty_days_threshold']
+CONFIRM_BATCH_MAX = 2  # 确认加仓批次上限(研究分支可覆盖; 默认2=实盘原行为)
 _AO_NONE_WARNED = False
 
 # ═══════════════════════════════════════════════
@@ -243,7 +244,7 @@ class RSIMACDStrategy(BaseStrategy):
                         pos.confirm_batch_date = None
                     if pos.confirm_batch_date == today_str:
                         return ("持有(等确认)", None, None, f"确认加仓{pos.confirm_batch_count+1}/2批: 同日已加仓, 等下个交易日")
-                    if pos.confirm_batch_count >= 2:
+                    if pos.confirm_batch_count >= CONFIRM_BATCH_MAX:
                         pos.build_phase = 2
                         pos.base_price = pos.avg_cost
                         pos.peak_price = price
@@ -254,7 +255,7 @@ class RSIMACDStrategy(BaseStrategy):
                     pos.confirm_batch_count += 1
                     pos.confirm_batch_date = today_str
                     pos.add_count += 1
-                    if pos.confirm_batch_count >= 2:
+                    if pos.confirm_batch_count >= CONFIRM_BATCH_MAX:
                         pos.build_phase = 2
                         pos.base_price = pos.avg_cost
                         pos.peak_price = price
