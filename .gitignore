@@ -17,3 +17,5 @@ orders/
 .signal_generator.lock
 .t0_close.lock
 logs/t0_baseline_*.json
+data/etf_universe/
+.venv
