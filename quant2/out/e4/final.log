@@ -1,0 +1,28 @@
+[cut2024]
+   2015 net -12.20% EW -19.61% ex +7.41% turn 1.0%
+   2016 net +6.02% EW +4.91% ex +1.11% turn 0.1%
+   2017 net +20.70% EW +16.34% ex +4.36% turn 1.7%
+   2018 net -14.77% EW -20.90% ex +6.13% turn 5.5%
+   2019 net +33.84% EW +35.57% ex -1.72% turn 12.2%
+   2020 net +47.24% EW +34.89% ex +12.36% turn 18.6%
+   2021 net +8.53% EW +0.29% ex +8.24% turn 26.0%
+   2022 net -2.16% EW -13.74% ex +11.59% turn 26.8%
+   2023 net -12.89% EW -13.41% ex +0.51% turn 28.5%
+   2024 net +13.84% EW +18.92% ex -5.08% turn 28.6%
+   net +0.086 cagr +0.073 vol 0.181 sharpe 0.48 mdd -0.301 turn 0.149 cost +0.012 ex +0.046 t +2.54
+[full]
+   2015 net -12.20% EW -19.61% ex +7.41% turn 1.0%
+   2016 net +6.02% EW +4.91% ex +1.11% turn 0.1%
+   2017 net +20.70% EW +16.34% ex +4.36% turn 1.7%
+   2018 net -14.77% EW -20.90% ex +6.13% turn 5.5%
+   2019 net +33.84% EW +35.57% ex -1.72% turn 12.2%
+   2020 net +47.24% EW +34.89% ex +12.36% turn 18.6%
+   2021 net +8.53% EW +0.29% ex +8.24% turn 26.0%
+   2022 net -2.16% EW -13.74% ex +11.59% turn 26.8%
+   2023 net -12.89% EW -13.41% ex +0.51% turn 28.5%
+   2024 net +5.50% EW +12.36% ex -6.86% turn 28.2%
+   2025 net +60.24% EW +39.34% ex +20.90% turn 28.8%
+   2026 net -13.01% EW -15.19% ex +2.18% turn 29.0%
+   net +0.098 cagr +0.084 vol 0.183 sharpe 0.53 mdd -0.301 turn 0.171 cost +0.013 ex +0.052 t +3.06
+
+MATH: {'years': 9.81, 'ew_ann': 0.0408, 'ew_cagr': 0.0242, 'ew_mdd': -0.3553, 'ic_h2': 0.0275, 'pp_per_ic_unit': 0.0017, 'ic_needed_20pp': 0.1205, 't_of_mean': 1.4965, 't_needed_for_25pct': 4.3298, 'leverage_for_25': 2.8932, 'mdd_at_leverage': -0.8703}

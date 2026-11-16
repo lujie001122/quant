@@ -1,0 +1,42 @@
+====================================================================================================================
+[cut2024] candidate books (2015-01-09 ~ 2024-12-27)
+book                         net    cagr    vol sharpe     mdd   turn  excess      t  names
+EW_all                    +0.041  +0.024  0.184   0.22  -0.355  0.008  +0.000  +0.00    nan
+EW_cap10                  +0.041  +0.024  0.184   0.22  -0.355  0.008  +0.000  +0.00    nan
+flow_N20_lowturn          +0.080  +0.065  0.182   0.44  -0.313  0.203  +0.039  +2.06   19.0
+flow_N30_lowturn          +0.068  +0.053  0.180   0.38  -0.300  0.166  +0.028  +1.73   28.3
+flow_N30_lowturn_p50      +0.071  +0.056  0.180   0.39  -0.314  0.121  +0.030  +1.93   28.3
+flow_N30_cap10_p50        +0.065  +0.050  0.178   0.36  -0.314  0.121  +0.024  +1.56   28.3
+flow_N30_cap10            +0.066  +0.051  0.180   0.37  -0.300  0.166  +0.025  +1.57   28.3
+flow_N30_cap10_trend      +0.051  +0.039  0.159   0.32  -0.287  0.274  +0.010  +0.34   22.8
+   capacity: held names trade 2,687 万/周 (median); weekly turnover 12.1%; at 20万 the per-name weekly ticket is 807 元 = 0.00301% of that name's week; AUM cap @10% participation ≈ 6.7 亿
+   ceiling: IC(h2) -0.0275 x xs_sd(2w) 0.027 x z(top30|83) 1.04 = -0.0008/2w -> -2.0%/yr gross, -2.9%/yr net vs EW; IC needed for +20pp 0.278; realised Sharpe 0.36 vs 25% needing 1.40
+====================================================================================================================
+[full] candidate books (2015-01-09 ~ 2026-11-13)
+book                         net    cagr    vol sharpe     mdd   turn  excess      t  names
+EW_all                    +0.046  +0.030  0.180   0.25  -0.355  0.007  +0.000  +0.00    nan
+EW_cap10                  +0.046  +0.030  0.180   0.25  -0.355  0.007  +0.000  +0.00    nan
+flow_N20_lowturn          +0.099  +0.086  0.184   0.54  -0.313  0.235  +0.053  +2.84   19.1
+flow_N30_lowturn          +0.091  +0.078  0.182   0.50  -0.300  0.198  +0.046  +2.79   28.6
+flow_N30_lowturn_p50      +0.085  +0.071  0.181   0.47  -0.314  0.144  +0.040  +2.66   28.6
+flow_N30_cap10_p50        +0.081  +0.067  0.179   0.45  -0.314  0.144  +0.035  +2.37   28.6
+flow_N30_cap10            +0.090  +0.076  0.182   0.49  -0.300  0.199  +0.044  +2.67   28.6
+flow_N30_cap10_trend      +0.055  +0.043  0.164   0.34  -0.292  0.304  +0.010  +0.34   24.0
+   capacity: held names trade 3,260 万/周 (median); weekly turnover 14.4%; at 20万 the per-name weekly ticket is 960 元 = 0.00294% of that name's week; AUM cap @10% participation ≈ 6.8 亿
+   ceiling: IC(h2) -0.0328 x xs_sd(2w) 0.028 x z(top30|162) 1.44 = -0.0013/2w -> -3.4%/yr gross, -4.5%/yr net vs EW; IC needed for +20pp 0.193; realised Sharpe 0.45 vs 25% needing 1.39
+====================================================================================================================
+RECOMMENDED = flow N30, smooth2, buffer2N, hold2, 分批50%, premium cap 10%
+   2015: net -9.39%  EW -19.61%  excess +10.22%  turn 1.0%
+   2016: net +5.40%  EW +4.91%  excess +0.49%  turn 0.2%
+   2017: net +19.96%  EW +16.34%  excess +3.62%  turn 0.0%
+   2018: net -21.80%  EW -20.90%  excess -0.90%  turn 0.3%
+   2019: net +33.81%  EW +35.57%  excess -1.75%  turn 3.8%
+   2020: net +41.13%  EW +34.89%  excess +6.24%  turn 14.5%
+   2021: net +3.21%  EW +0.29%  excess +2.92%  turn 22.8%
+   2022: net -2.33%  EW -13.74%  excess +11.42%  turn 24.6%
+   2023: net -16.41%  EW -13.41%  excess -3.00%  turn 27.0%
+   2024: net +13.32%  EW +18.92%  excess -5.60%  turn 27.3%
+   [recommended] net +0.065 cagr +0.050 vol 0.178 mdd -0.314 sharpe 0.36 turn 0.121 ex +0.024 t +1.56
+   [recommended_full] net +0.081 cagr +0.067 vol 0.179 mdd -0.314 sharpe 0.45 turn 0.144 ex +0.035 t +2.37
+
+saved /private/tmp/q2e4/quant2/out/e4/E4_portfolio.json

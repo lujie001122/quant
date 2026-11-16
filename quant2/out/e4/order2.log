@@ -1,0 +1,58 @@
+/Users/lujie/Documents/code/quant/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+/Users/lujie/Documents/code/quant/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+/Users/lujie/Documents/code/quant/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+/Users/lujie/Documents/code/quant/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+========================================================================================================
+[cut2024] 2015-01-09 ~ 2024-12-27  (510 weeks)
+  RAW RANK IC (tradable pool = names with a realised forward return)
+    f      h1 -0.0163(t-2.05)  h2 -0.0275(t-3.11)  h4 -0.0214(t-2.15)   n=478
+    run    h1 -0.0194(t-2.51)  h2 -0.0241(t-2.66)  h4 -0.0156(t-1.46)   n=478
+    acc    h1 +0.0023(t+0.31)  h2 -0.0002(t-0.03)  h4 -0.0062(t-1.00)   n=482
+    pct52  h1 -0.0236(t-3.23)  h2 -0.0288(t-3.40)  h4 -0.0212(t-2.27)   n=456
+  CROSS-SECTIONAL CORRELATION WITH f (must be |rho| < 0.6 to count as incremental)
+    run    mean +0.833  mean|rho| 0.833  p90|rho| 0.908
+    acc    mean +0.514  mean|rho| 0.517  p90|rho| 0.713
+    pct52  mean +0.824  mean|rho| 0.824  p90|rho| 0.893
+  INCREMENTAL: rank IC after removing rank-linear dependence on f
+    run    h1 -0.0124(t-1.97)  h2 -0.0029(t-0.42)  h4 +0.0023(t+0.28)
+    acc    h1 +0.0116(t+1.63)  h2 +0.0126(t+1.86)  h4 -0.0003(t-0.04)
+    pct52  h1 -0.0012(t-0.18)  h2 +0.0022(t+0.28)  h4 +0.0017(t+0.17)
+  BOOK CHECK (sm2 + buffer2N + hold2, N=20, cost 0.15%/side)
+    f      gross +0.096 turn 0.203 net +0.080 ex +0.039 t +2.06 mdd -0.313
+    run    gross +0.062 turn 0.161 net +0.049 ex +0.009 t +0.48 mdd -0.329
+    acc    gross +0.063 turn 0.302 net +0.039 ex -0.002 t -0.12 mdd -0.376
+    pct52  gross +0.104 turn 0.158 net +0.091 ex +0.051 t +1.80 mdd -0.248
+========================================================================================================
+[full] 2015-01-09 ~ 2026-11-13  (607 weeks)
+  RAW RANK IC (tradable pool = names with a realised forward return)
+    f      h1 -0.0219(t-3.10)  h2 -0.0328(t-4.16)  h4 -0.0267(t-2.95)   n=574
+    run    h1 -0.0232(t-3.37)  h2 -0.0284(t-3.53)  h4 -0.0211(t-2.17)   n=574
+    acc    h1 -0.0000(t-0.00)  h2 -0.0028(t-0.47)  h4 -0.0064(t-1.16)   n=579
+    pct52  h1 -0.0276(t-4.22)  h2 -0.0325(t-4.34)  h4 -0.0257(t-3.11)   n=553
+  CROSS-SECTIONAL CORRELATION WITH f (must be |rho| < 0.6 to count as incremental)
+    run    mean +0.830  mean|rho| 0.830  p90|rho| 0.897
+    acc    mean +0.516  mean|rho| 0.518  p90|rho| 0.714
+    pct52  mean +0.830  mean|rho| 0.830  p90|rho| 0.897
+  INCREMENTAL: rank IC after removing rank-linear dependence on f
+    run    h1 -0.0116(t-2.10)  h2 -0.0037(t-0.61)  h4 -0.0003(t-0.04)
+    acc    h1 +0.0115(t+1.84)  h2 +0.0127(t+2.11)  h4 +0.0024(t+0.40)
+    pct52  h1 -0.0039(t-0.65)  h2 -0.0001(t-0.02)  h4 -0.0012(t-0.13)
+  BOOK CHECK (sm2 + buffer2N + hold2, N=20, cost 0.15%/side)
+    f      gross +0.117 turn 0.235 net +0.099 ex +0.053 t +2.84 mdd -0.313
+    run    gross +0.074 turn 0.172 net +0.061 ex +0.015 t +0.91 mdd -0.329
+    acc    gross +0.067 turn 0.332 net +0.041 ex -0.004 t -0.27 mdd -0.376
+    pct52  gross +0.107 turn 0.185 net +0.092 ex +0.047 t +1.81 mdd -0.248
+========================================================================================================
+VERDICT (criterion: |IC h2| >= 0.03, |t| >= 2.5, mean|rho| vs f < 0.6)
+  [cut2024] run    IC -0.0241 (t-2.66)  rho 0.833  resid -0.0029 (t-0.42)  -> FAIL
+  [cut2024] acc    IC -0.0002 (t-0.03)  rho 0.517  resid +0.0126 (t+1.86)  -> FAIL
+  [cut2024] pct52  IC -0.0288 (t-3.40)  rho 0.824  resid +0.0022 (t+0.28)  -> FAIL
+  [full   ] run    IC -0.0284 (t-3.53)  rho 0.830  resid -0.0037 (t-0.61)  -> FAIL
+  [full   ] acc    IC -0.0028 (t-0.47)  rho 0.518  resid +0.0127 (t+2.11)  -> FAIL
+  [full   ] pct52  IC -0.0325 (t-4.34)  rho 0.830  resid -0.0001 (t-0.02)  -> FAIL
+
+saved /private/tmp/q2e4/quant2/out/e4/E4_order2.json
