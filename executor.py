@@ -1593,11 +1593,14 @@ class SignalExecutor:
         today_str = datetime.now().strftime("%Y-%m-%d")
 
         # ═══ 获取当前实时价 ═══
-        # 必须按信号代码取：不带参数只读 etf_pool.json（旧池 6 只），flow 的 20 只
+        # flow 必须按信号代码取：不带参数只读 etf_pool.json（旧池 6 只），flow 的 20 只
         # 会全部拿不到实时价 → 限价退回信号价、跳空缓冲失效。
+        # pyramid 保持原来的无参调用，限价链路一行不动。
         live_quotes = {}
         try:
-            live_quotes = self._fetch_realtime_quotes(list(signals.keys()))
+            _has_flow = any(s.get("flow_shares") for s in signals.values())
+            live_quotes = self._fetch_realtime_quotes(
+                list(signals.keys()) if _has_flow else None)
             print(f"[EXECUTE] 获取实时行情: {len(live_quotes)} 只ETF")
         except Exception as e:
             print(f"[EXECUTE] ⚠️ 获取实时行情失败: {e}，将使用信号价作为兜底")
