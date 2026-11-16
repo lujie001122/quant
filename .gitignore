@@ -17,3 +17,6 @@ orders/
 .signal_generator.lock
 .t0_close.lock
 logs/t0_baseline_*.json
+
+# research/strong 缓存（面板 ~700MB，不进仓库）
+research/strong/cache_panel.pkl

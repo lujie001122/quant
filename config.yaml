@@ -243,3 +243,52 @@ database:
   pool_recycle: 3600
   pool_pre_ping: true
 
+
+# ═══════════════════════════════════════════════════════════════════
+# strong: 「只进强势 + 趋势跟随 + 空仓躲跌」ETF 轮动 + 网格（研究分支 research/strong）
+#   入场多指标共振，出场破线/转负即走，大盘弱则整体空仓，周轮动带缓冲带，持仓上叠 ATR 网格。
+#   研究结论见 research/strong/REPORT.md；参数邻域与消融均在 research/strong/run.py 里跑。
+# ═══════════════════════════════════════════════════════════════════
+strong:
+  # ── 池子（PIT：当日有 bar、上市满 N 日、成交额达标、剔除货币类）──
+  exclude_money: true
+  min_history: 60
+  min_amount: 20000000       # 20 日成交额中位数下限（元）= 2000 万
+  # ── 入场：多指标共振（全部满足才进）──
+  ma_fast: 20                # 价格 > MA20 且 MA20 > MA60（多头排列）
+  ma_slow: 60
+  mom_days: 20               # 20 日动量
+  mom_top_pct: 0.20          # 动量排名进前 20% 才可入场
+  rs_days: 20                # 相对强度回看（相对 510300）
+  rs_min: 0.0                # RS > 0 即强于大盘
+  macd: [12, 26, 9]
+  macd_rule: hist_or_cross   # hist(柱为正) | hist_or_cross(柱为正或近 N 日金叉)
+  cross_days: 3
+  vol_confirm: true          # 成交额 MA5 > MA20（放量确认）
+  rsi_range: [50, 75]        # 排除超买(>75)与弱势(<50)
+  # ── 出场 / 空仓（厌烦风险）──
+  exit_macd: true            # MACD 柱转负也清仓
+  exit_confirm: 2            # 出场需连续 N 日成立（滤单日噪音；1=触线即走）
+  exit_buffer: 0.01          # 跌破 MA20 还要再低 1% 才算出局
+  stop_loss: 0.08            # 硬止损（相对持仓均价）
+  empty_when_weak: true      # 510300 跌破 MA60 → 整体空仓
+  regime_code: '510300'
+  regime_ma: 60
+  # ── 轮动 ──
+  top_n: 5                   # 持仓只数（等权 1/K）
+  rebalance_days: 5          # 每 5 个交易日按强势度重排
+  buffer_pct: 0.10           # 缓冲带（滞回）：入场要前 20%，卖出要掉出前 30% 才卖
+  reentry_cooldown: 0        # 卖出后同标的冷却交易日数（0=不限制）
+  min_hold_days: 5           # 最短持有 5 个交易日
+  max_weight: 0.30           # 单只上限（网格上摆时不至于过度集中）
+  # ── 网格 ──
+  grid:
+    enabled: true
+    atr_period: 14
+    step_atr: 0.5            # 一格 = 0.5 × ATR
+    tranche: 0.10            # 每格调整基数的 10%
+    lo: 0.6                  # 单只仓位下限 0.6 × 目标
+    hi: 1.4                  # 单只仓位上限 1.4 × 目标
+  # ── 成本 ──
+  cost: 0.001                # 单边 0.1%（消融测 0.05/0.2/0.3%）
+  rf: 0.02
