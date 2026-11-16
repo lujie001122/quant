@@ -2,8 +2,11 @@
 """
 资金管理器 — 做T配对价计算
 
-配对价必须落在当日涨跌幅区间内；目标价差被边界夹住时按比例降级；
-界内连 1 个价位价差都凑不出 → 这笔做T不能做（ok=False，调用方必须跳过）。
+目标价差 = max(最小价位 × min_ticks, 卖出价 × min_spread_pct)（比例为主）。
+金额 min_spread_amount 只作参考上限：比例价差够 150 元就用比例，不够也不为凑金额拉大。
+
+硬保护：配对价必须距现价 ≤ pair_max_dist_pct(1.5%)，且距当日涨跌停至少 1 个价位；
+越界 → ok=False + 打印 [ALERT]，整笔做T放弃（宁可少做一次，也不挂永远不成交的单）。
 
 用法:
   from money_manager import calc_t0_pair_plan
@@ -28,6 +31,13 @@ MIN_SHARES = _CONF.get("trade", {}).get("min_shares", 5000)  # 从config读取�
 _TICK = 0.001  # ETF 最小价位
 
 _T0_CFG = _CONF.get("t0", {}) or {}
+
+# 默认值仅作 config 缺省兜底，实盘一律走 config.yaml 的 t0 段
+_DEF_MIN_SPREAD_PCT = 0.003      # 最小价差比例 0.3%（0.7元ETF → 0.002，可成交）
+_DEF_MIN_TICKS = 2               # 最小价差 = 至少 N 个最小价位
+_DEF_MIN_SPREAD_AMOUNT = 150.0   # 金额参考值：只记录，不参与定价
+_DEF_MAX_DIST_PCT = 0.015        # 配对价距现价上限 1.5%
+_DEF_LIMIT_MARGIN_TICKS = 1      # 配对价距涨跌停至少 N 个价位
 
 
 # 当日涨跌幅限制的判定依据（交易所规则，非策略参数）：
@@ -90,18 +100,20 @@ class MoneyManager:
     @staticmethod
     def calc_t0_pair_plan(current_price, shares, is_buy_t0, atr_5min=None,
                           pair_atr_multiplier=None, prev_close=None, code=None):
-        """做T配对价方案（带涨跌幅边界）。返回 dict，ok=False 表示这笔做T不能做。
+        """做T配对价方案（比例为主 + 硬保护）。返回 dict，ok=False 表示这笔做T不能做。
 
-        目标价差 = max(min_spread, atr_5min*pair_atr_multiplier*shares)（元）。
-        股数小 → 每股价差大 → 必须用当日涨跌停价夹住，夹住后按比例降级价差。
-        连 1 个最小价位(0.001)的价差都凑不出来 → ok=False，调用方必须跳过整笔做T。
+        目标价差 = max(最小价位×min_ticks, 现价×min_spread_pct) × 股数（比例为主）；
+        ATR 价差更大时才放宽。min_spread_amount(150元) 只作参考，不参与定价：
+        比例价差 ≥150 元就用比例，<150 元也保持比例，绝不为凑金额拉大价差。
+        硬保护：配对价必须距现价 ≤ pair_max_dist_pct，且距涨跌停 ≥1 个价位；
+        越界 → ok=False + [ALERT]，整笔做T放弃（宁可少做一次，不挂永远不成交的单）。
         """
         res = {
             "ok": False, "code": code, "current_price": current_price, "shares": shares,
             "is_buy_t0": is_buy_t0, "price": 0.0, "target_spread": 0.0,
-            "actual_spread": 0.0, "actual_spread_yuan": 0.0, "clamped": False,
-            "limit_up": 0.0, "limit_down": 0.0, "min_spread_yuan": 0.0,
-            "max_spread_yuan": 0.0, "reason": "",
+            "ref_spread_amount": 0.0, "actual_spread": 0.0, "actual_spread_yuan": 0.0,
+            "clamped": False, "limit_up": 0.0, "limit_down": 0.0,
+            "min_spread_yuan": 0.0, "max_spread_yuan": 0.0, "reason": "",
         }
         try:
             current_price = float(current_price)
@@ -113,54 +125,54 @@ class MoneyManager:
             res["reason"] = "价格或股数无效"
             return res
 
-        # 目标价差：固定 min_spread 与 ATR 价差取大
-        target = float(_T0_CFG.get("min_spread", 150))
+        # ── 目标价差：比例为主（默认 0.3%），最少 min_ticks 个价位 ──
+        # 金额只记录不参与定价：1500股×0.7元凑150元 = 0.1元/股(14%) → 必被跌停夹死。
+        # 每股价差取整到整档（0.001），配对价才能精确挂出，且"目标价差"与"实际价差"一致。
+        min_pct = float(_T0_CFG.get("min_spread_pct", _DEF_MIN_SPREAD_PCT))
+        min_ticks = int(_T0_CFG.get("min_ticks", _DEF_MIN_TICKS))
+        res["ref_spread_amount"] = round(
+            float(_T0_CFG.get("min_spread_amount", _DEF_MIN_SPREAD_AMOUNT)), 2)
+        per_share = max(_TICK * min_ticks, current_price * min_pct)
         if atr_5min is not None and float(atr_5min) > 0:
             if pair_atr_multiplier is None:
                 pair_atr_multiplier = _T0_CFG.get("pair_atr_multiplier", 1.1)
-            atr_spread = float(atr_5min) * float(pair_atr_multiplier) * shares
-            if atr_spread > target:
-                target = atr_spread
-        res["target_spread"] = round(target, 2)
-        target_price = current_price + target / shares if is_buy_t0 else current_price - target / shares
+            per_share = max(per_share, float(atr_5min) * float(pair_atr_multiplier))
+        per_share = round(int(per_share / _TICK + 0.5 + 1e-9) * _TICK, 3)
+        target = round(per_share * shares, 2)
+        res["target_spread"] = target
+        target_price = current_price + per_share if is_buy_t0 else current_price - per_share
 
         limit_down, limit_up = day_price_limits(code, prev_close, current_price)
-        res["limit_down"], res["limit_up"] = limit_down, limit_up
-        pct = _price_limit_pct(code)
         if limit_up <= 0:
+            pct = _price_limit_pct(code)
             limit_down = round(current_price * (1 - pct), 3)
             limit_up = round(current_price * (1 + pct), 3)
-            res["limit_down"], res["limit_up"] = limit_down, limit_up
+        res["limit_down"], res["limit_up"] = limit_down, limit_up
 
-        # 合法可挂区间：配对卖 > 现价，配对买 < 现价，且都在当日涨跌幅内
+        # ── 安全区间：配对卖 > 现价 / 配对买 < 现价，距涨跌停 ≥1 档，距现价 ≤ max_dist ──
+        margin = _TICK * int(_T0_CFG.get("limit_margin_ticks", _DEF_LIMIT_MARGIN_TICKS))
+        max_dist = float(_T0_CFG.get("pair_max_dist_pct", _DEF_MAX_DIST_PCT))
         if is_buy_t0:
-            lo, hi = round(current_price + _TICK, 3), limit_up
+            lo = round(current_price + _TICK, 3)
+            hi = round(min(limit_up - margin, current_price * (1 + max_dist)), 3)
         else:
-            lo, hi = limit_down, round(current_price - _TICK, 3)
-        min_spread_yuan = round(_TICK * shares, 2)
-        res["min_spread_yuan"] = min_spread_yuan
+            lo = round(max(limit_down + margin, current_price * (1 - max_dist)), 3)
+            hi = round(current_price - _TICK, 3)
+        res["min_spread_yuan"] = round(_TICK * shares, 2)
         res["max_spread_yuan"] = round((hi - current_price) * shares, 2) if is_buy_t0 \
             else round((current_price - lo) * shares, 2)
 
-        if hi < lo:
-            res["reason"] = (f"涨跌幅区间内无合法配对价(允许区间{lo:.3f}~{hi:.3f}, "
-                             f"现价{current_price:.3f}, 跌停{limit_down:.3f}, 涨停{limit_up:.3f})")
+        price = round(target_price, 3)
+        if hi < lo or not (lo - 1e-9 <= price <= hi + 1e-9):
+            print(f"[ALERT] T0 配对价异常（{price:.3f}），不下单")
+            res["reason"] = (f"配对价{price:.3f}超出安全区间{lo:.3f}~{hi:.3f}"
+                             f"（现价{current_price:.3f}，跌停{limit_down:.3f}，"
+                             f"涨停{limit_up:.3f}，距现价上限±{max_dist*100:.1f}%），放弃本次做T")
             return res
 
-        price = round(min(max(target_price, lo), hi), 3)
         actual = abs(price - current_price)
-        if actual * shares < min_spread_yuan - 1e-9:
-            res["reason"] = (f"界内最大价差{res['max_spread_yuan']:.0f}元 < 最小有效价差"
-                             f"{min_spread_yuan:.0f}元(1个价位×{shares}股)，跳过做T")
-            return res
-
         res.update(ok=True, price=price, actual_spread=round(actual, 3),
                    actual_spread_yuan=round(actual * shares, 2))
-        res["clamped"] = abs(price - round(target_price, 3)) > 1e-9
-        if res["clamped"]:
-            res["reason"] = (f"配对价被界限制约：目标价差{target:.0f}元 → 实际可挂"
-                             f"{res['actual_spread_yuan']:.0f}元（配对价{price:.3f}, "
-                             f"跌停{limit_down:.3f}, 涨停{limit_up:.3f}）")
         return res
 
 # ═══════════════════════════════════════════════

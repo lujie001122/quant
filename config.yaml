@@ -114,10 +114,16 @@ stop_loss:
 t0:
   ma20_slope_buy_cap: -0.005
   ma20_slope_sell_cap: 0.003
-  min_spread: 150
-  min_spread_abs: 120
-  min_spread_pct: 0.0035
+  # ── 配对价：比例为主、金额只作参考 ──
+  # 目标价差 = max(最小价位×min_ticks, 现价×min_spread_pct)，不再用固定金额反推。
+  # 1500股×0.7元 若按 150 元反推 = 0.1元/股(14%)，必被跌停夹死 → 已废弃该算法。
+  min_spread_pct: 0.003        # 0.3%：0.7元 ETF ≈ 0.002/股，可成交
+  min_spread_amount: 150       # 金额参考值：只记录，不参与定价（不放大价差）
+  min_ticks: 2                 # 最小价差至少 N 个最小价位
   pair_atr_multiplier: 1.1
+  pair_max_dist_pct: 0.015     # 硬保护：配对价距现价 >1.5% 直接不下单
+  limit_margin_ticks: 1        # 硬保护：配对价距涨跌停至少 1 档
+  min_spread_abs: 120
   pair_ratio: 0.3
   # 配对价硬边界：当日涨跌幅。判断依据（money_manager._price_limit_pct）：
   #   主板 ETF 10%；科创板 ETF(588/589) 20%；创业板 ETF 20%（159xxx 里的创业板品种，
