@@ -1,0 +1,28 @@
+mom_top3                             gross +0.062 net +0.035 cagr -0.005 turn 0.35 cost 0.027 ex -0.011 t -0.17 sh 0.12 mdd -0.53 n 2.8
+mom_top3_trend                       gross +0.089 net +0.054 cagr +0.017 turn 0.46 cost 0.036 ex +0.008 t +0.13 sh 0.20 mdd -0.51 n 2.8
+mom_top5                             gross +0.060 net +0.036 cagr +0.001 turn 0.32 cost 0.025 ex -0.010 t -0.16 sh 0.14 mdd -0.50 n 4.7
+mom_top5_trend                       gross +0.078 net +0.045 cagr +0.013 turn 0.42 cost 0.033 ex -0.000 t -0.01 sh 0.18 mdd -0.48 n 4.6
+flow_top3                            gross +0.075 net +0.011 cagr -0.010 turn 0.81 cost 0.063 ex -0.034 t -0.98 sh 0.05 mdd -0.51 n 2.9
+flow_top3_trend                      gross +0.079 net +0.017 cagr -0.003 turn 0.80 cost 0.062 ex -0.029 t -0.68 sh 0.09 mdd -0.48 n 2.8
+flow_top5                            gross +0.061 net +0.000 cagr -0.018 turn 0.77 cost 0.060 ex -0.045 t -1.41 sh 0.00 mdd -0.52 n 4.8
+flow_top5_trend                      gross +0.088 net +0.029 cagr +0.011 turn 0.76 cost 0.059 ex -0.017 t -0.46 sh 0.15 mdd -0.47 n 4.6
+joint_top3                           gross +0.137 net +0.083 cagr +0.049 turn 0.69 cost 0.054 ex +0.037 t +0.62 sh 0.31 mdd -0.58 n 2.8
+joint_top3_trend                     gross +0.142 net +0.089 cagr +0.059 turn 0.69 cost 0.053 ex +0.043 t +0.76 sh 0.35 mdd -0.48 n 2.8
+joint_top5                           gross +0.111 net +0.063 cagr +0.033 turn 0.61 cost 0.048 ex +0.017 t +0.31 sh 0.25 mdd -0.57 n 4.7
+joint_top5_trend                     gross +0.107 net +0.058 cagr +0.031 turn 0.62 cost 0.049 ex +0.012 t +0.24 sh 0.25 mdd -0.53 n 4.6
+filter20_top3                        gross +0.118 net +0.066 cagr +0.031 turn 0.67 cost 0.052 ex +0.020 t +0.36 sh 0.25 mdd -0.66 n 2.8
+filter20_top3_trend                  gross +0.086 net +0.033 cagr +0.002 turn 0.69 cost 0.054 ex -0.013 t -0.25 sh 0.13 mdd -0.57 n 2.6
+filter20_top5                        gross +0.118 net +0.070 cagr +0.038 turn 0.62 cost 0.049 ex +0.024 t +0.47 sh 0.27 mdd -0.58 n 4.7
+filter20_top5_trend                  gross +0.075 net +0.025 cagr -0.003 turn 0.64 cost 0.050 ex -0.021 t -0.42 sh 0.11 mdd -0.55 n 4.3
+flow_sm2_buf_top3_trend              gross +0.065 net +0.028 cagr +0.009 turn 0.47 cost 0.037 ex -0.017 t -0.44 sh 0.14 mdd -0.39 n 2.8
+flow_sm2_buf_top5_trend              gross +0.073 net +0.038 cagr +0.020 turn 0.45 cost 0.035 ex -0.008 t -0.23 sh 0.20 mdd -0.35 n 4.6
+joint_sm2_buf_top3_trend             gross +0.121 net +0.090 cagr +0.062 turn 0.40 cost 0.031 ex +0.045 t +0.85 sh 0.37 mdd -0.39 n 2.8
+joint_sm2_buf_top5_trend             gross +0.098 net +0.069 cagr +0.044 turn 0.37 cost 0.029 ex +0.023 t +0.47 sh 0.30 mdd -0.46 n 4.6
+mom_cap10_top3_trend                 gross +0.112 net +0.077 cagr +0.041 turn 0.46 cost 0.036 ex +0.031 t +0.49 sh 0.28 mdd -0.48 n 2.8
+mom_cap10_top5                       gross +0.077 net +0.053 cagr +0.018 turn 0.32 cost 0.025 ex +0.007 t +0.11 sh 0.20 mdd -0.50 n 4.7
+joint_cap10_top3_trend               gross +0.142 net +0.088 cagr +0.058 turn 0.69 cost 0.053 ex +0.043 t +0.75 sh 0.35 mdd -0.48 n 2.8
+joint_cap10_top5                     gross +0.111 net +0.063 cagr +0.033 turn 0.61 cost 0.048 ex +0.017 t +0.31 sh 0.25 mdd -0.57 n 4.7
+flow_cap10_top3_trend                gross +0.081 net +0.019 cagr -0.000 turn 0.80 cost 0.062 ex -0.027 t -0.63 sh 0.10 mdd -0.49 n 2.8
+flow_cap10_top5                      gross +0.062 net +0.001 cagr -0.017 turn 0.77 cost 0.060 ex -0.045 t -1.39 sh 0.01 mdd -0.52 n 4.8
+----------------------------------------------------------------------------------------------------
+vs mom-only live proxy: {"flow_top3_trend_minus_mom": {"ann": -0.037, "t": -0.578, "hit": 0.46}, "flow_top5_trend_minus_mom": {"ann": -0.016, "t": -0.303, "hit": 0.461}, "joint_top3_trend_minus_mom": {"ann": 0.035, "t": 0.78, "hit": 0.446}, "joint_top5_trend_minus_mom": {"ann": 0.013, "t": 0.344, "hit": 0.438}, "filter20_top3_trend_minus_mom": {"ann": -0.021, "t": -0.436, "hit": 0.443}, "filter20_top5_trend_minus_mom": {"ann": -0.02, "t": -0.464, "hit": 0.486}}

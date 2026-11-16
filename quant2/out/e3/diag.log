@@ -1,0 +1,51 @@
+/Users/lujie/Documents/code/quant/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:3023: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[:, None]
+/Users/lujie/Documents/code/quant/.venv/lib/python3.11/site-packages/numpy/lib/_function_base_impl.py:3024: RuntimeWarning: invalid value encountered in divide
+  c /= stddev[None, :]
+==========================================================================================
+panel {'weeks': ['2015-01-09', '2026-11-13'], 'n_weeks': 607, 'n_codes': 794, 'n_cross': 76, 'median_names_all': 164.0, 'median_names_cross': 10.0, 'prem_names': 453}
+------------------------------------------------------------------------------------------
+[corr all] prem~flow +0.016 (|r| 0.129) prem~mom +0.031 (0.305) flow~mom -0.060 (0.148)
+[corr cross] prem~flow +0.040 (|r| 0.242) prem~mom +0.105 (0.445) flow~mom +0.001 (0.238)
+IC all   prem  h1  -0.0310 t -2.40 n 582
+IC all   prem  h2  -0.0208 t -1.58 n 581
+IC all   prem  h4  -0.0077 t -0.55 n 579
+IC all   prem_lvl h1  -0.0247 t -1.88 n 582
+IC all   prem_lvl h2  -0.0144 t -1.09 n 581
+IC all   prem_lvl h4  -0.0024 t -0.17 n 579
+IC all   flow  h1  -0.0219 t -3.10 n 575
+IC all   flow  h2  -0.0328 t -4.16 n 574
+IC all   flow  h4  -0.0267 t -2.95 n 572
+IC all   mom   h1  -0.0059 t -0.37 n 570
+IC all   mom   h2  -0.0094 t -0.49 n 569
+IC all   mom   h4  -0.0146 t -0.60 n 567
+IC cross prem  h1  -0.0251 t -1.12 n 324
+IC cross prem  h2  -0.0051 t -0.23 n 323
+IC cross prem  h4  +0.0205 t +0.78 n 321
+IC cross prem_lvl h1  -0.0056 t -0.23 n 324
+IC cross prem_lvl h2  +0.0037 t +0.14 n 323
+IC cross prem_lvl h4  +0.0392 t +1.29 n 321
+IC cross flow  h1  -0.0364 t -2.28 n 319
+IC cross flow  h2  -0.0575 t -3.17 n 318
+IC cross flow  h4  -0.0590 t -2.72 n 316
+IC cross mom   h1  +0.0088 t +0.30 n 312
+IC cross mom   h2  +0.0052 t +0.15 n 311
+IC cross mom   h4  -0.0112 t -0.23 n 309
+by category: {'US': (8, -0.1425, -3.84), 'HK': (58, -0.0441, -1.84), 'JP': (5, -0.0801, -1.65)}
+------------------------------------------------------------------------------------------
+resid h1: prem|flow -0.0337(t-2.67)  flow|prem -0.0185(t-2.77)  prem|mom -0.0309(t-2.76)  flow|mom -0.0236(t-4.12)  prem|flow+mom -0.0317(t-2.90)  flow|prem+mom -0.0191(t-3.50)
+resid h2: prem|flow -0.0215(t-1.67)  flow|prem -0.0298(t-4.08)  prem|mom -0.0201(t-1.78)  flow|mom -0.0332(t-5.08)  prem|flow+mom -0.0203(t-1.83)  flow|prem+mom -0.0285(t-4.55)
+resid h4: prem|flow -0.0083(t-0.61)  flow|prem -0.0255(t-3.32)  prem|mom -0.0055(t-0.45)  flow|mom -0.0268(t-3.86)  prem|flow+mom -0.0071(t-0.60)  flow|prem+mom -0.0226(t-3.40)
+------------------------------------------------------------------------------------------
+bivariate reg (fwd ~ flow + prem + mom):
+  h1 {'sig': (-0.0006, -3.36), 'ctrl0': (0.0002, 0.37), 'ctrl1': (0.0004, 0.61)}
+  h2 {'sig': (-0.0011, -4.34), 'ctrl0': (0.0001, 0.21), 'ctrl1': (0.0005, 0.63)}
+  h4 {'sig': (-0.0016, -4.55), 'ctrl0': (0.0015, 1.52), 'ctrl1': (0.0004, 0.34)}
+intersection: {'avg_names_lowprem_lowflow': 11.102, 'median_names': 7.0, 'weeks_with_ge3': 0.77, 'fwd4w_excess_ann': -0.012, 'fwd4w_weeks': 538, 'avg_names_hi_prem_gt10_and_hi_flow': 0.074}
+combined IC h2: {'flow_only': (0.0362, 4.66), 'prem_only': (0.0172, 1.29), 'mom_only': (-0.0012, -0.06), 'flow+prem_50_50': (0.0387, 3.79), 'flow+prem_30_70': (0.0291, 2.34), 'lin_l1.1_l2.3': (0.0097, 0.53)}
+persistence: {'prem': {'1': 0.068, '2': 0.045, '4': 0.03, '8': -0.031}, 'flow': {'1': 0.268, '2': 0.169, '4': 0.11, '8': 0.062}, 'mom': {'1': 0.868, '2': 0.77, '4': 0.581, '8': 0.259}}
+prem liquidity: {'all_names': (-0.0251, -1.12), 'amt>=500w': (-0.0221, -0.98), 'amt>=5000w': (-0.0285, -1.15)}
+double sort h4 (prem rows low->high, flow cols low->high):
+   [0.004, -0.0089, -0.0348]
+   [0.0228, 0.0057, -0.017]
+   [0.0226, 0.0023, -0.0068]
