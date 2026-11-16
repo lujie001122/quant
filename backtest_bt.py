@@ -65,6 +65,7 @@ class _AddonEvalPos(PositionInfo):
     def has_position(self):
         return False
 from strategies.rsi_macd import RSIMACDStrategy, check_defense
+import strategies.rsi_macd as _rsi_macd_mod  # 研究开关 H3: 动态覆盖 CONFIRM_BATCH_MAX
 from strategies.grid import (
     check_grid_overall_stop, is_v2_enabled,
 )
@@ -342,6 +343,22 @@ class ETFStrategy(bt.Strategy):
         ("entry_score", None), # 研究: 横截面入场质量综合分门槛(0~1, None=关)
         ("vol_target", 0.0),   # 研究: 波动率倒数加权目标波动(None=关)
         ("entry_rank", 0),     # 研究: 只对动量排名前N名建仓(0=跟随top_n)
+        # ── 研究开关 H1-H4 (默认全部 = 基线行为) ──
+        ("drop_mult", 2.0),    # H1 清仓阈值: 跌出 TOP-(top_n×mult) 才清仓(基线=2)
+        ("drop_need_trend", False),  # H1 跌出阈值后, 仍需趋势破坏(价<MA20 或 DIF<0)才清
+        ("drop_half", False),  # H1 跌出阈值先减半仓(再跌出 top_n×3 才清仓)
+        ("trail_act", None),   # H2 移动止盈激活阈值覆盖(浮盈%)
+        ("trail_lock", None),  # H2 移动止盈锁盈阈值覆盖(浮盈%)
+        ("trail_gap", None),   # H2 移动止盈回撤档位覆盖(e1 固定 gap)
+        ("addon_profit", None),  # H3 加仓要求浮盈≥X
+        ("addon_profit_atr", 0.0),  # H3 加仓要求浮盈≥N×ATR
+        ("winner_addon", 0),   # H3 老赢家额外加仓批次数
+        ("winner_days", 20),   # H3 老赢家判定: 已持有交易日数
+        ("hold_floor", 0),     # H4 持有保护窗口(交易日): 期内不因跌出TOP/破MA5卖出
+        ("order_cap", 0.0),    # H3 单笔下单上限(×fund_per_etf, 0=跟随config entry.position_cap)
+        ("addon_pct", 0.0),    # H3 确认加仓单批比例(0=跟随策略内置30%)
+        ("vol_max", 0.0),      # H5 入场要求 20日波动率 ≤ X (0=关)
+        ("vol_min", 0.0),      # H5 入场要求 20日波动率 ≥ X (0=关)
     )
 
     # 板块分类: 用于板块分散
@@ -409,6 +426,9 @@ class ETFStrategy(bt.Strategy):
                 "reached_5pct": False,  # 阶梯止盈5%标记
                 "reached_8pct_ladder": False,  # 阶梯止盈8%标记
                 "build_first_date": "",  # 首次建仓日期（AO超时兜底用）
+                "hold_td": 0,  # 研究: 已持有交易日数(建仓当日=0)
+                "addon_cap": 0,  # 研究: 当日生效的加仓批次上限
+                "drop_half_done": False,  # 研究: 跌出阈值后是否已减半过一次
             }
         # 全仓轮动状态
         self._rotation_etf = None  # 当前持有的ETF名称
@@ -582,7 +602,8 @@ class ETFStrategy(bt.Strategy):
                 _m = min(1.5, max(0.5, self.p.vol_target / _v))
                 reason = f"{reason} [波动加权×{_m:.2f}]"
                 pct = pct * _m
-        target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * POSITION_CAP)
+        _pcap = self.p.order_cap if self.p.order_cap > 0 else POSITION_CAP
+        target_value = min(self.p.fund_per_etf * pct, self.p.fund_per_etf * _pcap)
         price = data.close[0]
         need = max(int(target_value / price / 100) * 100, MIN_SHARES)  # BUGFIX: 追加模式，不计已有持仓
         # 资金约束
@@ -1012,6 +1033,9 @@ class ETFStrategy(bt.Strategy):
             if not any(self._has_position(d) for d in self.datas if d._name == name):
                 if ps["build_phase"] == 0:
                     ps["empty_days"] += 1
+            elif ps["build_phase"] > 0:
+                # 研究: 持有交易日计数 — 建仓当日不计(当日 build_phase 由建仓逻辑设置)
+                ps["hold_td"] = ps.get("hold_td", 0) + 1
 
     def _update_prev_macd(self):
         """更新prev_macd_status + 记录每日净值"""
@@ -1032,6 +1056,8 @@ class ETFStrategy(bt.Strategy):
         ps["add_count"] = 0; ps["empty_days"] = 0; ps["stop_cooldown"] = False
         ps["entry_avg_cost"] = price  # B1: 锁定建仓均价供止损判断
         ps["pyramid_count"] = 0  # 金字塔加仓次数
+        ps["hold_td"] = 0  # 研究: 持有交易日计数(建仓当日=0)
+        ps["drop_half_done"] = False
         if date_str and not ps.get("build_first_date"):  # 只在首次建仓记录，后续加仓不覆盖
             ps["build_first_date"] = date_str
 
@@ -1054,6 +1080,8 @@ class ETFStrategy(bt.Strategy):
         ps["reached_5pct"] = False  # 重置阶梯止盈5%标记
         ps["reached_8pct_ladder"] = False  # 重置阶梯止盈8%标记
         ps["build_first_date"] = ""  # 清空首次建仓日期
+        ps["hold_td"] = 0  # 研究: 持有交易日计数
+        ps["drop_half_done"] = False
         try:
             dt = datetime.strptime(date_str, "%Y-%m-%d")
             ps["cooldown_until"] = (dt + timedelta(days=self.p.cooldown_days)).strftime("%Y-%m-%d")
@@ -1085,7 +1113,9 @@ class ETFStrategy(bt.Strategy):
             momentum_scores, ranked = self._calc_momentum_scores(lb)
             top_n = self.p.top_n
             top_set = set(name for name, _ in ranked[:top_n])
-            top_drop = set(name for name, _ in ranked[:top_n * 2])
+            _drop_n = int(round(top_n * max(1.0, self.p.drop_mult)))
+            top_drop = set(name for name, _ in ranked[:_drop_n])
+            _drop_hard = set(name for name, _ in ranked[:top_n * 3])
             self._reset_daily(date_str)
             if self.p.entry_confirm > 0:
                 self._update_sig_streak(top_set, date_str)
@@ -1115,11 +1145,36 @@ class ETFStrategy(bt.Strategy):
                 avg = self._get_avg_cost(d)
 
                 if has_pos:
-                    # 跌出TOP_N*2则清仓
+                    # 跌出TOP_(N×drop_mult)则清仓（基线 = TOP-N×2）
+                    _in_floor = (self.p.hold_floor > 0 and ps["hold_td"] < self.p.hold_floor)
                     if name not in top_drop:
-                        self._close(d, f"集中金字塔清仓: 跌出TOP{top_n*2} 排名{momentum_scores.get(name, -999):.1f}%", stype="drop_out_top")
-                        self._full_liquidate_state(ps, date_str)
-                        continue
+                        _dif_now = self.macd[name].dif[0] if name in self.macd else None
+                        _trend_ok = ((not ma20_v or price >= ma20_v)
+                                     and (_dif_now is None or _dif_now >= 0))
+                        if _in_floor:
+                            pass  # H4: 新单保护窗口, 不因跌出排名卖出
+                        elif self.p.drop_need_trend and _trend_ok:
+                            pass  # H1: 跌出排名但趋势未破 → 保留
+                        elif self.p.drop_half and not ps["drop_half_done"]:
+                            # H1: 跌出 TOP-2N 先减半; 跌出 TOP-3N 才清仓
+                            if name not in _drop_hard:
+                                self._close(d, f"集中金字塔清仓: 跌出TOP{top_n*3} 排名{momentum_scores.get(name, -999):.1f}%", stype="drop_out_top")
+                                self._full_liquidate_state(ps, date_str)
+                                continue
+                            if self._sell(d, 50,
+                                          f"集中金字塔减半: 跌出TOP{_drop_n} 排名{momentum_scores.get(name, -999):.1f}%",
+                                          stype="drop_out_top"):
+                                ps["drop_half_done"] = True
+                        elif self.p.drop_half:
+                            # 已减半: 仍跌出 TOP-3N 则清掉剩余
+                            if name not in _drop_hard:
+                                self._close(d, f"集中金字塔清仓: 跌出TOP{top_n*3}(已减半) 排名{momentum_scores.get(name, -999):.1f}%", stype="drop_out_top")
+                                self._full_liquidate_state(ps, date_str)
+                                continue
+                        else:
+                            self._close(d, f"集中金字塔清仓: 跌出TOP{_drop_n} 排名{momentum_scores.get(name, -999):.1f}%", stype="drop_out_top")
+                            self._full_liquidate_state(ps, date_str)
+                            continue
 
                     if price > ps["peak_price"]:
                         ps["peak_price"] = price
@@ -1137,13 +1192,35 @@ class ETFStrategy(bt.Strategy):
                     # ── 调用实盘 risk_manager.check_stop_loss ──
                     pos_cp, t_cp = self._build_pos_and_tech(d, name, date_str)
                     stop_actions = check_stop_loss(pos_cp, t_cp, price, date_str, enhanced_trend=self.p.enhanced_trend)
+                    if _in_floor and stop_actions:
+                        # H4: 保护窗口内不执行"破MA5卖活动仓"(硬止损/趋势清仓照常)
+                        stop_actions = [a for a in stop_actions if a[1] != "sell_active_5pct"]
                     self._sync_pos_to_ps(name, pos_cp, date_str)
                     liquidated = self._execute_stop_actions(d, name, stop_actions, date_str)
                     if liquidated:
                         continue
 
                     # ═══ 加仓逻辑：与实盘对齐，调用 evaluate_entry (build_phase==1) ═══
-                    if (ps["build_phase"] == 1 and ps["first_price"] > 0 and not ps["bought_today"]
+                    _profit_pct = (price - avg) / avg if avg and avg > 0 else 0.0
+                    _addon_ok = True  # H3: 只对赢家加仓
+                    if self.p.addon_profit is not None and _profit_pct < self.p.addon_profit:
+                        _addon_ok = False
+                    if (self.p.addon_profit_atr > 0 and atr_val
+                            and (price - avg) < self.p.addon_profit_atr * atr_val):
+                        _addon_ok = False
+                    _cap = self.p.addon_max
+                    # 老赢家(已持≥winner_days 且浮盈)允许超出常规批次上限再加
+                    _winner_extra = bool(self.p.winner_addon
+                                         and ps["hold_td"] >= self.p.winner_days
+                                         and _profit_pct > 0)
+                    if _winner_extra:
+                        _cap += self.p.winner_addon
+                    ps["addon_cap"] = _cap
+                    _phase_ok = (ps["build_phase"] == 1
+                                 or (_winner_extra and ps["build_phase"] == 2
+                                     and ps.get("confirm_batch_count", 0) < _cap))
+                    if (_phase_ok and _addon_ok and ps["first_price"] > 0
+                            and not ps["bought_today"]
                             and (self.p.addon_mode != "high" or
                                  (ps["peak_price"] > 0 and price >= ps["peak_price"] * 0.999))):
                         atr_pct_a = atr_val / price if atr_val and price > 0 else 0
@@ -1151,13 +1228,21 @@ class ETFStrategy(bt.Strategy):
                         # evaluate_entry 顶部守卫 `if pos.has_position: return None` 会拦截 build_phase==1
                         # 临时切到 _AddonEvalPos 子类使 has_position=False，shares 保持真实值供仓位上限检查
                         _saved_cls = pos_a.__class__
+                        _saved_bp = pos_a.build_phase
                         pos_a.__class__ = _AddonEvalPos
-                        addon_result = evaluate_entry(
-                            pos_a, t_a, price, {}, {}, {},
-                            name, date_str, atr_pct_a, False,
-                            skip_profit_filter=True
-                        )
+                        pos_a.build_phase = 1  # 老赢家补批: 走 evaluate_entry 的 phase1 加仓通道
+                        _saved_cap = _rsi_macd_mod.CONFIRM_BATCH_MAX
+                        _rsi_macd_mod.CONFIRM_BATCH_MAX = _cap
+                        try:
+                            addon_result = evaluate_entry(
+                                pos_a, t_a, price, {}, {}, {},
+                                name, date_str, atr_pct_a, False,
+                                skip_profit_filter=True
+                            )
+                        finally:
+                            _rsi_macd_mod.CONFIRM_BATCH_MAX = _saved_cap
                         pos_a.__class__ = _saved_cls
+                        pos_a.build_phase = _saved_bp
                         # ma5_touch_count 在 evaluate_entry 等确认分支内部更新，_execute_addon_result 不含，单独同步
                         ps["ma5_touch_count"] = pos_a.ma5_touch_count
                         if addon_result and addon_result[0] == "买入" and addon_result[2] == "buy":
@@ -1194,6 +1279,13 @@ class ETFStrategy(bt.Strategy):
                     atr_ok = (atr_val is not None and price > 0 and atr_val / price <= 0.50)
                     if not atr_ok:
                         continue
+
+                    if self.p.vol_max > 0 or self.p.vol_min > 0:
+                        _v20 = self._vol20(d)
+                        if self.p.vol_max > 0 and _v20 > self.p.vol_max:
+                            continue
+                        if self.p.vol_min > 0 and _v20 < self.p.vol_min:
+                            continue
 
                     # 多头排列
                     if not (ma5_v and ma20_v and ma5_v > ma20_v):
@@ -2386,18 +2478,22 @@ class ETFStrategy(bt.Strategy):
 
         price = d.close[0]
         if "补仓" in str(position_ratio):
+            if self.p.addon_pct > 0:
+                pct = self.p.addon_pct  # H3 研究: 加仓单批比例覆盖
             if self._buy(d, pct, reason):
                 ps["bought_today"] = True
                 ps["add_count"] += 1
                 return True
         elif "分批" in str(position_ratio) or "确认" in reason:
+            if self.p.addon_pct > 0:
+                pct = self.p.addon_pct  # H3 研究: 加仓单批比例覆盖
             if "confirm_batch_count" not in ps:
                 ps["confirm_batch_count"] = 0
             if "confirm_batch_date" not in ps:
                 ps["confirm_batch_date"] = ""
             if ps.get("confirm_batch_date") == date_str:
                 return False
-            if ps["confirm_batch_count"] >= self.p.addon_max:
+            if ps["confirm_batch_count"] >= (ps.get("addon_cap") or self.p.addon_max):
                 ps["build_phase"] = 2
                 ps["bought_today"] = True
                 avg = self._get_avg_cost(d)
@@ -2413,7 +2509,7 @@ class ETFStrategy(bt.Strategy):
                 ps["confirm_batch_count"] += 1
                 ps["confirm_batch_date"] = date_str
                 ps["add_count"] += 1
-                if ps["confirm_batch_count"] >= self.p.addon_max:
+                if ps["confirm_batch_count"] >= (ps.get("addon_cap") or self.p.addon_max):
                     ps["build_phase"] = 2
                     ps["bought_today"] = True
                     avg = self._get_avg_cost(d)
@@ -2498,6 +2594,11 @@ def main():
     entry_confirm = 0; pyramid_init = 0.50; addon_mode = "any"; addon_max = 2
     pos_cap = 0.0; min_mom = None; entry_ma60 = False
     entry_score = None; vol_target = 0.0; entry_rank = 0
+    drop_mult = 2.0; drop_need_trend = False; drop_half = False
+    trail_act = None; trail_lock = None; trail_gap = None
+    addon_profit = None; addon_profit_atr = 0.0
+    winner_addon = 0; winner_days = 20; hold_floor = 0
+    order_cap = 0.0; addon_pct = 0.0; vol_max = 0.0; vol_min = 0.0
 
     # --start=YYYY-MM-DD / --end=YYYY-MM-DD 自定义区间
     custom_start = None
@@ -2536,6 +2637,36 @@ def main():
             atr_trail_mult = float(arg.split("=", 1)[1])
         elif arg.startswith("--trail-pct="):
             trail_pct = float(arg.split("=", 1)[1])
+        elif arg.startswith("--trail-act="):
+            trail_act = float(arg.split("=", 1)[1])
+        elif arg.startswith("--trail-lock="):
+            trail_lock = float(arg.split("=", 1)[1])
+        elif arg.startswith("--trail-gap="):
+            trail_gap = float(arg.split("=", 1)[1])
+        elif arg.startswith("--drop-mult="):
+            drop_mult = float(arg.split("=", 1)[1])
+        elif arg == "--drop-need-trend":
+            drop_need_trend = True
+        elif arg == "--drop-half":
+            drop_half = True
+        elif arg.startswith("--addon-profit="):
+            addon_profit = float(arg.split("=", 1)[1])
+        elif arg.startswith("--addon-profit-atr="):
+            addon_profit_atr = float(arg.split("=", 1)[1])
+        elif arg.startswith("--winner-addon="):
+            winner_addon = int(arg.split("=", 1)[1])
+        elif arg.startswith("--winner-days="):
+            winner_days = int(arg.split("=", 1)[1])
+        elif arg.startswith("--hold-floor="):
+            hold_floor = int(arg.split("=", 1)[1])
+        elif arg.startswith("--order-cap="):
+            order_cap = float(arg.split("=", 1)[1])
+        elif arg.startswith("--addon-pct="):
+            addon_pct = float(arg.split("=", 1)[1])
+        elif arg.startswith("--vol-max="):
+            vol_max = float(arg.split("=", 1)[1])
+        elif arg.startswith("--vol-min="):
+            vol_min = float(arg.split("=", 1)[1])
         elif arg == "--sector-diversify":
             sector_diversify = True
         elif arg.startswith("--confirm-days="):
@@ -2731,6 +2862,23 @@ def main():
               f"rs_filter={rs_filter} entry_mode={entry_mode} confirm={entry_confirm} "
               f"pyramid_init={pyramid_init} addon_mode={addon_mode}")
 
+    # 研究开关 H2: 移动止盈参数覆盖（不传 = 与实盘/config 完全一致）
+    if (trail_act is not None or trail_lock is not None or trail_gap is not None
+            or atr_trail_mult > 0):
+        import trailing as _tr
+        _tr.set_overrides(activation=trail_act, lockin=trail_lock, gap=trail_gap,
+                          atr_mult=(atr_trail_mult if atr_trail_mult > 0 else None))
+        print(f"▸ [研究] 移动止盈覆盖: activation={trail_act} lockin={trail_lock} "
+              f"gap={trail_gap} atr_mult={atr_trail_mult}")
+    if (drop_mult != 2.0 or drop_need_trend or drop_half or addon_profit is not None
+            or addon_profit_atr > 0 or winner_addon or hold_floor
+            or order_cap > 0 or addon_pct > 0):
+        print(f"▸ [研究] 持有开关: drop_mult={drop_mult} need_trend={drop_need_trend} "
+              f"drop_half={drop_half} addon_profit={addon_profit} "
+              f"addon_profit_atr={addon_profit_atr} winner_addon={winner_addon} "
+              f"winner_days={winner_days} hold_floor={hold_floor} "
+              f"order_cap={order_cap} addon_pct={addon_pct}")
+
     cerebro = bt.Cerebro()
 
     # 计算每只ETF的资金基数（与实盘一致：从ETFS配置读取）
@@ -2792,6 +2940,21 @@ def main():
                         entry_score=entry_score,
                         vol_target=vol_target,
                         entry_rank=entry_rank,
+                        drop_mult=drop_mult,
+                        drop_need_trend=drop_need_trend,
+                        drop_half=drop_half,
+                        trail_act=trail_act,
+                        trail_lock=trail_lock,
+                        trail_gap=trail_gap,
+                        addon_profit=addon_profit,
+                        addon_profit_atr=addon_profit_atr,
+                        winner_addon=winner_addon,
+                        winner_days=winner_days,
+                        hold_floor=hold_floor,
+                        order_cap=order_cap,
+                        addon_pct=addon_pct,
+                        vol_max=vol_max,
+                        vol_min=vol_min,
     )
 
     # Analyzers

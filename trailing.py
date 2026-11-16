@@ -27,19 +27,32 @@ def mode():
     return str(TRAILING.get('mode', 'e1')).lower()
 
 
+# 研究用临时覆盖(仅研究分支使用; 默认为空 = 行为与实盘一致)
+_OVR = {}
+
+
+def set_overrides(activation=None, lockin=None, atr_mult=None, gap=None):
+    """研究开关: 覆盖 activation / lockin / atr_mult / gap。不调用 = 零影响。"""
+    global _OVR
+    _OVR = {k: float(v) for k, v in
+            (("activation", activation), ("lockin", lockin), ("atr_mult", atr_mult), ("gap", gap))
+            if v is not None}
+
+
 def params(atr_pct=None, mode_override=None):
     """→ (activation, lockin, gap)"""
     m = str(mode_override or mode()).lower()
     if m == 'fixed':
         return TRAIL_PCT + 0.01, TRAIL_PCT + 0.08, TRAIL_PCT
     _v2 = bool((_CFG.get('strategy_v2') or {}).get('enabled', False))
-    activation = float(PROFIT_TAKE.get('e1_activation_v2' if _v2 else 'e1_activation', 0.035))
-    lockin = float(PROFIT_TAKE.get('e1_lockin', 0.07))
+    activation = float(_OVR.get('activation',
+                                PROFIT_TAKE.get('e1_activation_v2' if _v2 else 'e1_activation', 0.035)))
+    lockin = float(_OVR.get('lockin', PROFIT_TAKE.get('e1_lockin', 0.07)))
     a = float(atr_pct or 0.0)
     if m == 'atr':
-        gap = min(max(float(TRAILING.get('atr_mult', 2.0)) * a, _MIN_GAP), _MAX_GAP)
+        gap = min(max(float(_OVR.get('atr_mult', TRAILING.get('atr_mult', 2.0))) * a, _MIN_GAP), _MAX_GAP)
     else:  # e1
-        gap = 0.07 if a > 0.05 else (0.05 if a >= 0.03 else 0.03)
+        gap = float(_OVR.get('gap', 0.07 if a > 0.05 else (0.05 if a >= 0.03 else 0.03)))
     return activation, lockin, gap
 
 
