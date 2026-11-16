@@ -33,9 +33,9 @@
       "ma5_sell_trigger_date": "2026-11-13",
       "confirm_batch_count": 0,
       "confirm_batch_date": null,
-      "shares": 28600,
-      "avg_cost": 0.703,
-      "current_price": 0.705,
+      "shares": 25100,
+      "avg_cost": 0.702,
+      "current_price": 0.71,
       "entry_avg_cost": 0.703,
       "base_price": 0.703,
       "reached_3pct": false,
@@ -80,8 +80,8 @@
       "confirm_batch_count": 0,
       "confirm_batch_date": null,
       "shares": 6300,
-      "avg_cost": 0.778,
-      "current_price": 0.907,
+      "avg_cost": 0.776,
+      "current_price": 0.917,
       "entry_avg_cost": 0.864,
       "base_price": 0.865,
       "reached_3pct": false,
@@ -278,8 +278,8 @@
     "159928": {
       "name": "消费ETF",
       "shares": 25100,
-      "available": 10100,
-      "frozen": 15000,
+      "available": 25100,
+      "frozen": 0,
       "avg_cost": 0.702,
       "current_price": 0.71,
       "market_value": 17821.0,
@@ -290,8 +290,8 @@
     "512800": {
       "name": "银行ETF",
       "shares": 6300,
-      "available": 1300,
-      "frozen": 5000,
+      "available": 6300,
+      "frozen": 0,
       "avg_cost": 0.776,
       "current_price": 0.917,
       "market_value": 5777.1,
@@ -301,11 +301,11 @@
     }
   },
   "account": {
-    "total_asset": 199688.11,
+    "total_asset": 197181.51,
     "cash": 173583.41,
-    "market_value": 26104.7
+    "market_value": 23598.1
   },
-  "last_updated": "2026-11-16 16:04",
+  "last_updated": "2026-11-16 19:46",
   "_today_open": {
     "date": "2026-11-04",
     "asset": 0.0
