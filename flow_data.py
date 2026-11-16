@@ -156,21 +156,26 @@ def fetch_szse_shares(day, months_back=2):
     for k in range(months_back):
         start = (end.replace(day=1) - pd.offsets.MonthBegin(k)).replace(day=1)
         stop = min((start + pd.offsets.MonthBegin(1)) - pd.Timedelta(days=1), end)
-        try:
-            r = sess().get("https://www.szse.cn/api/report/ShowReport",
-                           params={"SHOWTYPE": "xlsx", "CATALOGID": "scsj_fund_jjgm",
-                                   "TABKEY": "tab1", "txtStart": str(start.date()),
-                                   "txtEnd": str(stop.date()), "jjlb": "ETF",
-                                   "random": str(random.random())},
-                           headers={"Host": "www.szse.cn",
-                                    "Referer": "https://www.szse.cn/market/fund/volume/etf/index.html"},
-                           timeout=40)
-            if r.status_code != 200 or not r.content:
-                continue
-            df = pd.read_excel(io.BytesIO(r.content), engine="openpyxl")
-        except Exception as e:
-            print(f"[szse] {start.date()}~{stop.date()} 失败: {e}", file=sys.stderr)
-            continue
+        df = None
+        for attempt in (0, 1):   # 深交所偶发返回空表（限流/随机），同一个窗口重试一次
+            try:
+                r = sess().get("https://www.szse.cn/api/report/ShowReport",
+                               params={"SHOWTYPE": "xlsx", "CATALOGID": "scsj_fund_jjgm",
+                                       "TABKEY": "tab1", "txtStart": str(start.date()),
+                                       "txtEnd": str(stop.date()), "jjlb": "ETF",
+                                       "random": str(random.random())},
+                               headers={"Host": "www.szse.cn",
+                                        "Referer": "https://www.szse.cn/market/fund/volume/etf/index.html"},
+                               timeout=40)
+                if r.status_code != 200 or not r.content:
+                    time.sleep(1.5)
+                    continue
+                df = pd.read_excel(io.BytesIO(r.content), engine="openpyxl")
+                if df is not None and len(df) > 0:
+                    break
+            except Exception as e:
+                print(f"[szse] {start.date()}~{stop.date()} 失败: {e}", file=sys.stderr)
+                time.sleep(1.5)
         if df is None or len(df) == 0:
             continue
         for d, c, v in zip(pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d"),
@@ -476,11 +481,12 @@ def run(nav_all=False, pxq_all=False, workers=10, verbose=True):
     # 1) 份额（2 个请求）
     sse_pub, sse = fetch_sse_shares(day)
     szse = fetch_szse_shares(day)
-    ndays = save_shares(sse_pub, sse, szse)
-    szse_today = len((szse or {}).get(day) or {})
+    save_shares(sse_pub, sse, szse)
+    szse_pub = max([d for d in (szse or {}) if d <= day] or [None])
     if verbose:
-        print(f"[份额] 目标日={day} 上交所 {len(sse)} 只(公布日 {sse_pub}) | "
-              f"深交所 {szse_today} 只(本窗口 {ndays} 天)")
+        print(f"[份额] 目标日={day}（当日份额今晚才公布，用最近已公布日）"
+              f" 上交所 {len(sse)} 只(公布日 {sse_pub}) | "
+              f"深交所 {len((szse or {}).get(szse_pub) or {})} 只(公布日 {szse_pub})")
 
     # 2) 候选池
     codes = all_pool_codes() if (nav_all or pxq_all) else candidate_codes()
