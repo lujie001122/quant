@@ -29,6 +29,12 @@ flow:
   cost: 0.0015           # 回测单边成本（E4 口径）
   cancel_pending_at: '14:45'  # 尾盘撤单时点：此后的执行只撤当日未成交挂单，不再下新单
   use_sell_proceeds: true     # 建仓清单资金口径：可用资金 = 现金 + 当日卖出回款
+  # ── 波动目标（riskbudget@7604735 唯一有增量的那一层；只减仓、不加杠杆）──
+  # 乘数 = min(1, vol_target / 近 vol_window_weeks 周实现波动)，作用于每只的目标金额。
+  # 研究: 25% → 年化 8.79%/回撤 −27.6%/Sharpe 0.50；只有 9% 的周真的减仓，其余满仓。
+  # 数据不足 MIN_VOL_OBS=12 周 → 按满仓（乘数 1.0）。上限硬编码 1.0，>1 就是杠杆。
+  vol_target: 0.25            # 0 = 关掉波动目标（回到 E4 原样，8.47%/−30.1%）
+  vol_window_weeks: 26        # 实现波动回看周数
 
 active_ratio: 0.7
 atr_high_threshold: 0.05

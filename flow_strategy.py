@@ -13,6 +13,10 @@
   排序    截面百分位 rank(f) 反向（买低申购/净赎回），再取过去 2 周均值平滑
   持有     等权 1/N；缓冲带 2N（跌出前 40 才卖）；新买入持有期下限 2 周；分批 0.5
   溢价     不复权收盘 / 净值(T-1) - 1 > 10% → 不建仓（已有持仓不强制卖，见 cfg.premium.block_new_only）
+  波动目标 乘数 = min(1, target_vol / 近 vol_window_weeks 周实现波动)
+           乘数只作用于每只的目标金额（等权 × 乘数），上限 1.0（只减仓、不加杠杆、不做空）
+           研究结论（riskbudget@7604735）: 25% 目标 → 年化 8.79%/回撤 −27.6%/Sharpe 0.50，
+           只有 9% 的周真的减仓，其余 91% 满仓
 
 默认不杠杆、不做空、不择时（flow 模式不乘 timing 档位）。
 
@@ -61,7 +65,12 @@ DEFAULTS = dict(
     max_order_pct=0.05,   # 单只单次下单上限 = 总资产 5%（分批建仓）
     cost=0.0015,          # 单边成本（E4 口径）
     cancel_pending_at='14:45',     # 尾盘撤未成交挂单时点
+    vol_target=0.25,      # 年化波动目标（乘数 = min(1, 目标/实现波动)，>1 一律截到 1）
+    vol_window_weeks=26,  # 实现波动回看周数
 )
+
+# 波动目标最少观测周数（研究 min_obs=12：不足 12 周不下调乘数，按满仓）
+MIN_VOL_OBS = 12
 
 
 def load_cfg():
@@ -88,6 +97,39 @@ def strategy_mode():
             return str(((yaml.safe_load(f) or {}).get("strategy") or {}).get("mode", "flow")).lower()
     except Exception:
         return "flow"
+
+
+# ════════════════════════════════════════════════════════════
+# 〇、波动目标（riskbudget@7604735 唯一有增量的那一层）
+# ════════════════════════════════════════════════════════════
+def vol_multiplier(returns, target, window_weeks, min_obs=MIN_VOL_OBS):
+    """乘数 = min(1, target / 近 window_weeks 周实现波动)，年化口径（周收益 × √52）。
+
+    returns    : 已经实现的周净收益序列（PIT：只用本周之前的，绝不看未来）
+    返回 (mult, realized_vol)；数据不足返回 (1.0, None)。
+
+    上限硬编码 1.0：>1 就是杠杆，本策略不杠杆。下界 0 只用于防除零。
+    研究口径标准差 ddof=1（样本标准差），与 rb.py 的 m 逐周对齐。
+    """
+    target = float(target or 0.0)
+    if target <= 0:
+        return 1.0, None
+    if len(returns) < int(min_obs):
+        return 1.0, None
+    rv = float(pd.Series(list(returns)[-int(window_weeks):]).std(ddof=1) * np.sqrt(52))
+    if not np.isfinite(rv) or rv <= 1e-6:
+        return 1.0, rv
+    return float(min(1.0, target / rv)), rv
+
+
+def vol_note(cfg, rvol, mult):
+    """一行人话：`[FLOW] 近26周波动=18.2% 目标=25% 乘数=1.00（满仓）`。"""
+    w = int(cfg.get("vol_window_weeks") or 26)
+    tgt = float(cfg.get("vol_target") or 0.0)
+    if rvol is None:
+        return "[FLOW] 波动数据不足，按满仓处理"
+    tail = "（满仓）" if mult >= 0.9995 else f"（减仓{1.0 - mult:.0%}）"
+    return f"[FLOW] 近{w}周波动={rvol:.1%} 目标={tgt:.0%} 乘数={mult:.2f}{tail}"
 
 
 # ════════════════════════════════════════════════════════════
@@ -146,20 +188,72 @@ def tradable_overlay(c, cfg):
 
 
 # ════════════════════════════════════════════════════════════
-# 二、回测（与 E4 同一套 engine2.step）
+# 二、回测（与 E4 同一套 engine2.step；波动目标就长在这一个循环里）
 # ════════════════════════════════════════════════════════════
-def run_book(c, cfg, overlay=None):
+def simulate_book(c, cfg, overlay=None, valid=None, return_state=False):
+    """逐周决策 + 波动目标。回测与实盘（latest_targets）**共用这一个函数**。
+
+    决策体仍来自 engine2.step（E4 原样），这里只做三件事：
+      1) 每周决策后按 PIT 实现波动算乘数 m，把目标权重整列乘 m（现金腿不投）
+      2) 换手 = 0.5×Σ|Δw|（engine2 同一口径，乘数只是让 w 变小，没有第二套记账）
+      3) 乘数序列写进 book["mult"]，供回测打印分布 / 实盘算目标金额
+
+    cfg.vol_target <= 0 → 不启用，逐周结果与 engine2.simulate 逐位相同（m≡1）。
+    valid   : 覆盖 c["valid"]（实盘把最后一周放宽为"今天可交易"用的就是它）
+    返回 book（含 mult/rvol 两列）；return_state=True 时另给最后一行的 prev_w（已乘 m）。
+    """
     score, entry_block = score_and_block(c, cfg)
-    valid = c["valid"]
+    valid = c["valid"] if valid is None else valid
     if overlay is not None:
         valid = valid & overlay.reindex(valid.index).fillna(False)
-    book = engine2.simulate(
-        score, c["ret1"], valid,
-        N=int(cfg["n"]), buffer_n=int(cfg["buffer_n"]), minhold=int(cfg["min_hold_weeks"]),
-        partial=float(cfg["partial"]), cost=float(cfg["cost"]),
-        entry_block=(entry_block if cfg["premium_block_new_only"] else None),
-    )
+    eb = entry_block if cfg["premium_block_new_only"] else None
+    target = float(cfg.get("vol_target") or 0.0)
+    window = int(cfg.get("vol_window_weeks") or 26)
+    cost = float(cfg["cost"])
+    held, prev_w, nets = {}, pd.Series(dtype=float), []
+    recs = []
+    m, rvol = 1.0, None
+    for i, t in enumerate(score.index):
+        w = engine2.step(score.loc[t], valid.loc[t].fillna(False), held, prev_w, i,
+                         N=int(cfg["n"]), buffer_n=int(cfg["buffer_n"]),
+                         minhold=int(cfg["min_hold_weeks"]), partial=float(cfg["partial"]),
+                         entry_block=(None if eb is None else eb.loc[t]))
+        m, rvol = 1.0, None
+        if target > 0 and len(w):
+            m, rvol = vol_multiplier(nets, target, window)
+        w_eff = w * m
+        all_idx = w_eff.index.union(prev_w.index)
+        turn = float((w_eff.reindex(all_idx, fill_value=0.0)
+                      - prev_w.reindex(all_idx, fill_value=0.0)).abs().sum() / 2.0)
+        gross = float((w_eff * c["ret1"].loc[t].reindex(w_eff.index).fillna(0.0)).sum())
+        net = gross - turn * cost
+        nets.append(net)
+        recs.append(dict(t=t, gross=gross, turn=turn, cost=turn * cost, net=net,
+                         n=int((w_eff > 0).sum()), w_sum=float(w_eff.sum()),
+                         mult=float(m), rvol=(np.nan if rvol is None else float(rvol))))
+        held = {n: (held[n] if n in held else i) for n in w.index}
+        prev_w = w_eff
+    book = pd.DataFrame(recs).set_index("t")
+    if return_state:
+        return book, dict(held=dict(held), prev_w=prev_w, last_i=len(score.index) - 1,
+                          weeks=score.index, mult=float(m), rvol=rvol,
+                          cash=float(max(0.0, 1.0 - float(prev_w.sum()))))
     return book
+
+
+def vol_stats(book, lo=None, cfg=None):
+    """乘数分布：多少周满仓 / 多少周减仓 / 最少最多多少（验收第 2 条）。"""
+    cfg = cfg or load_cfg()
+    m = book["mult"].astype(float)
+    if lo is not None:
+        m = m[m.index >= pd.Timestamp(lo)]
+    return dict(target=float(cfg.get("vol_target") or 0.0),
+                window_weeks=int(cfg.get("vol_window_weeks") or 26),
+                n_weeks=int(len(m)),
+                n_full=int((m >= 0.9995).sum()),
+                n_trim=int((m < 0.9995).sum()),
+                share_trim=float((m < 0.9995).mean()),
+                m_min=float(m.min()), m_max=float(m.max()), m_mean=float(m.mean()))
 
 
 def backtest(start="2015-01-01", end="2024-12-31", lag=1, parity=False, overlay=False,
@@ -174,25 +268,33 @@ def backtest(start="2015-01-01", end="2024-12-31", lag=1, parity=False, overlay=
     d = load_panel(lag=lag, cutoff=cutoff)
     c = context(d, cfg)
     ov = tradable_overlay(c, cfg) if overlay else None
-    book = run_book(c, cfg, overlay=ov)
+    book = simulate_book(c, cfg, overlay=ov)
     m = B.ev(book, c["ew"], lo=start, hi=None)
     yrs = B.by_year(book, c["ew"])
+    vs = vol_stats(book, lo=start, cfg=cfg)
     out = dict(config=cfg, window=dict(start=start, end=end, lag=int(lag),
                                        parity=bool(parity), overlay=bool(overlay)),
                metrics=m, by_year={int(k): v for k, v in yrs.items()},
+               vol=vs,
                prem_block_share=float((c["d"]["prem"].where(c["keep"]) >
                                        float(cfg["premium_cap"])).sum(axis=1).gt(0).mean()))
     if not quiet:
+        vt = (f"波动目标={float(cfg['vol_target']):.0%}/{int(cfg['vol_window_weeks'])}周"
+              if float(cfg.get("vol_target") or 0) > 0 else "波动目标=关")
         print("=" * 78)
         print(f"[回测] {start} → {end}  lag={lag}  parity={parity}  overlay={overlay}  "
               f"N={cfg['n']} 平滑={cfg['smooth_weeks']}周 缓冲={cfg['buffer_n']} "
-              f"持有>={cfg['min_hold_weeks']}周 分批={cfg['partial']} 成本={cfg['cost']:.4f}")
+              f"持有>={cfg['min_hold_weeks']}周 分批={cfg['partial']} 成本={cfg['cost']:.4f} {vt}")
         print(f"  净收益(周均×52) {m['ann']:+.2%}  CAGR {m['cagr']:+.2%}  波动 {m['vol']:.1%}  "
               f"Sharpe {m['sharpe']:.2f}")
         print(f"  最大回撤 {m['mdd']:+.1%}  周换手 {m['turnover']:.1%}  年成本 {m['cost_ann']:.2%}  "
               f"周数 {m['n_weeks']}  平均持仓 {m['avg_names']:.2f}")
         print(f"  等权基准 净 {m['ew_ann']:+.2%} CAGR {m['ew_cagr']:+.2%}  "
               f"超额 {m['excess_ann']:+.2%} (t {m['excess_t']:.2f})  胜率 {m['excess_hit']:.1%}")
+        if vs["target"] > 0:
+            print(f"  乘数分布: 满仓 {vs['n_full']} 周 / 减仓 {vs['n_trim']} 周"
+                  f"（{vs['share_trim']:.1%}）  最少 {vs['m_min']:.3f}  最多 {vs['m_max']:.3f}  "
+                  f"均值 {vs['m_mean']:.3f}")
         print("  分年(净/等权/超额): " + " ".join(
             f"{y}:{v['net']:+.1%}/{v['ew']:+.1%}/{(v['net'] - v['ew']):+.1%}"
             for y, v in out["by_year"].items()))
@@ -202,11 +304,11 @@ def backtest(start="2015-01-01", end="2024-12-31", lag=1, parity=False, overlay=
 # ════════════════════════════════════════════════════════════
 # 三、实盘目标权重（回测最后一行的同一个 step）
 # ════════════════════════════════════════════════════════════
-def latest_targets(cfg=None, lag=None, relax_last_week=True):
+def latest_targets(cfg=None, lag=None, relax_last_week=True, quiet=False):
     """算出"下一交易日该持有哪 20 只、各多少权重"。
 
-    做法：整段历史跑 engine2.simulate，最后一周的 valid 放宽为"今天可交易"
-    （不要求已有的前向收益），最后一周的目标权重 = 输出 prev_w。
+    做法：整段历史跑 simulate_book（与回测同一个函数），最后一周的 valid 放宽为
+    "今天可交易"（不要求已有的前向收益），最后一周的目标权重 = 输出 prev_w（已乘波动乘数）。
     最后一周 = 最近一个已收盘交易周的周五（PIT：份额 T-1、净值 T-1、收盘 T）。
     """
     cfg = dict(cfg or load_cfg())
@@ -222,16 +324,17 @@ def latest_targets(cfg=None, lag=None, relax_last_week=True):
     ov = tradable_overlay(c, cfg)
     if ov is not None:
         valid = valid & ov.reindex(valid.index).fillna(False)
-    book, st = engine2.simulate(
-        score, c["ret1"], valid,
-        N=int(cfg["n"]), buffer_n=int(cfg["buffer_n"]), minhold=int(cfg["min_hold_weeks"]),
-        partial=float(cfg["partial"]), cost=float(cfg["cost"]),
-        entry_block=(entry_block if cfg["premium_block_new_only"] else None),
-        return_state=True)
+    book, st = simulate_book(c, cfg, valid=valid, return_state=True)
     w = st["prev_w"]
     prem = c["d"]["prem"].loc[last]
     amt = c["d"]["A"].loc[last] / 5.0
     names = c["d"]["names"]
+    # 波动乘数（PIT：只用最后一周之前已实现的周收益；上限 1.0）
+    vt_on = float(cfg.get("vol_target") or 0) > 0
+    mult = float(st["mult"]) if vt_on else 1.0
+    rvol = st["rvol"] if vt_on else None
+    if vt_on and not quiet:
+        print(vol_note(cfg, rvol, mult))
     # 打分排名（1 = 最该买；建仓顺序按它来，钱不够时先满足排名靠前的）
     s_last = score.loc[last].where(c["keep"].loc[last].fillna(False)).dropna()
     rank = {code: int(i) + 1 for i, code in enumerate(s_last.sort_values(ascending=False).index)}
@@ -246,6 +349,9 @@ def latest_targets(cfg=None, lag=None, relax_last_week=True):
     return dict(as_of=str(pd.Timestamp(last).date()), weeks=int(len(c["weeks"])),
                 lag=lag, gross=float(cfg["gross"]), targets=rows, held_since=held_state,
                 n_names=len(rows), pool_last=int(c["keep"].loc[last].fillna(False).sum()),
+                vol=dict(target=float(cfg.get("vol_target") or 0),
+                         window_weeks=int(cfg.get("vol_window_weeks") or 26),
+                         realized_vol=rvol, mult=mult),
                 cfg=cfg)
 
 
@@ -326,7 +432,8 @@ def _load_price_cache():
     return last, px
 
 
-def build_plan(totals=None, holdings=None, asof_price=None, cfg=None, targets=None):
+def build_plan(totals=None, holdings=None, asof_price=None, cfg=None, targets=None,
+               quiet=False):
     """给定目标权重 → 每只的目标股数/金额、当前持仓、差额、今日可下单量。
 
     分批约束：单只单次买入 ≤ 总资产 × max_order_pct（默认 5%）；超出的部分留给下一交易日。
@@ -334,7 +441,7 @@ def build_plan(totals=None, holdings=None, asof_price=None, cfg=None, targets=No
              不足时按比例缩小下单并在清单里标明。
     """
     cfg = dict(cfg or load_cfg())
-    tg = targets or latest_targets(cfg=cfg)
+    tg = targets or latest_targets(cfg=cfg, quiet=quiet)
     ta_info = totals or read_account()
     hold, hold_src = holdings if isinstance(holdings, tuple) else (holdings or read_holdings()[0], "arg")
     px_date, px = _load_price_cache()
@@ -345,6 +452,10 @@ def build_plan(totals=None, holdings=None, asof_price=None, cfg=None, targets=No
     total_asset = float(ta_info["total_asset"])
     cash = float(ta_info["cash"])
     gross = float(cfg["gross"])
+    vol = dict(tg.get("vol") or dict(target=0.0,
+                                     window_weeks=int(cfg.get("vol_window_weeks") or 26),
+                                     realized_vol=None, mult=1.0))
+    mult = float(vol.get("mult") or 1.0)          # 目标金额 = 等权 × 乘数（权重里已经乘过）
     cap_amt = total_asset * float(cfg["max_order_pct"])
     rows = []
     codes = sorted(set(tg["targets"].keys()) | set(hold.keys()))
@@ -400,7 +511,8 @@ def build_plan(totals=None, holdings=None, asof_price=None, cfg=None, targets=No
     plan = dict(as_of=tg["as_of"], price_date=px_date, total_asset=round(total_asset, 2),
                 cash=round(cash, 2), account_source=ta_info.get("source"),
                 holdings_source=hold_src, gross=gross,
-                target_value=round(gross * total_asset, 2),
+                vol=vol, vol_mult=round(mult, 6),
+                target_value=round(gross * total_asset * mult, 2),
                 n_targets=tg["n_names"], pool=tg["pool_last"],
                 buy_total=round(got_cash, 2),
                 want_total=round(need_cash, 2),
@@ -409,7 +521,8 @@ def build_plan(totals=None, holdings=None, asof_price=None, cfg=None, targets=No
                 cash_scaled=bool(scale < 1.0), scale=round(scale, 4),
                 rows=rows, cfg={k: cfg[k] for k in ("n", "smooth_weeks", "buffer_n",
                                                     "min_hold_weeks", "partial",
-                                                    "premium_cap", "max_order_pct")})
+                                                    "premium_cap", "max_order_pct",
+                                                    "vol_target", "vol_window_weeks")})
     plan["cash_after"] = round(plan["cash"] + plan["sell_total"] - plan["buy_total"], 2)
     return plan
 
@@ -420,6 +533,14 @@ def print_plan(plan):
           f"({plan['account_source']})")
     print(f"  目标持仓 {plan['n_targets']} 只 × 等权 = 目标市值 ¥{plan['target_value']:,.2f}；"
           f"可交易池 {plan['pool']} 只")
+    vol = plan.get("vol") or {}
+    if float(plan.get("vol_mult") or 1.0) < 0.9995:
+        rv = vol.get("realized_vol")
+        rvs = f"{rv:.1%}" if rv is not None else "-"
+        released = plan["gross"] * plan["total_asset"] - plan["target_value"]
+        print(f"  ⚠️ 波动乘数 {plan['vol_mult']:.2f}（近{vol.get('window_weeks')}周波动 {rvs} > "
+              f"目标 {float(vol.get('target') or 0):.0%}）→ 目标市值 ×{plan['vol_mult']:.2f}，"
+              f"释放现金 ¥{released:,.0f} 不投")
     print(f"  {'代码':<8}{'名称':<12}{'现价':>7}{'权重':>6}{'目标金额':>11}{'目标股数':>9}"
           f"{'当前股数':>9}{'差额':>8}{'买/卖':>10}  {'溢价':>7} 动作")
     for r in plan["rows"]:
@@ -461,9 +582,16 @@ def main():
     ap.add_argument("--plan", action="store_true", help="输出建仓/调仓清单（不下单）")
     ap.add_argument("--targets", action="store_true", help="输出目标权重")
     ap.add_argument("--json", action="store_true", help="结果以 JSON 打印到 stdout")
+    ap.add_argument("--vol-target", type=float, default=None,
+                    help="年化波动目标（默认 config flow.vol_target=0.25；0=关掉这一层）")
+    ap.add_argument("--vol-window", type=int, default=None, help="实现波动回看周数（默认 26）")
     a = ap.parse_args()
 
     cfg = load_cfg()
+    if a.vol_target is not None:
+        cfg["vol_target"] = float(a.vol_target)
+    if a.vol_window is not None:
+        cfg["vol_window_weeks"] = int(a.vol_window)
     if a.backtest:
         out = backtest(start=a.start, end=a.end,
                        lag=int(cfg["flow_lag"] if a.lag is None else a.lag),
@@ -472,7 +600,7 @@ def main():
             print(json.dumps(out, ensure_ascii=False, default=float, indent=1))
         return 0
     if a.plan:
-        plan = build_plan(cfg=cfg)
+        plan = build_plan(cfg=cfg, quiet=a.json)
         if a.json:
             print(json.dumps(plan, ensure_ascii=False, default=float, indent=1))
         else:
@@ -482,12 +610,13 @@ def main():
         with open(os.path.join(OUT_DIR, f"plan_{tag}.json"), "w") as f:
             json.dump(plan, f, ensure_ascii=False, default=float, indent=1)
         return 0
-    tg = latest_targets(cfg=cfg)
+    tg = latest_targets(cfg=cfg, quiet=a.json)
     if a.json:
         print(json.dumps(tg, ensure_ascii=False, default=float, indent=1))
         return 0
     print(f"[目标权重] 信号周={tg['as_of']}  lag={tg['lag']}  持仓 {tg['n_names']} 只  "
-          f"总仓位={tg['gross']:.0%}  可交易池={tg['pool_last']} 只")
+          f"总仓位={tg['gross']:.0%}  可交易池={tg['pool_last']} 只"
+          f"  波动乘数={float((tg.get('vol') or {}).get('mult') or 1.0):.2f}")
     for code, r in sorted(tg["targets"].items(), key=lambda kv: -kv[1]["weight"]):
         prem = r["prem"]
         ps = f"{prem:+.1%}" if np.isfinite(prem) else "-"

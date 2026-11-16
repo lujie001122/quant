@@ -1438,6 +1438,7 @@ def build_flow_signals():
     n_hold = len([r for r in plan["rows"] if r["in_target"] and not r.get("skip_reason")]) - len(
         [r for r in buys if r["in_target"]]) - len([r for r in sells if r["in_target"]])
     # ── 目标仓位明细（与 pyramid 同一张表格式）──
+    _vm = float(plan.get("vol_mult") or 1.0)          # flow 的波动乘数（已作用在目标金额上）
     print(f"[目标仓位] 总资产¥{plan['total_asset']:,.0f} | 流量宽组合 N={cfg['n']} 等权 "
           f"| 信号周={as_of} | 价格日={plan['price_date']} | 无择时（flow 不乘档位）")
     print(f"  {'代码':<8}{'名称':<14}{'现价':>8}{'当前股数':>10}{'乘数':>6}{'乘数前':>8}{'乘数后':>8}"
@@ -1447,8 +1448,10 @@ def build_flow_signals():
                "买入" if r["buy_shares"] > 0 else
                "卖出" if r["sell_shares"] > 0 else
                ("持有" if r["in_target"] else "空"))
+        w_pre = r["weight"] / _vm if _vm > 0 else r["weight"]
         print(f"  {r['code']:<8}{(r['name'] or names.get(r['code'], ''))[:13]:<14}"
-              f"{r['price']:>8.3f}{r['cur_shares']:>10,}{'1.00':>6}{'-':>8}{'-':>8}"
+              f"{r['price']:>8.3f}{r['cur_shares']:>10,}{_vm:>6.2f}"
+              f"{w_pre * 100:>7.1f}%{r['weight'] * 100:>7.1f}%"
               f"{'¥' + format(r['target_amount'], ',.0f'):>12}{r['target_shares']:>10,}  {act}")
 
     human = (f"流量宽组合(信号周{as_of})：买{len(buys)}只 ¥{plan['buy_total']:,.0f}，"

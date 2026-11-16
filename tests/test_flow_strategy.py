@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""流量宽组合（flow 模式）验收测试：PIT 纪律、溢价风控、分批上限、参数固定。
+"""流量宽组合（flow 模式）验收测试：PIT 纪律、溢价风控、分批上限、参数固定、波动目标。
 
 不真下单、不碰券商接口；只有"溢价 >10%"这一组用测试夹具（人为改面板里的 prem），
 其余全部走真实缓存。每组都打印真实数字，便于人眼复核。
@@ -18,6 +18,7 @@ REPO_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, REPO_DIR)
 
 import numpy as np                                    # noqa: E402
+import pandas as pd                                   # noqa: E402
 import flow_strategy as F                             # noqa: E402
 
 CFG = F.load_cfg()
@@ -33,9 +34,10 @@ def check(name, cond, detail=""):
 # 1. 参数固定：config 与冻结值一致（研究结论，不许按历史再调）
 # ════════════════════════════════════════════════════════════
 def test_params():
-    print("\n[1] 参数固定（E4 冻结值）")
+    print("\n[1] 参数固定（E4 冻结值 + 波动目标）")
     want = dict(n=20, smooth_weeks=2, buffer_n=40, min_hold_weeks=2,
-                partial=0.5, premium_cap=0.10, gross=1.0, max_order_pct=0.05)
+                partial=0.5, premium_cap=0.10, gross=1.0, max_order_pct=0.05,
+                vol_target=0.25, vol_window_weeks=26)
     for k, v in want.items():
         check(f"{k}={v}", CFG[k] == v, f"config={CFG[k]}")
     check("premium.block_new_only=true（已有持仓不强制卖）",
@@ -167,8 +169,9 @@ def test_batch():
 # 5. 回测=实盘：同一套代码路径（2015-2024 对齐 E4）
 # ════════════════════════════════════════════════════════════
 def test_parity():
-    print("\n[5] 回测一致性（flow_strategy 回测路径，E4 parity 口径）")
-    out = F.backtest(start="2015-01-01", end="2024-12-31", parity=True, cfg=CFG, quiet=True)
+    print("\n[5] 回测一致性（flow_strategy 回测路径，E4 parity 口径，关掉波动目标）")
+    out = F.backtest(start="2015-01-01", end="2024-12-31", parity=True,
+                     cfg=dict(CFG, vol_target=0.0), quiet=True)
     m = out["metrics"]
     print(f"  净 {m['ann']:+.2%} 超额 {m['excess_ann']:+.2%}(t {m['excess_t']:.2f}) "
           f"MDD {m['mdd']:+.1%} 周换手 {m['turnover']:.1%} 周数 {m['n_weeks']}")
@@ -179,6 +182,131 @@ def test_parity():
     check("最大回撤 -30.08%", abs(m["mdd"] - ref["mdd"]) < 1e-9, f"{m['mdd']:.10f}")
     check("周换手 14.86%", abs(m["turnover"] - ref["turnover"]) < 1e-9, f"{m['turnover']:.10f}")
     check("周数 510", m["n_weeks"] == ref["n"], f"{m['n_weeks']}")
+
+
+# ════════════════════════════════════════════════════════════
+# 5b. 波动目标：公式/上限/数据不足/减仓不超目标差额/回测对照
+# ════════════════════════════════════════════════════════════
+def _returns_at_vol(annual_vol, n=26):
+    """构造周收益序列，使 std(ddof=1)×√52 恰为 annual_vol（交替 ±x，确定性）。"""
+    x = annual_vol / (np.sqrt(52) * np.sqrt(n / (n - 1.0)))
+    return np.array([x if i % 2 == 0 else -x for i in range(n)])
+
+
+def _panel_tail(d, n):
+    """夹具：把面板裁到最后 n 周（模拟"策略刚跑几周"）。"""
+    weeks = d["wk"][-n:]
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, pd.DataFrame) and len(v.index) == len(d["wk"]):
+            out[k] = v.loc[weeks]
+        elif k == "fwd" and isinstance(v, dict):
+            out[k] = {h: f.loc[weeks] for h, f in v.items()}
+        else:
+            out[k] = v
+    out["wk"] = weeks
+    return out
+
+
+def test_vol_target():
+    print("\n[5b] 波动目标（乘数 = min(1, 25% / 近26周实现波动)，只减仓不加杠杆）")
+    # 5b-1 公式：年化 40% → 0.625；年化 10%（低于目标）→ 上限 1.0，绝不 >1
+    r40 = _returns_at_vol(0.40)
+    rv40 = float(r40.std(ddof=1) * np.sqrt(52))
+    m40, v40 = F.vol_multiplier(r40, 0.25, 26)
+    print(f"  人为波动={rv40:.4%} → 乘数={m40:.6f}")
+    check("近26周波动 40% → 乘数 0.625", abs(m40 - 0.625) < 1e-9, f"{m40:.9f}")
+    check("波动 40% 的实测年化 = 40%（夹具自检）", abs(rv40 - 0.40) < 1e-9, f"{rv40:.9f}")
+    m10, _ = F.vol_multiplier(_returns_at_vol(0.10), 0.25, 26)
+    m0, _ = F.vol_multiplier(_returns_at_vol(0.0001), 0.25, 26)
+    check("波动 10% < 目标 25% → 乘数封顶 1.00（不加杠杆）", m10 == 1.0 and m0 == 1.0,
+          f"m(10%)={m10} m(0.01%)={m0}")
+    check("乘数上限硬编码 1.0（任何输入都不许 >1）",
+          all(F.vol_multiplier(_returns_at_vol(v), 0.25, 26)[0] <= 1.0
+              for v in (0.01, 0.05, 0.10, 0.2, 0.25, 0.4, 0.8)),
+          "0.01~0.8 全扫")
+
+    # 5b-2 数据不足：5 周 → 1.0 + 提示
+    m5, v5 = F.vol_multiplier(r40[:5], 0.25, 26)
+    note5 = F.vol_note(CFG, v5, m5)
+    print(f"  只给 5 周数据 → 乘数={m5:.2f}  提示={note5}")
+    check("5 周数据 → 乘数 1.0", m5 == 1.0 and v5 is None, f"{m5}/{v5}")
+    check("5 周数据 → 打印『波动数据不足，按满仓处理』",
+          note5 == "[FLOW] 波动数据不足，按满仓处理", note5)
+
+    # 5b-3 端到端：面板只留 5 周（夹具）→ 真实链路也走满仓 + 同一句提示
+    d1 = F.load_panel(lag=CFG["flow_lag"])
+    d5 = _panel_tail(d1, 5)
+    orig_panel = F.load_panel
+    F.load_panel = lambda **kw: d5
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            tg5 = F.latest_targets(cfg=CFG)
+        log5 = buf.getvalue()
+    finally:
+        F.load_panel = orig_panel
+    print("  " + " | ".join(ln.strip() for ln in log5.strip().split("\n")))
+    check("5 周面板：端到端乘数 = 1.0，权重和 = 1.0（满仓）",
+          tg5["vol"]["mult"] == 1.0 and abs(sum(r["weight"] for r in tg5["targets"].values()) - 1.0) < 1e-9,
+          f"mult={tg5['vol']['mult']} 权重和={sum(r['weight'] for r in tg5['targets'].values()):.6f}")
+    check("5 周面板：打印『波动数据不足，按满仓处理』", "波动数据不足，按满仓处理" in log5,
+          log5.strip())
+
+    # 5b-4 端到端（夹具：人为 40% 波动）→ 目标金额 ×0.625，卖出不超过目标差额
+    orig_vm = F.vol_multiplier
+    F.vol_multiplier = lambda *a, **k: (0.625, 0.40)
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            tg40 = F.latest_targets(cfg=CFG)
+        log40 = buf.getvalue()
+    finally:
+        F.vol_multiplier = orig_vm
+    print("  " + " | ".join(ln.strip() for ln in log40.strip().split("\n")))
+    ta = dict(total_asset=200000.0, cash=180000.0, market_value=20000.0, source="夹具")
+    # 夹具持仓：159628 在目标内且超配（卖），159928 已掉出目标（清仓）
+    hold = {"159628": 20000, "159928": 25100}
+    out, _ = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(_):
+        plan = F.build_plan(totals=ta, holdings=hold, cfg=CFG, targets=tg40)
+    print("\n".join("  | " + ln for ln in out.getvalue().strip().split("\n")[-6:]))
+    base = ta["total_asset"] / CFG["n"]          # 乘数前单只目标金额
+    one = [r for r in plan["rows"] if r["code"] == "159628"][0]
+    check("乘数 0.625 作用在每只目标金额上（等权 1/20 × 0.625）",
+          abs(one["target_amount"] - base * 0.625) < 0.02,
+          f"目标金额 ¥{one['target_amount']:,.2f} vs ¥{base * 0.625:,.2f}")
+    check("权重和 = 0.625（不是 1.0，也没超过 1.0）",
+          abs(sum(r["weight"] for r in plan["rows"]) - 0.625) < 1e-9,
+          f"{sum(r['weight'] for r in plan['rows']):.6f}")
+    over_sell = [r for r in plan["rows"]
+                 if r["sell_shares"] > max(0, r["cur_shares"] - r["target_shares"])]
+    over_buy = [r for r in plan["rows"]
+                if r["buy_shares"] > max(0, r["target_shares"] - r["cur_shares"])]
+    print(f"  159628 当前{one['cur_shares']:,} → 目标{one['target_shares']:,}，"
+          f"卖 {one['sell_shares']:,}（目标差额 {one['cur_shares'] - one['target_shares']:,}）")
+    check("卖出股数 ≤ 目标差额（绝不超卖）", not over_sell, f"{over_sell}")
+    check("买入股数 ≤ 目标差额", not over_buy, f"{over_buy}")
+    check("现金保留不投（买入总额 ≤ 可用资金，剩余留现金）",
+          plan["buy_total"] <= plan["budget"] + 1e-6 and plan["cash_after"] >= -1e-6,
+          f"买 ¥{plan['buy_total']:,.0f} / 可用 ¥{plan['budget']:,.0f} / 余 ¥{plan['cash_after']:,.0f}")
+
+    # 5b-5 回测对照（研究 riskbudget@7604735：8.79%/−27.6%/Sharpe 0.50）
+    bt = F.backtest(start="2015-01-01", end="2024-12-31", cfg=CFG, quiet=True)
+    m, vs = bt["metrics"], bt["vol"]
+    print(f"  回测 2015-2024: 净 {m['ann']:+.2%} 波动 {m['vol']:.1%} Sharpe {m['sharpe']:.3f} "
+          f"MDD {m['mdd']:+.1%} 换手 {m['turnover']:.1%} 周数 {m['n_weeks']}")
+    print(f"  乘数分布: 满仓 {vs['n_full']} 周 / 减仓 {vs['n_trim']} 周 "
+          f"最少 {vs['m_min']:.4f} 最多 {vs['m_max']:.4f} 均值 {vs['m_mean']:.4f}")
+    check("年化 8.79%（研究值，容差 0.05pp）", abs(m["ann"] - 0.08791317) < 0.0005,
+          f"{m['ann']:+.6%}")
+    check("最大回撤 −27.6%", abs(m["mdd"] - (-0.27615283)) < 5e-5, f"{m['mdd']:+.4%}")
+    check("Sharpe 0.50", abs(m["sharpe"] - 0.4981) < 0.005, f"{m['sharpe']:.4f}")
+    check("波动 17.7%", abs(m["vol"] - 0.176503) < 0.001, f"{m['vol']:.4%}")
+    check("乘数分布 464 周满仓 / 46 周减仓",
+          vs["n_full"] == 464 and vs["n_trim"] == 46, f"{vs['n_full']}/{vs['n_trim']}")
+    check("最少乘数 0.767（研究 0.7673）", abs(vs["m_min"] - 0.76734) < 0.001, f"{vs['m_min']:.4f}")
+    check("乘数上限 1.0（回测里也没出现过 >1）", vs["m_max"] == 1.0, f"{vs['m_max']}")
 
 
 # ════════════════════════════════════════════════════════════
@@ -334,6 +462,7 @@ def main():
     test_premium()
     test_batch()
     test_parity()
+    test_vol_target()
     test_executor_flow()
     test_cancel_pending()
     print("\n" + "=" * 70)
