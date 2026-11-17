@@ -24,7 +24,7 @@
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-11-16": {
+        "2026-11-17": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -54,8 +54,8 @@
       "trailing_stop_price": 0.88949,
       "cooldown_until": null,
       "grid_frozen": false,
-      "last_grid_trigger": "触及第2档卖出",
-      "last_grid_trigger_date": "2026-11-16",
+      "last_grid_trigger": null,
+      "last_grid_trigger_date": null,
       "last_reset_date": null,
       "peak_price": 0.917,
       "breakeven_activated": false,
@@ -63,16 +63,15 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 0,
-      "prev_rsi": 70.86,
+      "prev_rsi": 70.08,
       "prev_macd_status": "红柱放大",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-11-16": {
+        "2026-11-17": {
           "buy_count": 0,
-          "t0_count": 1,
-          "sell_pct": 44.25
+          "t0_count": 0
         }
       },
       "trend_profit_trigger_date": null,
@@ -114,10 +113,10 @@
       "liquidate_dates": [
         "2026-11-16"
       ],
-      "empty_days": 1,
-      "empty_days_date": "2026-11-16",
+      "empty_days": 2,
+      "empty_days_date": "2026-11-17",
       "daily_trade_log": {
-        "2026-11-16": {
+        "2026-11-17": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -162,8 +161,8 @@
       "empty_days": 0,
       "empty_days_date": "2026-11-16",
       "daily_trade_log": {
-        "2026-11-16": {
-          "buy_count": 1,
+        "2026-11-17": {
+          "buy_count": 0,
           "t0_count": 0
         }
       },
@@ -201,14 +200,14 @@
       "below_ma20_date": null,
       "add_count": 0,
       "ma5_touch_count": 1,
-      "prev_rsi": 64.54,
+      "prev_rsi": 65.38,
       "prev_macd_status": "金叉",
       "liquidate_dates": [],
       "empty_days": 0,
       "empty_days_date": null,
       "daily_trade_log": {
-        "2026-11-16": {
-          "buy_count": 1,
+        "2026-11-17": {
+          "buy_count": 0,
           "t0_count": 0
         }
       },
@@ -249,10 +248,10 @@
       "prev_rsi": 46.35,
       "prev_macd_status": "绿柱缩短",
       "liquidate_dates": [],
-      "empty_days": 1,
-      "empty_days_date": "2026-11-16",
+      "empty_days": 2,
+      "empty_days_date": "2026-11-17",
       "daily_trade_log": {
-        "2026-11-16": {
+        "2026-11-17": {
           "buy_count": 0,
           "t0_count": 0
         }
@@ -305,7 +304,7 @@
     "cash": 173583.41,
     "market_value": 23598.1
   },
-  "last_updated": "2026-11-16 19:46",
+  "last_updated": "2026-11-17 08:56",
   "_today_open": {
     "date": "2026-11-04",
     "asset": 0.0

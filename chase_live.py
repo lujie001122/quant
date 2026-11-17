@@ -26,6 +26,13 @@
          周频只做动量分位检查
   主题   同一主题最多 theme_cap 只（主题表由名称关键词构造，落盘 theme_map.json 可审计）
 
+选股四步（顺序固定，前三步只剔除、第四步才选；改这个顺序 = 改策略）：
+  1) 同指数去重      index_cap=1：同一只标的指数只留 T-1 日均成交额最大的一只
+  2) 相关性聚类上限  corr_cluster_cap=2：近 60 日收益两两 ρ ≥ corr_threshold(0.90) 单链接聚成一簇，
+                     每簇最多 K 只，超出按动量分位砍尾部（同簇只留分位更高的）
+  3) 赛道主题上限    theme_cap=6：同名主题最多 6 只，按分位砍尾部
+  4) 取满 n_hold     按动量分位从强到弱补满 8 只（1~3 步只做剔除，不参与排序）
+
 撮合（回测=实盘口径）
   * 真实交易日历（meta/index_calendar.json），信号收盘算、次日开盘成交（T+1）
   * 涨跌停：开盘即封板（默认 10%，名称含创业板/科创/双创按 20%）→ 当日不成交，次日重试
@@ -318,6 +325,85 @@ def idx_snapshot(P, D, i, prm):
 
 
 # ════════════════════════════════════════════════════════════════════
+# 相关性聚类上限：同指数去重挡不住「同一产业链」
+#
+# 2026-11-17 去重后实测：8 只目标分属 8 个不同指数，但 5 只在消费链上
+# （消费ETF/消费50/港股消费/港股通消费/消费龙头/影视），两两 ρ 最高 0.981
+# ——名义 8 只、实际 3 个赌注。指数身份是「基金契约」，产业链是「风险暴露」，
+# 前者查名称即可，后者只能看相关系数。
+#
+# 做法：近 corr_window(60) 个交易日的前复权日收益（截止 T-1，绝不含当日）
+#      → 两两 ρ ≥ corr_threshold(0.90) 的边 → 并查集单链接聚类
+#      → 每簇最多持有 corr_cluster_cap(2) 只，超出的按动量分位砍尾部。
+# 聚类池 = 当日 PIT 可交易池（mask[i]，与分位/主题同一个池），池外的标的自成一簇（不受限）。
+# 注意（实测结论，别忽略）：单链接会「链式传递」（A~B、B~C ⇒ A/B/C 同簇），而 A 股权益之间
+#      ρ 常年 0.9+，所以 ρ≥0.90 切出来的最大簇不是"某条产业链"，而是「A 股 beta 链」
+#      （实测 564/1053 只，决策日最大簇中位 432/690）。K=2 于是等价于"国内权益最多 2 个仓位"，
+#      3y 年化 18.88%→9.67%、5y 6.85%→2.30%（Calmar 变差）。这是方法粒度问题，不是实现 bug；
+#      完整数据见 audit_corr_cluster_2026-11-17.md，回退只需 corr_cluster_cap: 0。
+# ════════════════════════════════════════════════════════════════════
+def corr_snapshot(P, D, i, prm, mask):
+    """i 日收盘决策用的「相关性聚类」，**全部用 T-1 及之前的数据**。
+
+    返回 dict(cid=(ncol,) int32 每只的簇 id, n_clusters, sizes={cid: n},
+              big=[(size, [idx...]), ...] 前 5 大簇, n_edges 合并边数)
+    结果按 (i, 窗口, 阈值) 缓存在 P 里：同一 i 的多个参数变体共享一次计算。
+    """
+    ck = (int(i), int(prm.idx_corr_window), float(prm.corr_threshold))
+    cache = P.setdefault("_corrsnap", {})
+    hit = cache.get(ck)
+    if hit is not None:
+        return hit
+    C = P["C"]
+    ncol = C.shape[1]
+    w = max(20, int(prm.idx_corr_window))
+    lo = max(i - 1 - w, 1)
+    R = C[lo:i]                                    # 行 lo..i-1：收益只用 T-1 及之前
+    cid = np.full(ncol, -1, dtype=np.int32)
+    n_cl = 0
+    sizes = {}
+    big = []
+    n_edges = 0
+    if R.shape[0] >= 20:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ret = R[1:] / R[:-1] - 1.0
+        good = (np.isfinite(ret).mean(axis=0) >= 0.8) & mask[i] & np.isfinite(C[i - 1])
+        sel = np.where(good)[0]
+        if len(sel) >= 2:
+            X = ret[:, sel]
+            X = np.where(np.isfinite(X), X, 0.0)
+            X = X - X.mean(axis=0)
+            sd = X.std(axis=0)
+            sd[sd <= 0] = np.inf
+            Z = X / sd
+            Cm = Z.T @ Z / X.shape[0]
+            uf = _UF(len(sel))
+            iu = np.triu_indices(len(sel), 1)
+            hit_e = np.where(Cm[iu] >= prm.corr_threshold)[0]
+            n_edges = int(len(hit_e))
+            for t in hit_e:
+                uf.union(int(iu[0][t]), int(iu[1][t]))
+            roots = {}
+            for k in range(len(sel)):
+                roots.setdefault(uf.find(k), []).append(int(sel[k]))
+            for _, js in sorted(roots.items(), key=lambda kv: -len(kv[1])):
+                for j in js:
+                    cid[j] = n_cl
+                sizes[n_cl] = len(js)
+                n_cl += 1
+            big = [(len(js), js[:12]) for _, js in
+                   sorted(roots.items(), key=lambda kv: -len(kv[1]))[:5]]
+    for j in range(ncol):                          # 池外/数据不足：自成一簇，永不被上限拦
+        if cid[j] < 0:
+            cid[j] = n_cl
+            sizes[n_cl] = 1
+            n_cl += 1
+    snap = dict(cid=cid, n_clusters=int(n_cl), sizes=sizes, big=big, n_edges=int(n_edges))
+    cache[ck] = snap
+    return snap
+
+
+# ════════════════════════════════════════════════════════════════════
 # 数据层：日频面板 + 磁盘缓存
 # ════════════════════════════════════════════════════════════════════
 def calendar():
@@ -490,6 +576,8 @@ class Params:
     idx_corr_split: float = 0.90   # 同名组内最低相关 < 该值 → 泛名组，按相关再拆
     idx_corr_sub: float = 0.97     # 泛名组拆分时的聚类阈值
     idx_corr_merge: float = 0.0    # >0：不同名但 ρ ≥ 该值 → 合并（兜底档；0=关）
+    corr_threshold: float = 0.90   # 相关性聚类阈值：两两 ρ ≥ 该值 → 同一簇（单链接）
+    corr_cluster_cap: int = 2      # 同一相关性簇最多持有几只（0 = 关掉相关性上限）
     cost: float = 0.001            # 单边成本
     cash: float = 1_000_000.0
     warmup: int = 0
@@ -501,7 +589,7 @@ DEFAULTS = dict(
     cooldown=10, grid=True, grid_step=1.0, grid_lo=0.6, grid_hi=1.4, grid_dead=0.01,
     stop_k=3.0, stop_freq="weekly", exit_mode="atr", regime=True, theme_cap=2,
     index_cap=1, idx_corr_window=60, idx_corr_split=0.90, idx_corr_sub=0.97,
-    idx_corr_merge=0.0,
+    idx_corr_merge=0.0, corr_threshold=0.90, corr_cluster_cap=2,
     cost=0.001, index_code="510300", index_ma=60, live_start="2023-11-17",
     max_order_pct=0.15, limit_buffer_pct=0.01, min_order_shares=5000,
 )
@@ -514,6 +602,7 @@ _MODE_TO_PRM = dict(                      # config 键 → Params 字段
     index_ma="index_ma", theme_cap="theme_cap", index_cap="index_cap",
     idx_corr_window="idx_corr_window", idx_corr_split="idx_corr_split",
     idx_corr_sub="idx_corr_sub", idx_corr_merge="idx_corr_merge", cost="cost",
+    corr_threshold="corr_threshold", corr_cluster_cap="corr_cluster_cap",
 )
 
 
@@ -531,11 +620,11 @@ def load_cfg():
         if k in cfg:
             cfg[k] = v
     for k in ("n_hold", "min_hold", "max_swap", "cooldown", "index_ma", "theme_cap",
-              "min_order_shares", "index_cap", "idx_corr_window"):
+              "min_order_shares", "index_cap", "idx_corr_window", "corr_cluster_cap"):
         cfg[k] = int(cfg[k])
     for k in ("entry_pct", "hold_pct", "swap_margin", "grid_step", "grid_lo", "grid_hi",
               "grid_dead", "stop_k", "cost", "max_order_pct", "limit_buffer_pct",
-              "idx_corr_split", "idx_corr_sub", "idx_corr_merge"):
+              "idx_corr_split", "idx_corr_sub", "idx_corr_merge", "corr_threshold"):
         cfg[k] = float(cfg[k])
     cfg["grid"] = bool(cfg["grid"])
     cfg["regime"] = bool(cfg["regime"])
@@ -611,12 +700,14 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     cause = "rot"
     cap_blocked = 0
     idx_blocked = idx_sells = 0      # 同指数去重：被拦截的建仓次数 / 因同指数超限卖出的次数
+    corr_blocked = corr_sells = 0    # 相关性上限：被拦截的建仓次数 / 因同簇超限卖出的次数
     stop_pending = False
     sell_cause = {"stop": 0.0, "rot": 0.0, "regime": 0.0}
     n_sells = n_stop_days = 0
     stop_log, sell_log = [], []
     hold_n, theme_share = [], []     # 每日持仓只数 / 单一主题占持仓的最大比例（集中度实测）
     idx_share, idx_wshare, idx_cnt = [], [], []   # 单一指数占持仓的最大比例（只数/市值）+ 最大只数
+    corr_share, corr_cnt = [], []    # 单一相关性簇占持仓的最大比例（只数）+ 最大只数
     lastpx = {}                      # 每只最后一个有效收盘价（缺 bar 时按最近价估值，不是按 0）
     pos_log, nan_close = [], []      # 每日收盘持仓明细 / 当日缺收盘价的持仓数（数据体检用）
     if "_idxid" not in P:            # 标的指数 id（按名称身份，时间不变）：集中度实测用
@@ -625,6 +716,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
         P["_idxid"] = np.array([_m.get(k, -1) for k in _k], dtype=np.int32)
     idxid = P["_idxid"]
     gid_cur = None                   # 最近一次决策用的同指数分组（持仓集合只在决策日变，日频口径精确）
+    cid_cur = None                   # 最近一次决策用的相关性聚类（同上）
 
     def po(i, j):
         v = O[i, j]
@@ -650,6 +742,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
         nonlocal want_sell, want_buy, want_grid, stop_set, cause
         nonlocal off_days, stopped, n_stop_days, cap_blocked, mult_prev
         nonlocal idx_blocked, idx_sells, gid_cur
+        nonlocal corr_blocked, corr_sells, cid_cur
         # ── 3) 收盘决策 ─────────────────────────────────────────────
         want_sell, want_buy, want_grid = set(), {}, []
         stop_set = set()
@@ -684,7 +777,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if np.isfinite(m) and p < m:
                     want_sell.add(j)
 
-        # 3b) 周频：动量分位 + 缓冲带 + 同指数去重 + 主题上限 + 换手闸门
+        # 3b) 周频：动量分位 + 缓冲带 + 同指数去重 + 相关性聚类上限 + 主题上限 + 换手闸门
         if i in wdec:
             pct_i = pct[i]
             row_ok = mask[i]
@@ -692,6 +785,9 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             gid = snap["gid"] if snap else None
             lead = snap["lead"] if snap else {}
             gid_cur = gid
+            csnap = corr_snapshot(P, D, i, prm, mask)   # 统计/上限共用；纯 T-1 数据
+            cid = csnap["cid"]
+            cid_cur = cid
             amt_p = D["amt20m"][max(i - 1, 0)]
             held = [j for j in shares if j not in want_sell]
             keep = []
@@ -714,6 +810,17 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     want_sell |= drop
                     keep = [j for j in keep if j not in drop]
                     idx_sells += len(drop)
+            if prm.corr_cluster_cap:                # 同一相关性簇超过上限：留动量分位更高的
+                by_c, drop = {}, set()
+                for j in keep:                      # keep 已按分位从强到弱排序
+                    by_c.setdefault(int(cid[j]), []).append(j)
+                for c, js in by_c.items():
+                    if len(js) > prm.corr_cluster_cap:
+                        drop.update(js[prm.corr_cluster_cap:])
+                if drop:
+                    want_sell |= drop
+                    keep = [j for j in keep if j not in drop]
+                    corr_sells += len(drop)
             if prm.theme_cap:                       # 同主题超过上限：按分位砍尾部
                 cnt, kk = {}, []
                 for j in keep:
@@ -737,14 +844,18 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 cand = [j for j in cand if j == lead.get(int(gid[j]), j)]
                 idx_blocked += _c0 - len(cand)
             cand.sort(key=lambda j: -pct_i[j])
-            tc, icnt = {}, {}
+            tc, icnt, ccnt = {}, {}, {}
             for j in keep:
                 tc[theme[j]] = tc.get(theme[j], 0) + 1
                 _g = int(gid[j]) if prm.index_cap else -1
                 icnt[_g] = icnt.get(_g, 0) + 1
+                _c = int(cid[j]) if prm.corr_cluster_cap else -1
+                ccnt[_c] = ccnt.get(_c, 0) + 1
 
             def fits(j):
                 if prm.index_cap and icnt.get(int(gid[j]), 0) >= prm.index_cap:
+                    return False
+                if prm.corr_cluster_cap and ccnt.get(int(cid[j]), 0) >= prm.corr_cluster_cap:
                     return False
                 return (not prm.theme_cap) or tc.get(theme[j], 0) < prm.theme_cap
 
@@ -752,6 +863,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 tc[theme[j]] = tc.get(theme[j], 0) + sign
                 _g = int(gid[j]) if prm.index_cap else -1
                 icnt[_g] = icnt.get(_g, 0) + sign
+                _c = int(cid[j]) if prm.corr_cluster_cap else -1
+                ccnt[_c] = ccnt.get(_c, 0) + sign
 
             add = []
             slots = prm.n_hold - len(keep)
@@ -763,6 +876,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if not ok_j:
                     if prm.index_cap and icnt.get(int(gid[j]), 0) >= prm.index_cap:
                         idx_blocked += 1
+                    elif prm.corr_cluster_cap and ccnt.get(int(cid[j]), 0) >= prm.corr_cluster_cap:
+                        corr_blocked += 1
                     elif prm.theme_cap:
                         cap_blocked += 1
                 else:
@@ -988,11 +1103,19 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             idx_share.append(max(_ic.values()) / len(shares))
             idx_wshare.append(max(_icv.values()) / max(_posv, 1e-9))
             idx_cnt.append(max(_ic.values()))
+            _cc = {}
+            for j in shares:                      # 相关性簇集中度（用最近一次决策的聚类）
+                k = int(cid_cur[j]) if cid_cur is not None else int(j)
+                _cc[k] = _cc.get(k, 0) + 1
+            corr_share.append(max(_cc.values()) / len(shares))
+            corr_cnt.append(max(_cc.values()))
         else:
             theme_share.append(0.0)
             idx_share.append(0.0)
             idx_wshare.append(0.0)
             idx_cnt.append(0)
+            corr_share.append(0.0)
+            corr_cnt.append(0)
         wk = idx[i].isocalendar()
         key = f"{int(wk.year)}-W{int(wk.week):02d}"
         turn_week[key] = turn_week.get(key, 0.0) + 0.5 * traded / max(eq_c, 1.0)
@@ -1024,6 +1147,9 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 stop_log=stop_log, sell_log=sell_log, n_weeks=len(turn_week),
                 final_cash=cash, n_left=len(shares),
                 idx_blocked=int(idx_blocked), idx_sells=int(idx_sells),
+                corr_blocked=int(corr_blocked), corr_sells=int(corr_sells),
+                corr_share=pd.Series(corr_share, index=idx[i0:i0 + len(corr_share)]),
+                corr_cnt=pd.Series(corr_cnt, index=idx[i0:i0 + len(corr_cnt)]),
                 eq_open=pd.Series(eq_open_r, index=idx[i0:i0 + len(eq_open_r)]),
                 gross=pd.Series(gross_r, index=idx[i0:i0 + len(gross_r)]),
                 hold_n=pd.Series(hold_n, index=idx[i0:i0 + len(hold_n)]),
@@ -1210,7 +1336,8 @@ def risk_extra(res, label=""):
         return dict(label=label, worst1=0.0, worst1_date="-", worst2=0.0, worst2_date="-",
                     avg_n=0.0, share_p50=0.0, share_p90=0.0, share_max=0.0,
                     idx_p50=0.0, idx_p90=0.0, idx_max=0.0, idx_max2=0.0, idx_cnt_max=0,
-                    idxw_max=0.0, n_multi_idx=0)
+                    idxw_max=0.0, n_multi_idx=0,
+                    corr_p50=0.0, corr_p90=0.0, corr_max=0.0, corr_cnt_max=0)
     r = ret.to_numpy(dtype=float)
     two = r[1:] + r[:-1]
     k1 = int(np.nanargmin(r))
@@ -1238,6 +1365,18 @@ def risk_extra(res, label=""):
                    idxw_max=0.0, n_multi_idx=0)
     out["idx_blocked"] = int(res.get("idx_blocked", 0))
     out["idx_sells"] = int(res.get("idx_sells", 0))
+    cs = res.get("corr_share")
+    if cs is not None and len(cs):
+        c = cs.to_numpy(dtype=float)
+        hn2 = res["hold_n"].to_numpy(dtype=float) >= 2
+        out.update(corr_p50=float(np.nanpercentile(c, 50)),
+                   corr_p90=float(np.nanpercentile(c, 90)),
+                   corr_max=float(np.nanmax(c[hn2])) if hn2.any() else 0.0,
+                   corr_cnt_max=int(np.nanmax(res["corr_cnt"].to_numpy(dtype=float))))
+    else:
+        out.update(corr_p50=0.0, corr_p90=0.0, corr_max=0.0, corr_cnt_max=0)
+    out["corr_blocked"] = int(res.get("corr_blocked", 0))
+    out["corr_sells"] = int(res.get("corr_sells", 0))
     return out
 
 
@@ -1359,6 +1498,167 @@ def pick_cap(rows, limit=-0.08):
     if not ok:
         return None
     return max(ok, key=lambda r: (round(r["cagr"], 6), -r["share_max"]))
+
+
+# ════════════════════════════════════════════════════════════════════
+# 相关性聚类的审计 / A-B-C 三档对照 / 阈值敏感性
+# ════════════════════════════════════════════════════════════════════
+def pair_corr(P, i, js, w=60):
+    """近 w 个交易日（截止 T-1）指定标的的两两相关系数矩阵。返回 (矩阵, 最大ρ, 对应两只)。"""
+    C = P["C"]
+    w = max(20, int(w))
+    lo = max(i - 1 - w, 1)
+    R = C[lo:i]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ret = R[1:] / R[:-1] - 1.0
+    codes = [str(P["cols"][j]) for j in js]
+    if len(js) < 2:
+        return pd.DataFrame(), float("nan"), (None, None)
+    M = pd.DataFrame(ret[:, js], columns=codes).corr(min_periods=max(20, int(len(ret) * 0.8)))
+    a = M.to_numpy(dtype=float)
+    iu = np.triu_indices(len(js), 1)
+    v = a[iu]
+    if not np.isfinite(v).any():
+        return M, float("nan"), (None, None)
+    k = int(np.nanargmax(v))
+    return M, float(v[k]), (codes[iu[0][k]], codes[iu[1][k]])
+
+
+def corr_map_report(cfg=None, quiet=False):
+    """打印：最新交易日的相关性聚类结构 + 决策日分布 + 新目标清单与其最大两两 ρ。只读。"""
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    i = len(P["idx"]) - 1
+    cols, names = P["cols"], P["names"]
+    prm = params_from_cfg(cfg, start=cfg["live_start"], end=str(P["idx"][i].date()))
+    snap = corr_snapshot(P, D, i, prm, mask)
+    sizes = snap["sizes"]
+    cid_all = snap["cid"]
+    pool = np.where(mask[i])[0]
+    n_pool_cl = len(np.unique(cid_all[pool]))
+    n_big = sum(1 for c in np.unique(cid_all[pool]) if sizes[int(c)] >= 2)
+    print(f"[相关性聚类] {P['idx'][i].date()} 池 {int(mask[i].sum())} 只 → {n_pool_cl} 簇"
+          f"（≥2 只 {n_big} 簇；合并边 {snap['n_edges']}；窗口 {prm.idx_corr_window} 日 T-1；"
+          f"阈值 ρ≥{prm.corr_threshold:.2f} 单链接）")
+    for size, js in snap["big"]:
+        ex = ", ".join(f"{_code6(cols[j])} {names.get(cols[j], '')}" for j in js[:5])
+        print(f"    {size:4d} 只  {ex}")
+
+    wd = sorted(weekly_decisions(P["idx"], cfg["live_start"], str(P["idx"][i].date())))
+    ns, mx, pools = [], [], []
+    for k in wd:
+        s2 = corr_snapshot(P, D, k, prm, mask)
+        pk = np.where(mask[k])[0]
+        ns.append(len(np.unique(s2["cid"][pk])))
+        mx.append(max(s2["sizes"][int(c)] for c in np.unique(s2["cid"][pk])))
+        pools.append(len(pk))
+    print(f"[相关性聚类] 决策日 {len(wd)} 个：簇数 中位{np.median(ns):.0f}/最少{min(ns)}；"
+          f"最大簇 中位{np.median(mx):.0f}/最大{max(mx)} 只（池中位 {int(np.median(pools))} 只）")
+
+    cid = snap["cid"]
+    for lbl, cfgx in (("只做同指数去重(B)", dict(cfg, corr_cluster_cap=0)),
+                      ("去重+相关簇上限(C)", dict(cfg))):
+        tg = preview_targets(cfg=cfgx, quiet=True)
+        js = [int(np.where(cols == sid)[0][0]) for sid in tg["targets"]]
+        js.sort(key=lambda j: -(pct[i][j] if np.isfinite(pct[i][j]) else -1))
+        M, rho, pr = pair_corr(P, i, js, cfg["idx_corr_window"])
+        print(f"[{lbl}] {len(js)} 只，两两 ρ 最大 {rho:.4f}"
+              + (f"（{_code6(pr[0])} ~ {_code6(pr[1])}）" if pr[0] else ""))
+        for j in js:
+            nm = names.get(cols[j], "")
+            print(f"    {_code6(cols[j]):<7}{nm:<14}主题{str(theme_of(nm)):<10}"
+                  f"指数{str(index_of(nm)):<10}分位{pct[i][j]:5.1%}  簇{cid[j]}({sizes[int(cid[j])]}只)")
+    return dict(n_clusters=int(n_pool_cl), max_size=int(max(sizes[int(c)] for c in np.unique(cid_all[pool]))),
+                decision_days=len(wd), cluster_med=float(np.median(ns)),
+                max_size_med=float(np.median(mx)))
+
+
+def worst_day_pos(res, P, date=None):
+    """最坏单日（或指定日）的持仓清单 [(代码, 名称, 市值)]，核对「那天到底押了什么」。"""
+    r = res["ret"].to_numpy(dtype=float)
+    if date is None:
+        k = int(np.nanargmin(r))
+    else:
+        k = int(np.where(res["ret"].index == pd.Timestamp(date))[0][0])
+    cols, names = P["cols"], P["names"]
+    pos = [(str(cols[j]), names.get(cols[j], ""), float(v))
+           for j, v in res["pos_log"][k] if np.isfinite(v)]
+    pos.sort(key=lambda x: -x[2])
+    return str(res["ret"].index[k].date()), float(r[k]), pos
+
+
+def abc_report(cfg=None, thrs=(0.85, 0.90, 0.95), quiet=False):
+    """A/B/C 三档 × 3y/5y + 相关性阈值敏感性。返回 dict(rows, sens)。"""
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    variants = [
+        ("A 无去重(theme5)", dict(index_cap=0, corr_cluster_cap=0, theme_cap=5)),
+        ("B 同指数去重", dict(index_cap=1, corr_cluster_cap=0, theme_cap=6)),
+        ("C 去重+相关簇≤2", dict(index_cap=1, corr_cluster_cap=2, theme_cap=6,
+                                 corr_threshold=0.90)),
+    ]
+    rows, keep_res = [], {}
+    for tag, (s0, s1) in (("3y", W3Y), ("5y", W5Y)):
+        print(f"\n=== {tag} {s0} → {s1} ===")
+        for nm, kw in variants:
+            prm = replace(params_from_cfg(cfg, start=s0, end=s1), **kw)
+            res = run(P, D, mask, pct, prm)
+            st = stats(res, prm, f"{tag} {nm}")
+            ex = risk_extra(res, st["label"])
+            row = dict(window=tag, name=nm, cagr=st["cagr"], mdd=st["mdd"], sharpe=st["sharpe"],
+                       calmar=st["calmar"], turn=st["turn_wk"], cost=st["cost_yr"],
+                       avg_n=ex["avg_n"], corr_p50=ex["corr_p50"], corr_p90=ex["corr_p90"],
+                       corr_max=ex["corr_max"], corr_cnt_max=ex["corr_cnt_max"],
+                       idx_max=ex["idx_max2"], worst1=ex["worst1"], worst1_date=ex["worst1_date"],
+                       worst2=ex["worst2"], worst2_date=ex["worst2_date"],
+                       corr_blocked=ex["corr_blocked"], corr_sells=ex["corr_sells"],
+                       idx_blocked=ex["idx_blocked"], n_trades=st["n_trades"],
+                       year=by_year(res["eq"]))
+            rows.append(row)
+            keep_res[(tag, nm)] = res
+            print(f"{nm:<18} 年化{row['cagr'] * 100:6.2f}% 累计{st['cups'] * 100:7.2f}% "
+                  f"回撤{row['mdd'] * 100:6.1f}% 夏普{row['sharpe']:5.2f} Calmar{row['calmar']:5.2f} "
+                  f"换手{row['turn'] * 100:5.1f}%/周 成本{row['cost'] * 100:4.2f}%/年 "
+                  f"持仓{row['avg_n']:4.1f}只 相关簇占比 中位{row['corr_p50'] * 100:3.0f}%"
+                  f"/90分位{row['corr_p90'] * 100:3.0f}%/最大{row['corr_max'] * 100:3.0f}%"
+                  f"(最多{row['corr_cnt_max']}只) 拦截{row['corr_blocked']:4d} 卖出{row['corr_sells']:3d} "
+                  f"最坏单日{row['worst1'] * 100:6.2f}%({row['worst1_date']}) "
+                  f"最坏两日{row['worst2'] * 100:6.2f}%", flush=True)
+            print(f"{'':18} 分年:" + " ".join(f"{y}:{v * 100:.2f}%" for y, v in row["year"].items()),
+                  flush=True)
+
+    sens = []
+    for tag, (s0, s1) in (("3y", W3Y), ("5y", W5Y)):
+        for thr in thrs:
+            prm = replace(params_from_cfg(cfg, start=s0, end=s1), index_cap=1, theme_cap=6,
+                          corr_cluster_cap=2, corr_threshold=float(thr))
+            res = run(P, D, mask, pct, prm)
+            st = stats(res, prm, f"{tag} ρ≥{thr}")
+            ex = risk_extra(res, st["label"])
+            row = dict(window=tag, thr=float(thr), cagr=st["cagr"], mdd=st["mdd"],
+                       sharpe=st["sharpe"], calmar=st["calmar"], turn=st["turn_wk"],
+                       cost=st["cost_yr"], avg_n=ex["avg_n"], corr_max=ex["corr_max"],
+                       corr_cnt_max=ex["corr_cnt_max"], worst1=ex["worst1"],
+                       worst2=ex["worst2"], n_trades=st["n_trades"],
+                       corr_blocked=ex["corr_blocked"])
+            sens.append(row)
+            print(f"{tag} 阈值{thr:.2f}  年化{row['cagr'] * 100:6.2f}% 回撤{row['mdd'] * 100:6.1f}% "
+                  f"夏普{row['sharpe']:5.2f} Calmar{row['calmar']:5.2f} 换手{row['turn'] * 100:5.1f}% "
+                  f"成本{row['cost'] * 100:4.2f}% 持仓{row['avg_n']:4.1f}只 "
+                  f"相关簇最大占比{row['corr_max'] * 100:3.0f}%(最多{row['corr_cnt_max']}只) "
+                  f"最坏单日{row['worst1'] * 100:6.2f}% 拦截{row['corr_blocked']:4d}", flush=True)
+
+    dA, rA, posA = worst_day_pos(keep_res[("3y", variants[0][0])], P)
+    print(f"\n[A 档最坏单日] {dA} {rA * 100:.2f}% 持仓 {len(posA)} 只：")
+    print("    " + ", ".join(f"{c} {n}({v / 1e4:.0f}万)" for c, n, v in posA))
+    for nm, _ in variants:
+        d, r, pos = worst_day_pos(keep_res[("3y", nm)], P, date=dA)
+        print(f"[{nm}] {d} 当日 {r * 100:6.2f}%，持仓 {len(pos)} 只："
+              + (", ".join(f"{c} {n}" for c, n, v in pos) if pos else "空仓"))
+    dC, rC, posC = worst_day_pos(keep_res[("3y", variants[2][0])], P)
+    print(f"[C 档自身最坏单日] {dC} {rC * 100:.2f}% 持仓 {len(posC)} 只："
+          + ", ".join(f"{c} {n}" for c, n, v in posC))
+    return dict(rows=rows, sens=sens)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1484,10 +1784,12 @@ def latest_targets(cfg=None, prm=None, quiet=False):
                 held={_code6(cols[j]): int(q) for j, q in st["shares"].items()},
                 next_sell=[_code6(cols[j]) for j in st["want_sell"]],
                 cfg={k: cfg[k] for k in ("n_hold", "entry_pct", "hold_pct", "theme_cap",
-                                         "index_cap", "grid_step", "stop_k", "index_ma",
+                                         "index_cap", "corr_threshold", "corr_cluster_cap",
+                                         "grid_step", "stop_k", "index_ma",
                                          "max_order_pct")},
                 prm=dict(theme_cap=int(prm.theme_cap), index_cap=int(prm.index_cap),
-                         n_hold=int(prm.n_hold),
+                         n_hold=int(prm.n_hold), corr_threshold=float(prm.corr_threshold),
+                         corr_cluster_cap=int(prm.corr_cluster_cap),
                          stop_k=float(prm.stop_k), grid_step=float(prm.grid_step),
                          hold_pct=float(prm.hold_pct), entry_pct=float(prm.entry_pct),
                          index_ma=int(prm.index_ma)))
@@ -1510,24 +1812,30 @@ def preview_targets(cfg=None, quiet=False):
     snap = idx_snapshot(P, D, i, prm) if prm.index_cap else None
     gid = snap["gid"] if snap else None
     lead = snap["lead"] if snap else {}
+    cid = corr_snapshot(P, D, i, prm, mask)["cid"]
     cand = [j for j in range(len(cols))
             if ok[j] and np.isfinite(pi[j]) and pi[j] >= 1.0 - float(cfg["entry_pct"])]
     if prm.index_cap:
         cand = [j for j in cand if j == lead.get(int(gid[j]), j)]
     cand.sort(key=lambda j: -pi[j])
     cap = int(cfg["theme_cap"] or 0)
-    picked, tc, icnt = [], {}, {}
+    kcap = int(prm.corr_cluster_cap or 0)
+    picked, tc, icnt, ccnt = [], {}, {}, {}
     for j in cand:
         t = theme_of(names.get(cols[j], ""))
         g = int(gid[j]) if prm.index_cap else -1
-        if cap and tc.get(t, 0) >= cap:
+        c = int(cid[j]) if kcap else -1
+        if cap and tc.get(t, 0) >= cap:               # 第三步 赛道主题上限
             continue
-        if prm.index_cap and icnt.get(g, 0) >= prm.index_cap:
+        if prm.index_cap and icnt.get(g, 0) >= prm.index_cap:   # 第一步 同指数去重
+            continue
+        if kcap and ccnt.get(c, 0) >= kcap:           # 第二步 相关性聚类上限
             continue
         picked.append(j)
         tc[t] = tc.get(t, 0) + 1
         icnt[g] = icnt.get(g, 0) + 1
-        if len(picked) >= int(cfg["n_hold"]):
+        ccnt[c] = ccnt.get(c, 0) + 1
+        if len(picked) >= int(cfg["n_hold"]):         # 第四步 取满 n_hold
             break
     w = 1.0 / int(cfg["n_hold"])
     tg = {}
@@ -1543,10 +1851,13 @@ def preview_targets(cfg=None, quiet=False):
                 on=True, cause="preview", eq=0.0, cash=0.0, n_targets=len(tg),
                 n_pool=int(ok.sum()), targets=tg, held={}, next_sell=[],
                 cfg={k: cfg[k] for k in ("n_hold", "entry_pct", "hold_pct", "theme_cap",
-                                         "index_cap", "grid_step", "stop_k", "index_ma",
+                                         "index_cap", "corr_threshold", "corr_cluster_cap",
+                                         "grid_step", "stop_k", "index_ma",
                                          "max_order_pct")},
                 prm=dict(theme_cap=cap, index_cap=int(prm.index_cap),
-                         n_hold=int(cfg["n_hold"]), stop_k=float(cfg["stop_k"]),
+                         n_hold=int(cfg["n_hold"]), corr_threshold=float(prm.corr_threshold),
+                         corr_cluster_cap=int(prm.corr_cluster_cap),
+                         stop_k=float(cfg["stop_k"]),
                          grid_step=float(cfg["grid_step"]), hold_pct=float(cfg["hold_pct"]),
                          entry_pct=float(cfg["entry_pct"]), index_ma=int(cfg["index_ma"])))
 
@@ -1653,7 +1964,8 @@ def _sid(code6):
 def print_plan(plan):
     print(f"[建仓清单] 信号日={plan['as_of']}  价格日={plan['price_date']}  "
           f"总资产=¥{plan['total_asset']:,.2f} 可用现金=¥{plan['cash']:,.2f} ({plan['account_source']})")
-    print(f"  目标 {plan['n_targets']} 只（N={plan['cfg']['n_hold']} 主题上限{plan['cfg']['theme_cap']}）"
+    print(f"  目标 {plan['n_targets']} 只（N={plan['cfg']['n_hold']} 主题上限{plan['cfg']['theme_cap']} "
+          f"相关簇上限{plan['cfg'].get('corr_cluster_cap', 0)}@ρ≥{plan['cfg'].get('corr_threshold', 0):.2f}）"
           f"；可交易池 {plan['n_pool']} 只；空仓开关={'空仓' if not plan['on'] else '持仓'}")
     print(f"  {'代码':<8}{'名称':<12}{'主题':<10}{'现价':>7}{'目标金额':>11}{'目标股数':>9}"
           f"{'当前股数':>9}{'差额':>8}{'买/卖':>10}  动作")
@@ -1695,6 +2007,11 @@ def main():
     ap.add_argument("--end", default=None)
     ap.add_argument("--theme-cap", type=int, default=None)
     ap.add_argument("--index-cap", type=int, default=None, help="同一标的指数最多几只（0=关）")
+    ap.add_argument("--corr-cap", type=int, default=None, help="同一相关性簇最多几只（0=关）")
+    ap.add_argument("--corr-thr", type=float, default=None, help="相关性聚类阈值（默认 0.90）")
+    ap.add_argument("--corr-map", action="store_true",
+                    help="相关性聚类审计（簇结构 + 新目标清单两两 ρ 最大值）")
+    ap.add_argument("--abc", action="store_true", help="A/B/C 三档 × 3y/5y + 阈值敏感性")
     ap.add_argument("--cost", type=float, default=None)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -1703,6 +2020,10 @@ def main():
         cfg["theme_cap"] = int(a.theme_cap)
     if a.index_cap is not None:
         cfg["index_cap"] = int(a.index_cap)
+    if a.corr_cap is not None:
+        cfg["corr_cluster_cap"] = int(a.corr_cap)
+    if a.corr_thr is not None:
+        cfg["corr_threshold"] = float(a.corr_thr)
     if a.cost is not None:
         cfg["cost"] = float(a.cost)
     os.makedirs(DUMPS, exist_ok=True)
@@ -1720,6 +2041,17 @@ def main():
 
     if a.index_map:
         index_map_report(cfg)
+        return 0
+
+    if a.corr_map:
+        corr_map_report(cfg)
+        return 0
+
+    if a.abc:
+        out = abc_report(cfg)
+        json.dump(out, open(os.path.join(DUMPS, "abc.json"), "w"),
+                  ensure_ascii=False, indent=1, default=float)
+        print("\n写完", os.path.join(DUMPS, "abc.json"))
         return 0
 
     if a.caps:
@@ -1774,7 +2106,9 @@ def main():
               f"/最大{ex['idx_max2'] * 100:.0f}%(持仓≥2只口径,市值{ex['idxw_max'] * 100:.0f}%)"
               f"/最多{ex['idx_cnt_max']}只 "
               f"| 主题上限拦截 {res['cap_blocked']} 次 | 同指数拦截 {ex['idx_blocked']} 次"
-              f"/卖出 {ex['idx_sells']} 次 | 空仓 {res['off_days']} 天")
+              f"/卖出 {ex['idx_sells']} 次 | 相关簇最大占比 {ex['corr_max'] * 100:.0f}%"
+              f"（中位{ex['corr_p50'] * 100:.0f}%，最多{ex['corr_cnt_max']}只）"
+              f"相关簇拦截 {ex['corr_blocked']} 次/卖出 {ex['corr_sells']} 次 | 空仓 {res['off_days']} 天")
         print("分年:", {k: round(v * 100, 2) for k, v in by_year(res["eq"]).items()})
         res["eq"].to_csv(os.path.join(DUMPS, f"eq_{prm.start}_{prm.end}.csv"))
         return 0

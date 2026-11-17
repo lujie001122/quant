@@ -1,7 +1,7 @@
 {
-  "date": "2026-11-16",
+  "date": "2026-11-17",
   "status": "blocked",
-  "momentum": -0.8568,
+  "momentum": -0.7589,
   "rotation_triggered_date": "2026-11-13",
   "rotation_triggered_top3": [
     "159928",
@@ -10,7 +10,7 @@
   ],
   "timing_level": 0.5,
   "timing_score": -2,
-  "timing_detail": "px=4.050 ma20=4.133 ma60=4.411 slope5=-0.99% hi60dd=15.6% atr=1.63%(med1.71%)",
-  "timing_date": "2026-11-16",
+  "timing_detail": "px=4.054 ma20=4.133 ma60=4.411 slope5=-0.98% hi60dd=15.6% atr=1.63%(med1.71%)",
+  "timing_date": "2026-11-17",
   "timing_source": "tencent"
 }
