@@ -143,7 +143,11 @@ $ .venv/bin/python3 chase_live.py --backtest --start 2021-11-17 --end 2026-11-16
 与 research/chase 的 17.15% / 6.91% **差 0.00pp**（换手 20.3%/18.6%、成本 2.06%/1.94%、PF 2.11/1.58 也全部一致）。
 `latest_targets()` 调的也是这个 `run()`，所以"回测=实盘"不是口径对齐，是同一段代码。
 
-另跑 2021-11-17→2024-12-31（用户建议窗口）：上限 2 与上限 5 均正常出结果。
+另跑 2021-11-17→2024-12-31（用户建议窗口）：
+上限 2 年化 **−3.22%**（回撤 −21.5%，t=−0.53，187 笔）、上限 5 年化 **−2.38%**（回撤 −19.5%，185 笔）。
+这一段是负的——5y 的 6.91% 全部来自 2025-2026，2022-2024 三年是亏的。这不违反一致性校验
+（锚点是 research 的两个窗口，差 0.00pp），但说明这套策略的收益高度集中在少数几段行情，
+**不能按 19.63% 预期**。
 
 ### 3.2 `signal_generator.py --mode=chase`（退出码 0）
 
@@ -166,7 +170,7 @@ $ .venv/bin/python3 signal_generator.py --mode=chase ; echo $?
 
 ```
 $ .venv/bin/python3 signal_generator.py --mode=flow      → 0（20 只等权 + 波动乘数 1.00，输出与改造前一致）
-$ .venv/bin/python3 signal_generator.py --mode=pyramid   → 0（210300 防守 score=-2 档位 0.50，输出与改造前一致）
+$ .venv/bin/python3 signal_generator.py --mode=pyramid   → 0（总资产¥220,000 / 择时防守 score=-2 / 档位 0.50，输出与改造前一致）
 ```
 
 ### 3.5 数据增量更新
