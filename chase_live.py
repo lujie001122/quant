@@ -407,8 +407,25 @@ def corr_snapshot(P, D, i, prm, mask):
 # 数据层：日频面板 + 磁盘缓存
 # ════════════════════════════════════════════════════════════════════
 def calendar():
+    """交易日历。收盘后（>=15:05 且**当天 K 线已入库**）把当天算进来，其余时间不含当天。
+
+    口径：日线在收盘后是终值，用"T 日收盘"出"T+1 开盘"的指令仍是严格 T-1；
+    盘中/盘前含当天 = 拿半根 bar 出信号（未来函数），所以一律排除。
+    当天是否入库以基准 510300 的最后一根 bar 判定 —— 日历里先有这一天、K 线还没到时，
+    如果直接算进来会多出一行全 NaN，空仓开关会静默放过（on=True）、动量分位全空。
+    回测窗口 3y/5y 都截止 2026-11-16，与这条规则无关，逐位不变。
+    """
     cal = pd.DatetimeIndex(pd.to_datetime(json.load(open(os.path.join(META, "index_calendar.json")))))
-    return cal[cal < pd.Timestamp.now().normalize()]
+    now = datetime.now()
+    d0 = pd.Timestamp(now).normalize()
+    if (now.hour, now.minute) >= (15, 5) and d0 in cal:
+        try:
+            bars = json.load(open(os.path.join(PXQ, f"{BENCH}.json")))["bars"]
+            if bars and str(bars[-1][0])[:10] == str(d0.date()):
+                return cal[cal <= d0]
+        except Exception:                                    # noqa: BLE001
+            pass
+    return cal[cal < d0]
 
 
 def _pxq_stamp():
@@ -578,6 +595,14 @@ class Params:
     idx_corr_merge: float = 0.0    # >0：不同名但 ρ ≥ 该值 → 合并（兜底档；0=关）
     corr_threshold: float = 0.90   # 相关性聚类阈值：两两 ρ ≥ 该值 → 同一簇（单链接）
     corr_cluster_cap: int = 2      # 同一相关性簇最多持有几只（0 = 关掉相关性上限）
+    theme_mode: str = "cap"        # cap=按 theme_cap 限赛道 | top1=强制全仓动量第一的赛道
+    # ── 硬护栏（默认全关；打开后与主逻辑同一段 run()，回测/实盘同源）──
+    guard_day: float = 0.0         # 单日亏损熔断阈值（0=关）：T 日收盘跌幅 <= -X → T+1 开盘减仓
+    guard_day_act: str = "weak1"   # weak1=清掉动量分位最弱的一只 | half=整体减半
+    guard_theme: float = 0.0       # 赛道崩塌阈值（0=关）：持有赛道内跌破 MA20 的比例 > 该值 → 降半仓
+    guard_theme_lead: bool = False # True=只盯市值占比最大的那条赛道，且它 ≥ guard_theme_min 才算
+    guard_theme_min: float = 0.50  # 最大赛道占市值达到该比例才启用"崩塌"判定（单吊口径）
+    guard_scale: float = 0.5       # 赛道崩塌后的目标仓位倍数（0.5=半仓）
     cost: float = 0.001            # 单边成本
     cash: float = 1_000_000.0
     warmup: int = 0
@@ -592,6 +617,8 @@ DEFAULTS = dict(
     idx_corr_merge=0.0, corr_threshold=0.90, corr_cluster_cap=2,
     cost=0.001, index_code="510300", index_ma=60, live_start="2023-11-17",
     max_order_pct=0.15, limit_buffer_pct=0.01, min_order_shares=5000,
+    theme_mode="cap", guard_day=0.0, guard_day_act="weak1", guard_theme=0.0, guard_scale=0.5,
+    guard_theme_lead=False, guard_theme_min=0.50,
 )
 
 _MODE_TO_PRM = dict(                      # config 键 → Params 字段
@@ -603,6 +630,9 @@ _MODE_TO_PRM = dict(                      # config 键 → Params 字段
     idx_corr_window="idx_corr_window", idx_corr_split="idx_corr_split",
     idx_corr_sub="idx_corr_sub", idx_corr_merge="idx_corr_merge", cost="cost",
     corr_threshold="corr_threshold", corr_cluster_cap="corr_cluster_cap",
+    theme_mode="theme_mode", guard_day="guard_day", guard_day_act="guard_day_act",
+    guard_theme="guard_theme", guard_scale="guard_scale",
+    guard_theme_lead="guard_theme_lead", guard_theme_min="guard_theme_min",
 )
 
 
@@ -624,10 +654,12 @@ def load_cfg():
         cfg[k] = int(cfg[k])
     for k in ("entry_pct", "hold_pct", "swap_margin", "grid_step", "grid_lo", "grid_hi",
               "grid_dead", "stop_k", "cost", "max_order_pct", "limit_buffer_pct",
-              "idx_corr_split", "idx_corr_sub", "idx_corr_merge", "corr_threshold"):
+              "idx_corr_split", "idx_corr_sub", "idx_corr_merge", "corr_threshold",
+              "guard_day", "guard_theme", "guard_scale", "guard_theme_min"):
         cfg[k] = float(cfg[k])
     cfg["grid"] = bool(cfg["grid"])
     cfg["regime"] = bool(cfg["regime"])
+    cfg["guard_theme_lead"] = bool(cfg["guard_theme_lead"])
     return cfg
 
 
@@ -693,7 +725,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     turn_week, cost_day = {}, {}
     stopped = off_days = 0
     last_stop = {}
-    tr = {"regime": 0.0, "rot": 0.0, "grid": 0.0, "stop": 0.0}
+    tr = {"regime": 0.0, "rot": 0.0, "grid": 0.0, "stop": 0.0, "guard": 0.0}
     greed = {}                    # 网格上次触发价（棘轮）
     dbg = {"n_scan": 0, "n_changed": 0, "n_exec": 0}
     mult_prev = {}
@@ -702,10 +734,17 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     idx_blocked = idx_sells = 0      # 同指数去重：被拦截的建仓次数 / 因同指数超限卖出的次数
     corr_blocked = corr_sells = 0    # 相关性上限：被拦截的建仓次数 / 因同簇超限卖出的次数
     stop_pending = False
-    sell_cause = {"stop": 0.0, "rot": 0.0, "regime": 0.0}
+    sell_cause = {"stop": 0.0, "rot": 0.0, "regime": 0.0, "guard": 0.0}
     n_sells = n_stop_days = 0
     stop_log, sell_log = [], []
     hold_n, theme_share = [], []     # 每日持仓只数 / 单一主题占持仓的最大比例（集中度实测）
+    theme_wshare = []                # 单一主题占持仓的最大比例（市值口径，网格改权后更准）
+    # ── 护栏状态（与回测同一段 run()；实盘 latest_targets 复用同一份状态）──
+    guard_scale_cur = 1.0            # 当前目标仓位倍数（1.0 满仓 / guard_scale 降仓）
+    guard = dict(day=0, theme=0, weak_sells=0, trims=0)   # 触发次数（单日熔断/赛道崩塌/卖出只数/降仓笔数）
+    guard_set = set()                # 本次 decision 因单日熔断要清的标的
+    guard_trim = set()               # 本次 decision 因赛道崩塌要降仓（按权重改写）的标的
+    guard_log = []                   # (交易日位置, 类型, 标的或目标倍数)
     idx_share, idx_wshare, idx_cnt = [], [], []   # 单一指数占持仓的最大比例（只数/市值）+ 最大只数
     corr_share, corr_cnt = [], []    # 单一相关性簇占持仓的最大比例（只数）+ 最大只数
     lastpx = {}                      # 每只最后一个有效收盘价（缺 bar 时按最近价估值，不是按 0）
@@ -743,9 +782,12 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
         nonlocal off_days, stopped, n_stop_days, cap_blocked, mult_prev
         nonlocal idx_blocked, idx_sells, gid_cur
         nonlocal corr_blocked, corr_sells, cid_cur
+        nonlocal guard_scale_cur, guard_set, guard_trim
         # ── 3) 收盘决策 ─────────────────────────────────────────────
         want_sell, want_buy, want_grid = set(), {}, []
         stop_set = set()
+        guard_set = set()
+        guard_trim = set()
         on = True
         if prm.regime and bj is not None and np.isfinite(close_b[i]) and np.isfinite(ma60_b[i]):
             on = bool(close_b[i] >= ma60_b[i])
@@ -797,6 +839,19 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if age < prm.min_hold or (np.isfinite(v) and v >= prm.hold_pct):
                     keep.append(j)
             keep.sort(key=lambda j: -(pct_i[j] if np.isfinite(pct_i[j]) else -1))
+            _top_theme = None
+            if prm.theme_mode == "top1":
+                # 强制单吊（V3 口径）：把仓位全部压到"动量第一的赛道"= 当日动量分位最高那只所属主题，
+                # 赛道内部仍然只收不同指数的（index_cap 照旧生效），不做任何跨赛道分散。
+                _all = [j for j in range(ncol) if row_ok[j] and np.isfinite(pct_i[j])
+                        and pct_i[j] >= 1.0 - prm.entry_pct
+                        and (i - last_stop.get(j, -10 ** 9)) >= prm.cooldown]
+                if _all:
+                    _top_theme = theme[max(_all, key=lambda j: pct_i[j])]
+                    _drop = [j for j in keep if theme[j] != _top_theme]
+                    if _drop:
+                        want_sell |= set(_drop)
+                        keep = [j for j in keep if theme[j] == _top_theme]
             if prm.index_cap:                       # 同一标的指数超过上限：留 T-1 流动性最好的
                 by_g, drop = {}, set()
                 for j in keep:
@@ -839,6 +894,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     and pct_i[j] >= 1.0 - prm.entry_pct
                     and j not in shares and j not in keep
                     and (i - last_stop.get(j, -10 ** 9)) >= prm.cooldown]
+            if _top_theme is not None:              # 强制单吊：候选也只能来自这条赛道
+                cand = [j for j in cand if theme[j] == _top_theme]
             if prm.index_cap:                       # 同指数只允许 "T-1 流动性代表" 建仓
                 _c0 = len(cand)
                 cand = [j for j in cand if j == lead.get(int(gid[j]), j)]
@@ -908,12 +965,12 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     want_sell.add(j)
             for j in target_set:
                 if j not in shares:
-                    want_buy[j] = 1.0 / prm.n_hold
+                    want_buy[j] = guard_scale_cur / prm.n_hold   # 降仓期新建只给半份
 
         # 3c) 权重：网格倍数在持仓集合内自筹资金归一化（加仓的钱来自同伴减仓，不用现金）
         live = [j for j in shares if j not in want_sell]
         newb = [j for j in want_buy if j not in live]
-        base_gross = (len(live) + len(newb)) / prm.n_hold
+        base_gross = guard_scale_cur * (len(live) + len(newb)) / prm.n_hold
         if prm.grid and live:
             ms = {}
             for j in live:
@@ -940,6 +997,70 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     if np.isfinite(cur) and abs(wtgt - cur) > prm.grid_dead:
                         want_grid.append((j, wtgt))
             mult_prev = dict(mult)
+
+        # 3d) 硬护栏（默认关）：只用 T 日收盘及更早的数据判定，T+1 开盘执行 —— 与主逻辑同一段 run()
+        #  A 单日亏损熔断：T 日组合跌幅 <= -guard_day → T+1 开盘减仓
+        #     weak1 = 清掉动量分位最弱的那只（并进冷却，cooldown 天内不许重建）
+        #     half  = 整体减半（每只卖一半，卖出的钱留现金，不加回）
+        if prm.guard_day > 0 and len(eq_close) >= 2 and shares:
+            _dr = eq_close[-1] / max(eq_close[-2], 1e-9) - 1.0
+            _live_g = [j for j in shares if j not in want_sell]
+            if _dr <= -prm.guard_day and _live_g:
+                guard["day"] += 1
+                _pi = pct[i]
+                if prm.guard_day_act == "half":
+                    for j in _live_g:
+                        _p = pcx(i, j)
+                        if np.isfinite(_p) and _p > 0:
+                            want_grid.append((j, 0.5 * shares[j] * _p / max(eq_c, 1.0)))
+                            guard_trim.add(j)
+                    guard_log.append((i, "day_half", round(_dr, 4)))
+                else:
+                    _w = min(_live_g, key=lambda j: _pi[j] if np.isfinite(_pi[j]) else -1)
+                    want_sell.add(_w)
+                    guard_set.add(_w)
+                    guard["weak_sells"] += 1
+                    last_stop[_w] = i                    # 冷却：护栏卖出后不许立刻重建
+                    guard_log.append((i, "day_weak", int(_w)))
+
+        #  B 赛道崩塌退出：持有赛道内跌破 MA20 的比例 > guard_theme → 整体降到 guard_scale 仓位
+        #     状态式（不是每天砍一半）：破位比例回落 → 恢复满仓，恢复时按目标权重补回
+        #     guard_theme_lead=True 时只看市值占比最大的那条赛道，且它必须 ≥ guard_theme_min
+        #     （"单吊"口径：只有真的把半仓以上压在这一条赛道上，它崩了才降仓）
+        if prm.guard_theme > 0 and shares:
+            _bt, _bad = {}, False
+            for j in shares:
+                _bt.setdefault(theme[j], []).append(j)
+            _scope = list(_bt)
+            if prm.guard_theme_lead:
+                _tv = {t: sum(shares[j] * pcx(i, j) for j in js
+                              if np.isfinite(pcx(i, j))) for t, js in _bt.items()}
+                _tot = sum(_tv.values())
+                _lt = max(_tv, key=_tv.get) if _tv else None
+                _scope = [_lt] if (_lt is not None and _tot > 0
+                                   and _tv[_lt] / _tot >= prm.guard_theme_min) else []
+            for _t in _scope:
+                _js = _bt[_t]
+                if len(_js) < 2:                         # 单只赛道没有"超过一半"可言
+                    continue
+                _nb = 0
+                for j in _js:
+                    _p, _m = pcx(i, j), ma20[i, j]
+                    if np.isfinite(_p) and np.isfinite(_m) and _p < _m:
+                        _nb += 1
+                if _nb / len(_js) > prm.guard_theme:
+                    _bad = True
+                    break
+            _scale_t = float(prm.guard_scale) if _bad else 1.0
+            if abs(_scale_t - guard_scale_cur) > 1e-9:
+                guard_scale_cur = _scale_t
+                guard["theme"] += 1
+                guard_log.append((i, "theme_scale", _scale_t))
+                for j in shares:
+                    if j in want_sell:
+                        continue
+                    want_grid.append((j, _scale_t / prm.n_hold))
+                    guard_trim.add(j)
         return True
 
     for i in range(i0, i1 + 1):
@@ -960,7 +1081,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if np.isfinite(pc) and p <= pc * (1 - limit[j]) * 1.0005:
                     continue                              # 开盘跌停 → 顺延
                 q = shares.pop(j)
-                sc = "stop" if j in stop_set else cause
+                sc = "stop" if j in stop_set else ("guard" if j in guard_set else cause)
                 tr[sc] += q * p
                 sell_cause[sc] = sell_cause.get(sc, 0.0) + q * p
                 n_sells += 1
@@ -1041,7 +1162,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                         dbg["n_add_cash"] = dbg.get("n_add_cash", 0) + 1
                         continue
                     dbg["n_add_ok"] = dbg.get("n_add_ok", 0) + 1
-                    tr["grid"] += q * p
+                    tr["guard" if j in guard_trim else "grid"] += q * p
                     cash -= need
                     basis[j] = (basis[j] * shares[j] + p * q) / (shares[j] + q)
                     shares[j] += q
@@ -1055,7 +1176,9 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     shares[j] -= q
                     cash += q * p * (1 - prm.cost)
                     traded += q * p
-                    tr["grid"] += q * p
+                    tr["guard" if j in guard_trim else "grid"] += q * p
+                    if j in guard_trim:
+                        guard["trims"] += 1
                     if shares[j] == 0:                     # 网格减到 0 才算平仓
                         e_i = entry_i.pop(j, np.nan)
                         ct = cost_total.pop(j, np.nan)
@@ -1089,10 +1212,14 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                         for j in shares])
         nan_close.append(sum(1 for j in shares if not np.isfinite(pcx(i, j))))
         if shares:
-            _tc = {}
+            _tc, _tcv = {}, {}
             for j in shares:
                 _tc[theme[j]] = _tc.get(theme[j], 0) + 1
+                _pv = pcx(i, j) if np.isfinite(pcx(i, j)) else lastpx.get(j, np.nan)
+                _tcv[theme[j]] = _tcv.get(theme[j], 0.0) + \
+                    (shares[j] * _pv if np.isfinite(_pv) else 0.0)
             theme_share.append(max(_tc.values()) / len(shares))
+            theme_wshare.append(max(_tcv.values()) / max(_posv, 1e-9))
             _ic, _icv = {}, {}
             _gi = gid_cur if gid_cur is not None else idxid
             for j, q in shares.items():
@@ -1111,6 +1238,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             corr_cnt.append(max(_cc.values()))
         else:
             theme_share.append(0.0)
+            theme_wshare.append(0.0)
             idx_share.append(0.0)
             idx_wshare.append(0.0)
             idx_cnt.append(0)
@@ -1130,6 +1258,9 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                              mult=dict(mult), want_sell=sorted(want_sell),
                              want_buy={int(k): float(v) for k, v in want_buy.items()},
                              want_grid=[(int(a), float(b)) for a, b in want_grid],
+                             guard=dict(scale=float(guard_scale_cur), day_set=sorted(int(x) for x in guard_set),
+                                        trim=sorted(int(x) for x in guard_trim),
+                                        n_day=int(guard["day"]), n_theme=int(guard["theme"])),
                              cause=cause, pct={int(j): float(pct[i][j])
                                                for j in range(len(cols))
                                                if np.isfinite(pct[i][j])})
@@ -1154,6 +1285,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 gross=pd.Series(gross_r, index=idx[i0:i0 + len(gross_r)]),
                 hold_n=pd.Series(hold_n, index=idx[i0:i0 + len(hold_n)]),
                 theme_share=pd.Series(theme_share, index=idx[i0:i0 + len(theme_share)]),
+                theme_wshare=pd.Series(theme_wshare, index=idx[i0:i0 + len(theme_wshare)]),
+                guard=dict(guard), guard_log=guard_log, guard_scale=float(guard_scale_cur),
                 idx_share=pd.Series(idx_share, index=idx[i0:i0 + len(idx_share)]),
                 idx_wshare=pd.Series(idx_wshare, index=idx[i0:i0 + len(idx_wshare)]),
                 idx_cnt=pd.Series(idx_cnt, index=idx[i0:i0 + len(idx_cnt)]),
@@ -1327,14 +1460,16 @@ def seg_stat(eq, nm, s0=None, s1=None):
 
 
 def risk_extra(res, label=""):
-    """集中度的真实代价：最坏单日 / 最坏两日 / 平均持仓只数 / 同主题、同指数最大占比。"""
+    """集中度的真实代价：最坏单日 / 两日 / 五日 / 平均持仓只数 / 同主题、同指数最大占比。"""
     ret = res["ret"]
     hs = res["theme_share"]
+    hv = res.get("theme_wshare")
     xs = res.get("idx_share")
     xv = res.get("idx_wshare")
-    if len(ret) < 3:
+    if len(ret) < 6:
         return dict(label=label, worst1=0.0, worst1_date="-", worst2=0.0, worst2_date="-",
-                    avg_n=0.0, share_p50=0.0, share_p90=0.0, share_max=0.0,
+                    worst5=0.0, worst5_date="-",
+                    avg_n=0.0, share_p50=0.0, share_p90=0.0, share_max=0.0, sharew_max=0.0,
                     idx_p50=0.0, idx_p90=0.0, idx_max=0.0, idx_max2=0.0, idx_cnt_max=0,
                     idxw_max=0.0, n_multi_idx=0,
                     corr_p50=0.0, corr_p90=0.0, corr_max=0.0, corr_cnt_max=0)
@@ -1342,13 +1477,19 @@ def risk_extra(res, label=""):
     two = r[1:] + r[:-1]
     k1 = int(np.nanargmin(r))
     k2 = int(np.nanargmin(two))
+    five = (1.0 + ret).rolling(5).apply(np.prod, raw=True).to_numpy(dtype=float) - 1.0
+    five = five[~np.isnan(five)]
+    k5 = int(np.argmin(five))
     out = dict(label=label,
                worst1=float(r[k1]), worst1_date=str(ret.index[k1].date()),
                worst2=float(two[k2]), worst2_date=f"{ret.index[k2].date()}→{ret.index[k2 + 1].date()}",
+               worst5=float(five[k5]),
+               worst5_date=f"{ret.index[k5].date()}→{ret.index[k5 + 4].date()}" if len(five) else "-",
                avg_n=float(res["hold_n"].mean()),
                share_p50=float(np.nanpercentile(hs, 50)),
                share_p90=float(np.nanpercentile(hs, 90)),
-               share_max=float(np.nanmax(hs)))
+               share_max=float(np.nanmax(hs)),
+               sharew_max=float(np.nanmax(hv)) if hv is not None and len(hv) else 0.0)
     if xs is not None and len(xs):
         x = xs.to_numpy(dtype=float)
         hn = res["hold_n"].to_numpy(dtype=float)
@@ -1377,6 +1518,10 @@ def risk_extra(res, label=""):
         out.update(corr_p50=0.0, corr_p90=0.0, corr_max=0.0, corr_cnt_max=0)
     out["corr_blocked"] = int(res.get("corr_blocked", 0))
     out["corr_sells"] = int(res.get("corr_sells", 0))
+    g = res.get("guard") or {}
+    out.update(guard_day_trig=int(g.get("day", 0)), guard_theme_trig=int(g.get("theme", 0)),
+               guard_weak_sells=int(g.get("weak_sells", 0)), guard_trims=int(g.get("trims", 0)),
+               guard_turn=float((res.get("tr_by") or {}).get("guard", 0.0)))
     return out
 
 
@@ -1587,6 +1732,161 @@ def worst_day_pos(res, P, date=None):
     return str(res["ret"].index[k].date()), float(r[k]), pos
 
 
+# ════════════════════════════════════════════════════════════════════
+# 单吊赛道（theme_cap=0）专项报告 —— 四个版本 / 护栏消融 / 四窗口 / 最惨一段
+# 只调 run() 的入参，不改一行策略；输出纯文本（QQ 直接用）
+# ════════════════════════════════════════════════════════════════════
+POD_VARIANTS = [
+    ("V1 参照 theme6/index1", dict(theme_cap=6, index_cap=1)),
+    ("V2 单吊 theme0/index1", dict(theme_cap=0, index_cap=1)),
+    ("V3 强制单吊动量第一赛道", dict(theme_cap=0, index_cap=1, theme_mode="top1")),
+    ("V4 单吊+集中4只", dict(theme_cap=0, index_cap=1, n_hold=4)),
+]
+
+GUARD_VARIANTS = [
+    ("V2 无护栏", dict(theme_cap=0, index_cap=1)),
+    ("V2+熔断6%(清最弱)", dict(theme_cap=0, index_cap=1, guard_day=0.06)),
+    ("V2+熔断8%(清最弱)", dict(theme_cap=0, index_cap=1, guard_day=0.08)),
+    ("V2+熔断10%(清最弱)", dict(theme_cap=0, index_cap=1, guard_day=0.10)),
+    ("参考 熔断4%(清最弱)", dict(theme_cap=0, index_cap=1, guard_day=0.04)),
+    ("V2+熔断6%(整体减半)", dict(theme_cap=0, index_cap=1, guard_day=0.06, guard_day_act="half")),
+    ("V2+赛道破MA20过半→半仓", dict(theme_cap=0, index_cap=1, guard_theme=0.5)),
+    ("V2+单吊赛道破MA20→半仓", dict(theme_cap=0, index_cap=1, guard_theme=0.5,
+                                guard_theme_lead=True)),
+    ("V2+熔断6%+单吊赛道半仓", dict(theme_cap=0, index_cap=1, guard_day=0.06, guard_theme=0.5,
+                              guard_theme_lead=True)),
+]
+
+
+def _f1(name, st, ex):
+    return (f"{name}\n  年化{st['cagr'] * 100:7.2f}% 累计{st['cups'] * 100:8.2f}% "
+            f"波动{st['vol'] * 100:5.1f}% 夏普{st['sharpe']:5.2f} "
+            f"回撤{st['mdd'] * 100:6.1f}% Calmar{st['calmar']:5.2f}")
+
+
+def _f2(st, ex):
+    return (f"  换手{st['turn_wk'] * 100:5.1f}%/周 成本{st['cost_yr'] * 100:5.2f}%/年 "
+            f"平均持仓{ex['avg_n']:4.1f}只 最大单赛道占比 中位{ex['share_p50'] * 100:4.1f}%"
+            f"/90分位{ex['share_p90'] * 100:5.1f}%/最大(市值){ex['sharew_max'] * 100:5.1f}% "
+            f"交易{st['n_trades']}笔")
+
+
+def _f3(ex):
+    return (f"  最坏单日{ex['worst1'] * 100:6.2f}%({ex['worst1_date']}) "
+            f"最坏两日{ex['worst2'] * 100:6.2f}%({ex['worst2_date']}) "
+            f"最坏五日{ex['worst5'] * 100:6.2f}%({ex['worst5_date']})")
+
+
+def _f4(eq):
+    return "  分年 " + " ".join(f"{k}:{v * 100:+.1f}%" for k, v in by_year(eq).items())
+
+
+def _f5(st, ex):
+    """护栏口径：触发次数 + 护栏自己造成的换手/成本（相对无护栏的差在报告里另列）。"""
+    return (f"  护栏触发 单日熔断{ex['guard_day_trig']}次(清{ex['guard_weak_sells']}只) "
+            f"赛道崩塌{ex['guard_theme_trig']}次(改权{ex['guard_trims']}笔) "
+            f"护栏换手¥{ex['guard_turn']:,.0f} 占总成交{ex['guard_turn'] / max(ex['_turn_amt'], 1e-9) * 100:4.1f}%")
+
+
+def _report(cfg, variants, windows, title, with_guard=False):
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    out = []
+    for tag, (s0, s1) in windows:
+        print(f"\n=== {title} {tag} {s0} → {s1} ===")
+        for nm, kw in variants:
+            # 护栏默认关：四个版本/四窗口口径先看"策略本身"，护栏代价单独用 --guard 消融
+            prm = replace(params_from_cfg(cfg, start=s0, end=s1),
+                          **dict({"guard_day": 0.0, "guard_theme": 0.0}, **kw))
+            res = run(P, D, mask, pct, prm)
+            st = stats(res, prm, nm)
+            ex = risk_extra(res, nm)
+            ex["_turn_amt"] = float(sum(res["tr_by"].values()))
+            print(_f1(nm, st, ex))
+            print(_f2(st, ex))
+            print(_f3(ex))
+            if with_guard:
+                print(_f5(st, ex))
+            print(_f4(res["eq"]), flush=True)
+            out.append(dict(window=tag, name=nm, kw=kw, cagr=st["cagr"], cups=st["cups"],
+                            vol=st["vol"], sharpe=st["sharpe"], mdd=st["mdd"],
+                            calmar=st["calmar"], turn=st["turn_wk"], cost=st["cost_yr"],
+                            avg_n=ex["avg_n"], sharew_max=ex["sharew_max"],
+                            share_max=ex["share_max"], worst1=ex["worst1"],
+                            worst1_date=ex["worst1_date"], worst2=ex["worst2"],
+                            worst2_date=ex["worst2_date"], worst5=ex["worst5"],
+                            worst5_date=ex["worst5_date"], n_trades=st["n_trades"],
+                            years=st["years"], by_year=by_year(res["eq"]),
+                            guard=dict(res["guard"])))
+    return out
+
+
+def pod_report(cfg=None, windows=(("3y", W3Y), ("5y", W5Y))):
+    """四个版本 × 两窗口：年化/累计/波动/夏普/回撤/Calmar/换手/成本/持仓/赛道占比/最坏1-2-5日/分年。"""
+    return _report(cfg, POD_VARIANTS, windows, "四版本")
+
+
+def guard_report(cfg=None, windows=(("3y", W3Y), ("5y", W5Y))):
+    """V2 单吊下的护栏消融：不加 vs 熔断 6/8/10% vs 赛道崩塌半仓 vs 组合。"""
+    return _report(cfg, GUARD_VARIANTS, windows, "护栏消融", with_guard=True)
+
+
+def windows_report(cfg=None, variants=None, ends=(("1y", "2025-11-17"), ("2y", "2024-11-17"))):
+    """四个时间窗口（1y/2y/3y/5y）在同一版本上的年化对比。"""
+    wins = list(ends) + [("3y", W3Y[0]), ("5y", W5Y[0])]
+    return _report(cfg, variants or POD_VARIANTS[:2],
+                   [(t, (s, W3Y[1])) for t, s in wins], "四窗口")
+
+
+def dd_report(cfg=None, variants=None, windows=(("3y", W3Y), ("5y", W5Y))):
+    """历史上最惨的一段：峰值日 → 谷底日 → 回本日，谷底押的是什么赛道，亏多少，多久回本。"""
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    cols, names = P["cols"], P["names"]
+    out = []
+    for tag, (s0, s1) in windows:
+        for nm, kw in (variants or POD_VARIANTS[:2]):
+            prm = replace(params_from_cfg(cfg, start=s0, end=s1), **kw)
+            res = run(P, D, mask, pct, prm)
+            eq = res["eq"]
+            dd = eq / eq.cummax() - 1
+            k = int(np.argmin(dd.to_numpy(dtype=float)))
+            pk = int(np.argmax(eq.to_numpy(dtype=float)[:k + 1]))
+            depth = float(dd.iloc[k])
+            rec_k, rec_days = None, None
+            for m in range(k, len(eq)):
+                if eq.iloc[m] >= eq.iloc[pk]:
+                    rec_k = m
+                    rec_days = int(np.busday_count(eq.index[k].date(), eq.index[m].date()))
+                    break
+            pos = [(str(cols[j]), names.get(cols[j], ""), float(v))
+                   for j, v in res["pos_log"][k] if np.isfinite(v)]
+            pos.sort(key=lambda x: -x[2])
+            tot = sum(v for _, _, v in pos) or 1.0
+            tc = {}
+            for _, nmm, v in pos:
+                tc[theme_of(nmm)] = tc.get(theme_of(nmm), 0.0) + v
+            top_theme, top_share = max(tc.items(), key=lambda kv: kv[1])
+            hold_days = int(np.busday_count(eq.index[pk].date(), eq.index[k].date()))
+            print(f"\n=== {nm} {tag} 最惨一段 ===")
+            print(f"  峰值 {eq.index[pk].date()} 净值{eq.iloc[pk] / eq.iloc[0]:.4f} → "
+                  f"谷底 {eq.index[k].date()} 净值{eq.iloc[k] / eq.iloc[0]:.4f} "
+                  f"回撤{depth * 100:6.2f}% 用时{hold_days}个交易日")
+            print(f"  回本 {eq.index[rec_k].date() if rec_k else '至今未回本'} "
+                  f"（自谷底{rec_days if rec_days is not None else '-'}个交易日，"
+                  f"自峰值{int(np.busday_count(eq.index[pk].date(), eq.index[rec_k].date())) if rec_k else '-'}个交易日）")
+            print(f"  谷底持仓 {len(pos)} 只，最大赛道 {top_theme} 占市值 {top_share / tot * 100:.1f}%")
+            for c, nmm, v in pos:
+                print(f"    {_code6(c)}  {nmm[:14]:<16}{theme_of(nmm):<10}{index_of(nmm):<12}"
+                      f"市值¥{v:>10,.0f} {v / tot * 100:5.1f}%")
+            out.append(dict(name=nm, window=tag, peak=str(eq.index[pk].date()),
+                            trough=str(eq.index[k].date()), depth=depth,
+                            hold_days=hold_days, rec=str(eq.index[rec_k].date()) if rec_k else None,
+                            rec_days=rec_days, top_theme=top_theme,
+                            top_share=float(top_share / tot), n_pos=len(pos)))
+    return out
+
+
 def abc_report(cfg=None, thrs=(0.85, 0.90, 0.95), quiet=False):
     """A/B/C 三档 × 3y/5y + 相关性阈值敏感性。返回 dict(rows, sens)。"""
     cfg = dict(cfg or load_cfg())
@@ -1601,7 +1901,9 @@ def abc_report(cfg=None, thrs=(0.85, 0.90, 0.95), quiet=False):
     for tag, (s0, s1) in (("3y", W3Y), ("5y", W5Y)):
         print(f"\n=== {tag} {s0} → {s1} ===")
         for nm, kw in variants:
-            prm = replace(params_from_cfg(cfg, start=s0, end=s1), **kw)
+            # 护栏默认关：四个版本/四窗口口径先看"策略本身"，护栏代价单独用 --guard 消融
+            prm = replace(params_from_cfg(cfg, start=s0, end=s1),
+                          **dict({"guard_day": 0.0, "guard_theme": 0.0}, **kw))
             res = run(P, D, mask, pct, prm)
             st = stats(res, prm, f"{tag} {nm}")
             ex = risk_extra(res, st["label"])
@@ -1769,18 +2071,21 @@ def latest_targets(cfg=None, prm=None, quiet=False):
             if j not in sell:
                 targets[j] = float(w)
     tg = {}
+    _trim = set(st.get("guard", {}).get("trim") or [])
+    _gs = st.get("guard", {})
     for j, w in targets.items():
         sid = str(cols[j])
         nm = names.get(sid, "")
         tg[sid] = dict(code=_code6(sid), sid=sid, name=nm, weight=float(w),
                        theme=theme_of(nm), index=index_of(nm),
-                       pct=float(st["pct"].get(j, np.nan)))
+                       pct=float(st["pct"].get(j, np.nan)), guard_trim=bool(j in _trim))
     if not quiet:
         print(f"[chase] 目标日={end} 空仓开关={'空仓(指数<MA%s)' % prm.index_ma if not st['on'] else '持仓'}"
-              f" 目标 {len(tg)} 只 可交易池 {int(mask[i].sum())} 只")
+              f" 目标 {len(tg)} 只 可交易池 {int(mask[i].sum())} 只"
+              f" 护栏目标仓位{float(_gs.get('scale', 1.0)):.0%}")
     return dict(as_of=end, price_date=end, on=bool(st["on"]), cause=st["cause"],
                 eq=float(st["eq"]), cash=float(st["cash"]), n_targets=len(tg),
-                n_pool=int(mask[i].sum()), targets=tg,
+                n_pool=int(mask[i].sum()), targets=tg, guard=dict(_gs),
                 held={_code6(cols[j]): int(q) for j, q in st["shares"].items()},
                 next_sell=[_code6(cols[j]) for j in st["want_sell"]],
                 cfg={k: cfg[k] for k in ("n_hold", "entry_pct", "hold_pct", "theme_cap",
@@ -1911,6 +2216,8 @@ def build_plan(cfg=None, totals=None, holdings=None, tg=None, quiet=False):
                 note = f"差额{delta}股 < 最小下单量，本次不动"
             else:
                 sell = -delta
+                if (t or {}).get("guard_trim"):
+                    note = f"护栏降仓（单日熔断/赛道崩塌）→ 减到目标 {tgt_sh:,} 股"
         if buy > 0 and price > 0:
             buy = min(buy, _lot(cap_amt / price))
         rows.append(dict(code=code, sid=(t or {}).get("sid") or _sid(code), name=name,
@@ -1919,6 +2226,7 @@ def build_plan(cfg=None, totals=None, holdings=None, tg=None, quiet=False):
                          delta_shares=int(delta), buy_shares=int(buy), sell_shares=int(sell),
                          buy_amount=round(buy * price, 2), sell_amount=round(sell * price, 2),
                          theme=(t or {}).get("theme"), pct=(t or {}).get("pct"),
+                         guard_trim=bool((t or {}).get("guard_trim")),
                          in_target=bool(t) and tg["on"], note=note))
 
     for r in rows:                                   # 空仓开关下不买
@@ -1943,7 +2251,7 @@ def build_plan(cfg=None, totals=None, holdings=None, tg=None, quiet=False):
     plan = dict(as_of=tg["as_of"], price_date=px_date, total_asset=round(total_asset, 2),
                 cash=round(cash, 2), account_source=ta_info.get("source"),
                 holdings_source=hold_src, on=bool(tg["on"]), cause=tg["cause"],
-                n_targets=tg["n_targets"], n_pool=tg["n_pool"],
+                n_targets=tg["n_targets"], n_pool=tg["n_pool"], guard=tg.get("guard") or {},
                 buy_total=round(buy_total, 2), want_total=round(want_total, 2),
                 sell_total=round(sell_total, 2), budget=round(budget, 2),
                 cash_after=round(cash + sell_total - buy_total, 2),
@@ -2012,6 +2320,16 @@ def main():
     ap.add_argument("--corr-map", action="store_true",
                     help="相关性聚类审计（簇结构 + 新目标清单两两 ρ 最大值）")
     ap.add_argument("--abc", action="store_true", help="A/B/C 三档 × 3y/5y + 阈值敏感性")
+    ap.add_argument("--pod", action="store_true",
+                    help="单吊赛道四个版本(V1参照/V2单吊/V3强制单吊/V4集中4只) × 3y/5y 全指标")
+    ap.add_argument("--guard", action="store_true",
+                    help="V2 单吊下的护栏消融（熔断 6/8/10% + 赛道崩塌半仓）")
+    ap.add_argument("--win", action="store_true", help="1y/2y/3y/5y 四窗口年化")
+    ap.add_argument("--dd", action="store_true", help="历史上最惨一段（峰值/谷底/回本/持有赛道）")
+    ap.add_argument("--n-hold", type=int, default=None, help="目标持仓只数（默认 8）")
+    ap.add_argument("--theme-mode", default=None, help="cap|top1（top1=强制全仓动量第一的赛道）")
+    ap.add_argument("--guard-day", type=float, default=None, help="单日亏损熔断阈值（0=关）")
+    ap.add_argument("--guard-theme", type=float, default=None, help="赛道崩塌阈值（0=关，0.5=过半破MA20）")
     ap.add_argument("--cost", type=float, default=None)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -2024,9 +2342,36 @@ def main():
         cfg["corr_cluster_cap"] = int(a.corr_cap)
     if a.corr_thr is not None:
         cfg["corr_threshold"] = float(a.corr_thr)
+    if a.n_hold is not None:
+        cfg["n_hold"] = int(a.n_hold)
+    if a.theme_mode is not None:
+        cfg["theme_mode"] = str(a.theme_mode)
+    if a.guard_day is not None:
+        cfg["guard_day"] = float(a.guard_day)
+    if a.guard_theme is not None:
+        cfg["guard_theme"] = float(a.guard_theme)
     if a.cost is not None:
         cfg["cost"] = float(a.cost)
     os.makedirs(DUMPS, exist_ok=True)
+
+    if a.pod or a.guard or a.win or a.dd:
+        out = {}
+        if a.dd:
+            out["dd"] = dd_report(cfg)
+        if a.pod:
+            out["pod"] = pod_report(cfg)
+        if a.guard:
+            out["guard"] = guard_report(cfg)
+        if a.win:
+            v = POD_VARIANTS[:2] if not a.guard_day and not a.guard_theme else [
+                ("V2+护栏", dict(theme_cap=0, index_cap=1,
+                                 guard_day=float(cfg["guard_day"]),
+                                 guard_theme=float(cfg["guard_theme"])))]
+            out["win"] = windows_report(cfg, variants=v)
+        p = os.path.join(DUMPS, f"pod_{datetime.now():%Y%m%d_%H%M}.json")
+        json.dump(out, open(p, "w"), ensure_ascii=False, indent=1, default=float)
+        print("\n写完", p)
+        return 0
 
     if a.themes:
         P = build_panel()
@@ -2101,14 +2446,18 @@ def main():
         print(fmt2(st))
         print(f"平均持仓 {ex['avg_n']:.1f} 只 | 最坏单日 {ex['worst1'] * 100:.2f}%({ex['worst1_date']}) "
               f"| 最坏两日 {ex['worst2'] * 100:.2f}%({ex['worst2_date']}) "
-              f"| 同主题占比 中位{ex['share_p50'] * 100:.0f}%/最大{ex['share_max'] * 100:.0f}% "
+              f"| 最坏五日 {ex['worst5'] * 100:.2f}%({ex['worst5_date']}) "
+              f"| 同主题占比 中位{ex['share_p50'] * 100:.0f}%/最大{ex['share_max'] * 100:.0f}%"
+              f"(市值{ex['sharew_max'] * 100:.0f}%) "
               f"| 同一指数占比 中位{ex['idx_p50'] * 100:.0f}%/90分位{ex['idx_p90'] * 100:.0f}%"
               f"/最大{ex['idx_max2'] * 100:.0f}%(持仓≥2只口径,市值{ex['idxw_max'] * 100:.0f}%)"
               f"/最多{ex['idx_cnt_max']}只 "
               f"| 主题上限拦截 {res['cap_blocked']} 次 | 同指数拦截 {ex['idx_blocked']} 次"
               f"/卖出 {ex['idx_sells']} 次 | 相关簇最大占比 {ex['corr_max'] * 100:.0f}%"
               f"（中位{ex['corr_p50'] * 100:.0f}%，最多{ex['corr_cnt_max']}只）"
-              f"相关簇拦截 {ex['corr_blocked']} 次/卖出 {ex['corr_sells']} 次 | 空仓 {res['off_days']} 天")
+              f"相关簇拦截 {ex['corr_blocked']} 次/卖出 {ex['corr_sells']} 次 "
+              f"| 护栏 单日熔断{ex['guard_day_trig']}次/赛道崩塌{ex['guard_theme_trig']}次 "
+              f"| 空仓 {res['off_days']} 天")
         print("分年:", {k: round(v * 100, 2) for k, v in by_year(res["eq"]).items()})
         res["eq"].to_csv(os.path.join(DUMPS, f"eq_{prm.start}_{prm.end}.csv"))
         return 0
