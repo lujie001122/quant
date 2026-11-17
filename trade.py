@@ -627,7 +627,31 @@ def _sync_locked():
 
     # ── 持仓写盘 ───────────────────────────────────────────────────
     if not positions:
-        print("  ⚠️ sync: 持仓数据为空，跳过持仓同步（保留原持仓）")
+        # 空持仓三判定：接口异常(保留) / 真空仓(清空) / 可疑(保留+告警)
+        _acct_total = _acct_cash = _acct_mv = None
+        _acct_ok = acct_data is not None
+        if _acct_ok:
+            try:
+                _acct_total = float(acct_data['总资产'])
+                _acct_cash = float(acct_data['可用金额'])
+                _acct_mv = float(acct_data['总市值'])
+            except (KeyError, TypeError, ValueError):
+                _acct_ok = False
+        if not _acct_ok:
+            # 情况1: 读账户也失败 → 接口异常，保留原持仓（防抖动清零）
+            print("  ⚠️ sync: 持仓为空且账户读不到（接口异常），跳过持仓同步（保留原持仓）")
+        elif _acct_mv == 0 and abs(_acct_cash - _acct_total) < 1.0:
+            # 情况2: 市值0且现金≈总资产 → 真空仓，清空持仓
+            from state_center import reset_signal_state_on_liquidate
+            for code in list(pf.get('positions', {}).keys()):
+                del pf['positions'][code]
+                pf.setdefault('_zero_share_count', {}).pop(code, None)
+                print(f"[SYNC] {code} 账户市值0且现金≈总资产，判定已清仓，删除持仓")
+                reset_signal_state_on_liquidate(pf, code, time.strftime('%Y-%m-%d'))
+        else:
+            # 情况3: 读账户成功但市值>0、持仓列表却为空 → 可疑，保留并告警
+            print(f"  🚨 sync: 持仓列表为空但账户总市值{_acct_mv:.0f}>0"
+                  f"（现金{_acct_cash:.0f}/总资产{_acct_total:.0f}），持仓读取可疑，保留原持仓并告警")
     else:
         for code, d in positions.items():
             shares_val = int(d.get('shares') or 0)
