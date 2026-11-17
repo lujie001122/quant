@@ -17,9 +17,14 @@
 规则（与需求逐条对应）
   入场   20 日动量在当日池内的分位 >= 1-entry_pct（默认前 20%）。这是**唯一**选股条件。
   空仓   510300 收盘 < 其 MA60 → 次日开盘清仓，期间不建仓（日频判定，已验证有效的机制）
-  轮动   每周最后一个交易日收盘决策，次日开盘成交；缓冲带 = 已持有只要动量分位 >= hold_pct
-         （默认 0.60）就留，掉出去才卖；最短持有 min_hold 个交易日（默认 5）
-  换手   每周最多替换 max_swap 只（默认 1），把单边换手压到 15%/周以下
+  决策日 固定锚点（2015-01-05 = 第 0 个交易日）之后**每 decide_every 个交易日**一天：
+         交易日序号 % decide_every == decision_phase 就是决策日（默认 every=3、phase=0）。
+         序号只由全局交易日历决定，与「上次运行是几天前」无关 → 回测和实盘必然同一组日子。
+         decide_every=0 → 退回旧口径（每个 ISO 周最后一个交易日），历史报告可原样复现。
+  轮动   决策日收盘出信号，**次一交易日开盘**成交（T+1，绝不当日收盘价成交）；
+         缓冲带 = 已持有只要动量分位 >= hold_pct/buffer_quantile 就留，掉出去才卖
+  非决策日 不调仓（止损/网格/护栏全关时）；唯一例外 = 空仓开关，日频判定、优先级最高
+  换手   每个决策日最多替换 max_swap 只（默认 1），把单边换手压到 15%/周以下
   网格   每只持仓按 ATR 网格只调权重 0.6~1.4 倍（锚=买入价，档距 grid_step×ATR，
          越跌越加、越涨越减），不改持仓集合；权重归一化到总仓位 1.0（不加杠杆）
   出场   **不做**日频破 MA20 清仓；改 ATR 跟踪止损（峰值 - k*ATR14，k=2.5，日频检查）
@@ -27,11 +32,11 @@
   主题   同一主题最多 theme_cap 只（主题表由名称关键词构造，落盘 theme_map.json 可审计）
 
 选股四步（顺序固定，前三步只剔除、第四步才选；改这个顺序 = 改策略）：
-  1) 同指数去重      index_cap=1：同一只标的指数只留 T-1 日均成交额最大的一只
+  1) 同指数去重      index_cap=1：同一只标的指数只留 T-1 日均成交额最大的一只（N=1 时无害保留）
   2) 相关性聚类上限  corr_cluster_cap=2：近 60 日收益两两 ρ ≥ corr_threshold(0.90) 单链接聚成一簇，
                      每簇最多 K 只，超出按动量分位砍尾部（同簇只留分位更高的）
-  3) 赛道主题上限    theme_cap=6：同名主题最多 6 只，按分位砍尾部
-  4) 取满 n_hold     按动量分位从强到弱补满 8 只（1~3 步只做剔除，不参与排序）
+  3) 赛道主题上限    theme_cap：同名主题最多几只，按分位砍尾部（0=不限；本档 0）
+  4) 取满 n_hold     按动量分位从强到弱补满 n_hold 只（本档 1；1~3 步只做剔除，不参与排序）
 
 撮合（回测=实盘口径）
   * 真实交易日历（meta/index_calendar.json），信号收盘算、次日开盘成交（T+1）
@@ -46,6 +51,8 @@ CLI
   .venv/bin/python3 chase_live.py --suite              # 两窗口 + 基准 + 消融 + 成本敏感
   .venv/bin/python3 chase_live.py --caps               # 主题上限 5/6/8/不限 × 3y/5y 对照
   .venv/bin/python3 chase_live.py --plan               # 下一交易日建仓清单（只算不下单）
+  .venv/bin/python3 chase_live.py --check-days        # 决策日序列校验（回测 vs 实盘同一组）
+  .venv/bin/python3 chase_live.py --phases            # 每 N 日决策的三个相位 × 3y/5y
   .venv/bin/python3 chase_live.py --themes             # 只看主题映射
 """
 import argparse
@@ -72,6 +79,7 @@ PXQ = os.path.join(DATA, "pxq")
 RAWP = os.path.join(DATA, "price")
 
 BENCH = "sh510300"          # 空仓开关基准
+DEC_ANCHOR = "2015-01-05"   # 每 N 个交易日决策的固定锚点 = 第 0 个交易日（2015 首个交易日）
 MIN_HIST = 60               # 至少 60 根 bar 才进池
 MIN_AMT = 5e6               # 20 日中位成交额下限（元）
 LOT = 100
@@ -603,6 +611,11 @@ class Params:
     guard_theme_lead: bool = False # True=只盯市值占比最大的那条赛道，且它 ≥ guard_theme_min 才算
     guard_theme_min: float = 0.50  # 最大赛道占市值达到该比例才启用"崩塌"判定（单吊口径）
     guard_scale: float = 0.5       # 赛道崩塌后的目标仓位倍数（0.5=半仓）
+    # ── 决策频率（固定锚点，回测=实盘同一组日子）──
+    decide_every: int = 0          # >1 = 固定锚点每 N 个交易日决策一次；0 = 旧周频（ISO 周最后一天）
+    decision_anchor: str = DEC_ANCHOR   # 序号 0 的交易日
+    decision_phase: int = 0        # 相位：序号 % N == phase 才是决策日（0..N-1）
+    spec_stop: bool = True         # ATR 跟踪止损总闸：False = 不设止损（3a 整段跳过）
     cost: float = 0.001            # 单边成本
     cash: float = 1_000_000.0
     warmup: int = 0
@@ -619,6 +632,8 @@ DEFAULTS = dict(
     max_order_pct=0.15, limit_buffer_pct=0.01, min_order_shares=5000,
     theme_mode="cap", guard_day=0.0, guard_day_act="weak1", guard_theme=0.0, guard_scale=0.5,
     guard_theme_lead=False, guard_theme_min=0.50,
+    decide_every=0, decision_anchor=DEC_ANCHOR, decision_phase=0, spec_stop=True,
+    market_filter="ma60",
 )
 
 _MODE_TO_PRM = dict(                      # config 键 → Params 字段
@@ -633,6 +648,8 @@ _MODE_TO_PRM = dict(                      # config 键 → Params 字段
     theme_mode="theme_mode", guard_day="guard_day", guard_day_act="guard_day_act",
     guard_theme="guard_theme", guard_scale="guard_scale",
     guard_theme_lead="guard_theme_lead", guard_theme_min="guard_theme_min",
+    decide_every="decide_every", decision_anchor="decision_anchor",
+    decision_phase="decision_phase", spec_stop="spec_stop",
 )
 
 
@@ -649,8 +666,13 @@ def load_cfg():
     for k, v in raw.items():
         if k in cfg:
             cfg[k] = v
+    # 别名（同一个东西只留一个内部字段，config 里用新名字）：
+    #   buffer_quantile → hold_pct（缓冲带分位）
+    if raw.get("buffer_quantile") is not None:
+        cfg["hold_pct"] = float(raw["buffer_quantile"])
     for k in ("n_hold", "min_hold", "max_swap", "cooldown", "index_ma", "theme_cap",
-              "min_order_shares", "index_cap", "idx_corr_window", "corr_cluster_cap"):
+              "min_order_shares", "index_cap", "idx_corr_window", "corr_cluster_cap",
+              "decide_every", "decision_phase"):
         cfg[k] = int(cfg[k])
     for k in ("entry_pct", "hold_pct", "swap_margin", "grid_step", "grid_lo", "grid_hi",
               "grid_dead", "stop_k", "cost", "max_order_pct", "limit_buffer_pct",
@@ -660,6 +682,18 @@ def load_cfg():
     cfg["grid"] = bool(cfg["grid"])
     cfg["regime"] = bool(cfg["regime"])
     cfg["guard_theme_lead"] = bool(cfg["guard_theme_lead"])
+    cfg["spec_stop"] = bool(cfg["spec_stop"])
+    # 空仓开关：market_filter=maNN → 开（基准收盘 < MA(NN) 就空仓）；off/false/0 → 关。
+    # 旧键 regime/index_ma 仍然生效，market_filter 只是把两者合成一个可读的开关。
+    mf = str(cfg.get("market_filter") or "ma60").strip().lower()
+    if mf in ("off", "false", "0", "none"):
+        cfg["regime"] = False
+    else:
+        _m = re.match(r"ma(\d+)$", mf)
+        if _m:
+            cfg["index_ma"] = int(_m.group(1))
+            cfg["regime"] = True
+    cfg["decision_phase"] = int(cfg["decision_phase"]) % max(int(cfg["decide_every"] or 1), 1)
     return cfg
 
 
@@ -680,8 +714,98 @@ def weekly_decisions(idx, start, end):
     return set(pd.Series(np.arange(len(idx)), index=idx).reindex(last_of_week[keep]).dropna().astype(int))
 
 
+# ════════════════════════════════════════════════════════════════════
+# 决策日：固定锚点的「每 N 个交易日」
+#
+# 为什么必须用锚点而不是「上次运行是几天前」：漂移逻辑下，回测（从窗口起点一次跑完）和
+# 实盘（每天只跑最后一根 bar）会数出不同的相位——同一段历史里回测第 3/6/9 天决策，
+# 实盘第 4/7/10 天决策，于是回测=实盘这条命门直接失效。这里把序号定义成
+#   ordinal(T) = T 在**全局交易日历**(meta/index_calendar.json) 里的下标 − 锚点下标
+# 锚点固定 2015-01-05 = 0，ordinal 只跟日期有关，与运行次数、运行时刻、面板起点全部无关。
+# 决策日 = (ordinal − decision_phase) % decide_every == 0。phase=0/1/2 就是三个相位：
+# 同一条策略换一个相位，3y 年化能差 30pp 以上（见 --phases），所以相位必须写进配置、写死。
+# ════════════════════════════════════════════════════════════════════
+def full_calendar():
+    """全局交易日历（含 2015 之前的历史，锚点定位用；与面板 idx 无关）。"""
+    return pd.DatetimeIndex(pd.to_datetime(json.load(open(os.path.join(META, "index_calendar.json")))))
+
+
+def day_ordinal(idx, anchor=DEC_ANCHOR):
+    """每个交易日相对锚点的序号（锚点当天 = 0；锚点前为负，取模用 floor-mod 保持非负）。"""
+    cal = full_calendar()
+    a = int(cal.searchsorted(pd.Timestamp(anchor)))
+    if a >= len(cal) or cal[a] != pd.Timestamp(anchor):
+        raise ValueError(f"决策锚点 {anchor} 不在交易日历里")
+    return cal.searchsorted(pd.DatetimeIndex(idx)) - a
+
+
+def is_decision_ord(o, every, phase=0):
+    """序号 → 是否决策日（floor-mod：负数也安全）。"""
+    return (int(o) - int(phase)) % int(every) == 0
+
+
+def decision_days(idx, start, end, every=0, anchor=DEC_ANCHOR, phase=0):
+    """决策日位置集合。every<=1 时退回旧周频口径（decide_every=0）。"""
+    if not every or int(every) <= 1:
+        return weekly_decisions(idx, start, end)
+    o = day_ordinal(idx, anchor)
+    ts = pd.DatetimeIndex(idx)
+    t0, t1 = pd.Timestamp(start), pd.Timestamp(end)
+    sel = np.where(np.mod(o - int(phase), int(every)) == 0)[0]
+    return {int(i) for i in sel if t0 <= ts[i] <= t1}
+
+
+def day_info(idx, i, every=0, anchor=DEC_ANCHOR, phase=0):
+    """某一天的决策日状态（实盘打印用：序号 / 取模 / 是否决策日 / 下一决策日日）。"""
+    o = int(day_ordinal(idx[[i]], anchor)[0]) if every and int(every) > 1 else None
+    out = dict(date=str(pd.Timestamp(idx[i]).date()), every=int(every or 0), phase=int(phase),
+               anchor=str(anchor), ord=o, mod=(None if o is None else int(o % int(every))),
+               is_decision=(True if not every or int(every) <= 1 else bool(is_decision_ord(o, every, phase))),
+               next_decision=None)
+    if every and int(every) > 1:
+        # 下一决策日按**全局日历**往后找（面板最后一天之后也算得出来）
+        cal = full_calendar()
+        a = int(cal.searchsorted(pd.Timestamp(anchor)))
+        for d in cal[cal > pd.Timestamp(idx[i])]:
+            if is_decision_ord(int(cal.searchsorted(d)) - a, every, phase):
+                out["next_decision"] = str(pd.Timestamp(d).date())
+                break
+        if not out["next_decision"]:
+            # 日历还没到那一天（最后一个交易日就是今天）：按工作日往后推，标注"推算"
+            o0 = int(day_ordinal(idx[[i]], anchor)[0])
+            for k in range(1, every + 6):
+                if is_decision_ord(o0 + k, every, phase):
+                    out["next_decision"] = str(
+                        np.busday_offset(np.datetime64(pd.Timestamp(idx[i]).date(), "D"), k,
+                                         roll="forward")) + "（推算，待K线确认）"
+                    break
+    return out
+
+
+def index_ma_series(P, D, prm):
+    """空仓开关基准的收盘价 + MA（回测 run() 与实盘 latest_targets 共用这一条公式）。
+
+    index_ma=60 直接取面板的 ma60（与原研究版逐位一致）；其它周期用同一滚动均值公式重算。
+    返回 (列号, 收盘价数组, MA 数组)；基准不在面板里时列号为 None、数组全 NaN。
+    """
+    idx = P["idx"]
+    hit = np.where(P["cols"] == BENCH)[0]
+    if not len(hit):
+        z = np.full(len(idx), np.nan, dtype=np.float32)
+        return None, z, z
+    bj = int(hit[0])
+    close = P["C"][:, bj]
+    if int(prm.index_ma) == 60:
+        ma = D["ma60"][:, bj]
+    else:
+        _w = int(prm.index_ma)
+        ma = pd.Series(close).rolling(_w, min_periods=max(10, int(_w * 2 / 3))) \
+            .mean().to_numpy(np.float32)
+    return bj, close, ma
+
+
 def run(P, D, mask, pct, prm: Params, return_state=False):
-    """日频撮合 + 周频选股的组合模拟。返回净值/换手/成本/成交明细。
+    """日频撮合 + 决策日选股（周频或每 N 日）的组合模拟。返回净值/换手/成本/成交明细。
 
     return_state=True: 只给实盘用 —— 在最后一个交易日收盘后再跑一次决策，把"次日开盘
     该卖/该买/网格目标权重"连同持仓状态一起返回（不加 return_state 时逐位等价于研究版）。
@@ -691,17 +815,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     names = P["names"]
     C, O, A_, RC = P["C"], P["O"], P["H"], P["RC"]
     atr, ma20 = D["atr"], D["ma20"]
-    n = len(idx)
-    cidx = {c: j for j, c in enumerate(cols)}
-    bj = cidx.get(BENCH)
-    close_b = C[:, bj] if bj is not None else np.full(n, np.nan)
-    if bj is not None and int(prm.index_ma) != 60:
-        # 非默认周期：同一公式（收盘价滚动均值）重算，60 走原 ma60 通道保证逐位不变
-        _w = int(prm.index_ma)
-        ma60_b = pd.Series(close_b).rolling(_w, min_periods=max(10, int(_w * 2 / 3))) \
-            .mean().to_numpy(np.float32)
-    else:
-        ma60_b = D["ma60"][:, bj] if bj is not None else np.full(n, np.nan)
+    bj, close_b, ma60_b = index_ma_series(P, D, prm)
     limit = np.array([0.20 if LIMIT20.search(str(names.get(c, ""))) else 0.10 for c in cols],
                      dtype=np.float32)
     theme = np.array([theme_of(names.get(c, "")) for c in cols], dtype=object)
@@ -709,7 +823,9 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
 
     i0 = int(np.searchsorted(idx, pd.Timestamp(prm.start)))
     i1 = int(np.searchsorted(idx, pd.Timestamp(prm.end), side="right")) - 1
-    wdec = weekly_decisions(idx, prm.start, prm.end)
+    # 决策日集合：decide_every>1 用固定锚点序号（回测/实盘同一组日子），否则旧周频
+    wdec = decision_days(idx, prm.start, prm.end, prm.decide_every,
+                         prm.decision_anchor, prm.decision_phase)
 
     cash = float(prm.cash)
     shares = {}
@@ -784,6 +900,12 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
         nonlocal corr_blocked, corr_sells, cid_cur
         nonlocal guard_scale_cur, guard_set, guard_trim
         # ── 3) 收盘决策 ─────────────────────────────────────────────
+        # 顺序（改这个顺序 = 改策略）：
+        #   0) 空仓开关：每天收盘先看 510300 vs MA(index_ma)。跌破 → 次日开盘清仓，
+        #      不管今天是不是决策日（日频、优先级最高，一票否决后面所有建仓/换仓）；
+        #      站上 → 只是"允许持仓"，**必须等下一个决策日**才建仓（不是当天就买）。
+        #   1) 止损（spec_stop=False 时不跑）
+        #   2) 决策日：动量分位 + 缓冲带 + 去重/上限 → 目标持仓集合
         want_sell, want_buy, want_grid = set(), {}, []
         stop_set = set()
         guard_set = set()
@@ -798,8 +920,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             return False
         cause = "rot"
 
-        # 3a) 日频出场：ATR 跟踪止损 / 破 MA20 清仓（消融对照）
-        for j in list(shares):
+        # 3a) 出场：ATR 跟踪止损 / 破 MA20 清仓（消融对照）。spec_stop=False → 整段跳过
+        for j in (list(shares) if prm.spec_stop else []):
             p = pcx(i, j)
             if not np.isfinite(p):
                 continue
@@ -1291,6 +1413,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 idx_wshare=pd.Series(idx_wshare, index=idx[i0:i0 + len(idx_wshare)]),
                 idx_cnt=pd.Series(idx_cnt, index=idx[i0:i0 + len(idx_cnt)]),
                 pos_log=pos_log, nan_close=nan_close,
+                decisions=sorted(int(i) for i in wdec),
                 state=(state if return_state else None))
 
 
@@ -1964,6 +2087,90 @@ def abc_report(cfg=None, thrs=(0.85, 0.90, 0.95), quiet=False):
 
 
 # ════════════════════════════════════════════════════════════════════
+# 决策日序列校验 + 相位扫描
+#
+# 这一节的存在理由：decide_every 是「每 3 个交易日」，最容易出的错是回测从窗口起点开始数、
+# 实盘从「今天」开始数，于是两边错开 1~2 天（看起来每天都有信号，实际不是同一批日子）。
+# 校验方法：run() 内部用的决策日集合 vs 只读全局交易日历独立重算的集合，逐一比对，
+# 并把 3y 窗口的前 10 / 后 10 个决策日连同 T+1 执行日打印出来（肉眼可核）。
+# ════════════════════════════════════════════════════════════════════
+def check_days(cfg=None, s0=None, s1=None):
+    """决策日序列校验：回测口径 == 实盘口径，且每个决策日的次日开盘就是执行日。"""
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    idx = P["idx"]
+    every = int(cfg["decide_every"])
+    ph = int(cfg["decision_phase"])
+    anchor = cfg["decision_anchor"]
+    s0, s1 = s0 or W3Y[0], s1 or W3Y[1]
+    prm = params_from_cfg(cfg, start=s0, end=s1)
+    print(f"[决策日] 锚点={anchor}（第 0 个交易日）  频率=每 {every} 个交易日  "
+          f"相位={ph}（决策日 = (序号-相位) % {every} == 0）  窗口 {s0} → {s1}")
+    back = [str(pd.Timestamp(idx[i]).date()) for i in run(P, D, mask, pct, prm)["decisions"]]
+    # 独立重算：只读 meta/index_calendar.json，不碰面板、不碰 run()
+    cal = full_calendar()
+    a = int(cal.searchsorted(pd.Timestamp(anchor)))
+    o = np.arange(len(cal)) - a
+    sel = cal[(np.mod(o - ph, every) == 0) & (cal >= pd.Timestamp(s0)) & (cal <= pd.Timestamp(s1))]
+    live = [str(d.date()) for d in sel]
+    ok = back == live
+    print(f"[决策日] 回测 run() 取 {len(back)} 个 ｜ 实盘按日历独立重算 {len(live)} 个 "
+          f"｜ 一致={'是' if ok else '否'}")
+    if not ok:
+        miss = sorted(set(live) - set(back))
+        extra = sorted(set(back) - set(live))
+        print(f"    ✗ 不一致：日历有而回测没有 {miss[:5]}；回测有而日历没有 {extra[:5]}")
+    # 序号/取模/T+1 执行日（前 10 + 后 10）
+    pos = {str(pd.Timestamp(d).date()): k for k, d in enumerate(idx)}
+    for lbl, part in (("前 10", back[:10]), ("后 10", back[-10:])):
+        print(f"  {lbl}个决策日：")
+        for dt in part:
+            k = pos[dt]
+            nxt = str(pd.Timestamp(idx[k + 1]).date()) if k + 1 < len(idx) else "-（窗口末日，不执行）"
+            oo = int(day_ordinal(idx[[k]], anchor)[0])
+            print(f"    {dt}  序号{oo:5d}  %{every}={oo % every}  →  T+1 开盘 {nxt}")
+    today = day_info(idx, len(idx) - 1, every, anchor, ph)
+    print(f"[决策日] 最新交易日 {today['date']}：序号={today['ord']} %{every}={today['mod']} → "
+          f"{'决策日' if today['is_decision'] else '非决策日'}")
+    return dict(ok=bool(ok), n=len(back), today=today)
+
+
+def phases_report(cfg=None, windows=(("3y", W3Y), ("5y", W5Y))):
+    """同一锚点的 N 个相位 × 两窗口：最好 / 中位 / 最差（相位 = 启动偏移，不是可调参数）。"""
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    every = int(cfg["decide_every"] or 3)
+    out = {}
+    for tag, (s0, s1) in windows:
+        print(f"\n=== {tag} {s0} → {s1}：每 {every} 个交易日决策，锚点 {cfg['decision_anchor']} ===")
+        rows = []
+        for ph in range(every):
+            prm = replace(params_from_cfg(cfg, start=s0, end=s1), decision_phase=ph)
+            res = run(P, D, mask, pct, prm)
+            st = stats(res, prm)
+            ex = risk_extra(res)
+            row = dict(window=tag, phase=ph, cagr=st["cagr"], cups=st["cups"], mdd=st["mdd"],
+                       sharpe=st["sharpe"], calmar=st["calmar"], turn=st["turn_wk"],
+                       cost=st["cost_yr"], avg_n=ex["avg_n"], n_trades=st["n_trades"],
+                       worst1=ex["worst1"], worst2=ex["worst2"], worst5=ex["worst5"],
+                       t=st["t"], year=by_year(res["eq"]))
+            rows.append(row)
+            mark = "  ←本档" if ph == int(cfg["decision_phase"]) else ""
+            print(f"  相位{ph}: 年化{row['cagr'] * 100:7.2f}% 累计{row['cups'] * 100:8.2f}% "
+                  f"回撤{row['mdd'] * 100:6.1f}% 夏普{row['sharpe']:5.2f} Calmar{row['calmar']:5.2f} "
+                  f"换手{row['turn'] * 100:5.1f}%/周 成本{row['cost'] * 100:4.2f}%/年 "
+                  f"持仓{row['avg_n']:4.2f}只 笔数{row['n_trades']:4d} "
+                  f"最坏1{row['worst1'] * 100:6.2f}% 最坏2{row['worst2'] * 100:6.2f}% "
+                  f"最坏5{row['worst5'] * 100:6.2f}% t={row['t']:5.2f}{mark}")
+            print(f"          分年 " + " ".join(f"{y}:{v * 100:+.1f}%" for y, v in row["year"].items()))
+        cg = np.array([r["cagr"] for r in rows])
+        print(f"  → {tag} 相位：最好{np.nanmax(cg) * 100:.2f}% 中位{float(np.nanmedian(cg)) * 100:.2f}% "
+              f"最差{np.nanmin(cg) * 100:.2f}%（相差{np.nanmax(cg) * 100 - np.nanmin(cg) * 100:.1f}pp）")
+        out[tag] = rows
+    return out
+
+
+# ════════════════════════════════════════════════════════════════════
 # 实盘：目标权重 → 下单清单（与 flow_strategy.build_plan 同一套口径）
 # ════════════════════════════════════════════════════════════════════
 def _lot(shares, lot=LOT):
@@ -2079,6 +2286,12 @@ def latest_targets(cfg=None, prm=None, quiet=False):
         tg[sid] = dict(code=_code6(sid), sid=sid, name=nm, weight=float(w),
                        theme=theme_of(nm), index=index_of(nm),
                        pct=float(st["pct"].get(j, np.nan)), guard_trim=bool(j in _trim))
+    dec = day_info(P["idx"], i, prm.decide_every, prm.decision_anchor, prm.decision_phase)
+    _bj, _cb, _mb = index_ma_series(P, D, prm)
+    _c = float(_cb[i]) if _bj is not None else float("nan")
+    _m = float(_mb[i]) if _bj is not None else float("nan")
+    sw = dict(code=_code6(BENCH), ma_n=int(prm.index_ma), on=bool(st["on"]), close=_c, ma=_m,
+              diff=(float(_c / _m - 1.0) if (np.isfinite(_c) and np.isfinite(_m) and _m) else float("nan")))
     if not quiet:
         print(f"[chase] 目标日={end} 空仓开关={'空仓(指数<MA%s)' % prm.index_ma if not st['on'] else '持仓'}"
               f" 目标 {len(tg)} 只 可交易池 {int(mask[i].sum())} 只"
@@ -2086,6 +2299,7 @@ def latest_targets(cfg=None, prm=None, quiet=False):
     return dict(as_of=end, price_date=end, on=bool(st["on"]), cause=st["cause"],
                 eq=float(st["eq"]), cash=float(st["cash"]), n_targets=len(tg),
                 n_pool=int(mask[i].sum()), targets=tg, guard=dict(_gs),
+                dec=dec, switch=sw,
                 held={_code6(cols[j]): int(q) for j, q in st["shares"].items()},
                 next_sell=[_code6(cols[j]) for j in st["want_sell"]],
                 cfg={k: cfg[k] for k in ("n_hold", "entry_pct", "hold_pct", "theme_cap",
@@ -2097,7 +2311,10 @@ def latest_targets(cfg=None, prm=None, quiet=False):
                          corr_cluster_cap=int(prm.corr_cluster_cap),
                          stop_k=float(prm.stop_k), grid_step=float(prm.grid_step),
                          hold_pct=float(prm.hold_pct), entry_pct=float(prm.entry_pct),
-                         index_ma=int(prm.index_ma)))
+                         index_ma=int(prm.index_ma), decide_every=int(prm.decide_every),
+                         decision_phase=int(prm.decision_phase),
+                         spec_stop=bool(prm.spec_stop), grid=bool(prm.grid),
+                         decision_anchor=str(prm.decision_anchor)))
 
 
 def preview_targets(cfg=None, quiet=False):
@@ -2252,6 +2469,7 @@ def build_plan(cfg=None, totals=None, holdings=None, tg=None, quiet=False):
                 cash=round(cash, 2), account_source=ta_info.get("source"),
                 holdings_source=hold_src, on=bool(tg["on"]), cause=tg["cause"],
                 n_targets=tg["n_targets"], n_pool=tg["n_pool"], guard=tg.get("guard") or {},
+                dec=tg.get("dec") or {}, switch=tg.get("switch") or {},
                 buy_total=round(buy_total, 2), want_total=round(want_total, 2),
                 sell_total=round(sell_total, 2), budget=round(budget, 2),
                 cash_after=round(cash + sell_total - buy_total, 2),
@@ -2269,9 +2487,34 @@ def _sid(code6):
     return ("sh" if str(code6)[0] in ("5", "6") else "sz") + str(code6)
 
 
+def fmt_dec(d):
+    """决策日状态一行。"""
+    if not d:
+        return "  [决策日] -"
+    if not d.get("every"):
+        return f"  [决策日] {d['date']} 周频口径（decide_every=0）"
+    mark = "决策日" if d.get("is_decision") else "非决策日"
+    nxt = d.get("next_decision") or "-"
+    return (f"  [决策日] {d['date']} 交易日序号={d.get('ord')} % {d['every']} = {d.get('mod')}"
+            f"（相位{d['phase']}，锚点 {d['anchor']}）→ {mark}；下一决策日 {nxt}")
+
+
+def fmt_switch(sw):
+    """空仓开关状态一行：510300 收盘 vs MA，差多少。"""
+    if not sw:
+        return "  [空仓开关] -"
+    diff = sw.get("diff")
+    ds = f"{diff * 100:+.2f}%" if diff == diff else "-"
+    rel = "<" if (diff == diff and diff < 0) else ">="
+    return (f"  [空仓开关] 510300 收盘 {sw['close']:.4f} {rel} MA{sw['ma_n']} {sw['ma']:.4f}"
+            f"（{ds}）→ {'持仓' if sw['on'] else '空仓（次日开盘清仓，不建仓）'}")
+
+
 def print_plan(plan):
     print(f"[建仓清单] 信号日={plan['as_of']}  价格日={plan['price_date']}  "
           f"总资产=¥{plan['total_asset']:,.2f} 可用现金=¥{plan['cash']:,.2f} ({plan['account_source']})")
+    print(fmt_dec(plan.get("dec")))
+    print(fmt_switch(plan.get("switch")))
     print(f"  目标 {plan['n_targets']} 只（N={plan['cfg']['n_hold']} 主题上限{plan['cfg']['theme_cap']} "
           f"相关簇上限{plan['cfg'].get('corr_cluster_cap', 0)}@ρ≥{plan['cfg'].get('corr_threshold', 0):.2f}）"
           f"；可交易池 {plan['n_pool']} 只；空仓开关={'空仓' if not plan['on'] else '持仓'}")
@@ -2296,6 +2539,14 @@ def print_plan(plan):
           f"卖出 ¥{plan['sell_total']:,.2f}  执行后现金 ¥{plan['cash_after']:,.2f}  "
           f"持仓 ¥{plan['pos_value_after']:,.2f}（仓位 {plan['pos_ratio_after']:.1%}）"
           + (f"  ⚠️ 资金不足，已按动量分位从强到弱满足" if plan["cash_scaled"] else ""))
+    _nt = sum(1 for r in plan["rows"] if r["in_target"])
+    _nc = sum(1 for r in plan["rows"] if r["cur_shares"] > 0)
+    _nb = sum(1 for r in plan["rows"] if r["buy_shares"] > 0)
+    _ns = sum(1 for r in plan["rows"] if r["sell_shares"] > 0)
+    _gap = sum(abs(r["delta_shares"]) for r in plan["rows"])
+    act = ("一致（无需动作）" if (_nb == 0 and _ns == 0) else
+           f"不一致：需买 {_nb} 笔 / 需卖 {_ns} 笔，股数差合计 {_gap:,}")
+    print(f"  持仓一致性: 目标 {_nt} 只 / 实际 {_nc} 只 → {act}")
 
 
 def main():
@@ -2320,6 +2571,10 @@ def main():
     ap.add_argument("--corr-map", action="store_true",
                     help="相关性聚类审计（簇结构 + 新目标清单两两 ρ 最大值）")
     ap.add_argument("--abc", action="store_true", help="A/B/C 三档 × 3y/5y + 阈值敏感性")
+    ap.add_argument("--check-days", action="store_true",
+                    help="决策日序列校验（回测 run() vs 全局日历独立重算，前10/后10 + T+1）")
+    ap.add_argument("--phases", action="store_true",
+                    help="每 N 日决策的 N 个相位 × 3y/5y（最好/中位/最差）")
     ap.add_argument("--pod", action="store_true",
                     help="单吊赛道四个版本(V1参照/V2单吊/V3强制单吊/V4集中4只) × 3y/5y 全指标")
     ap.add_argument("--guard", action="store_true",
@@ -2371,6 +2626,17 @@ def main():
         p = os.path.join(DUMPS, f"pod_{datetime.now():%Y%m%d_%H%M}.json")
         json.dump(out, open(p, "w"), ensure_ascii=False, indent=1, default=float)
         print("\n写完", p)
+        return 0
+
+    if a.check_days:
+        check_days(cfg, s0=a.start, s1=a.end)
+        return 0
+
+    if a.phases:
+        out = phases_report(cfg)
+        json.dump(out, open(os.path.join(DUMPS, "phases.json"), "w"),
+                  ensure_ascii=False, indent=1, default=float)
+        print("\n写完", os.path.join(DUMPS, "phases.json"))
         return 0
 
     if a.themes:
