@@ -1340,21 +1340,21 @@ def _strategy_mode():
 
 
 def _parse_strategy_mode():
-    """策略模式: flow(宽组合流量倾斜) | pyramid(旧集中金字塔)。
+    """策略模式: chase(追涨杀跌) | flow(宽组合流量倾斜) | pyramid(旧集中金字塔)。
 
-    优先级: --mode=flow / --mode flow  >  config.yaml strategy.mode  >  默认 flow。
-    一键切回旧策略: python3 signal_generator.py --mode=pyramid
+    优先级: --mode=chase / --mode chase  >  config.yaml strategy.mode  >  默认 flow。
+    一键切: python3 signal_generator.py --mode=flow / --mode=pyramid
     """
     argv = sys.argv[1:]
     for i, arg in enumerate(argv):
         if arg.startswith("--mode="):
             val = arg.split("=", 1)[1].strip().lower()
-            if val in ("flow", "pyramid"):
+            if val in ("chase", "flow", "pyramid"):
                 return val
             print(f"[WARN] 无效的 --mode 值: {val}, 按 config.yaml 走")
         elif arg == "--mode" and i + 1 < len(argv):
             val = argv[i + 1].strip().lower()
-            if val in ("flow", "pyramid"):
+            if val in ("chase", "flow", "pyramid"):
                 return val
     return _strategy_mode()
 
@@ -1495,6 +1495,151 @@ def build_flow_signals():
     }
 
 
+def build_chase_signals():
+    """mode=chase 的信号：动量分位 + 空仓开关 + 主题上限 + ATR 网格 + ATR 跟踪止损。
+
+    策略、数据、撮合全部在 chase_live.py（回测 --backtest 与实盘走同一个 run()），
+    这里只做两件事：把目标权重换算成"今天下多少股"，再套成和 flow/pyramid 一样的信号格式
+    （price / target_amount / target_shares / action / trade_type / reason），
+    另加 flow_shares = 今日实际下单股数（执行层认这个字段；cap_pct 覆盖单只下单上限）。
+
+    空仓开关优先：510300 收盘 < MA{index_ma} → 目标全空，所有持仓标清仓（次日开盘卖）。
+    """
+    import chase_live as _cl
+    cfg = _cl.load_cfg()
+    tg = _cl.latest_targets(cfg=cfg, quiet=True)
+    plan = _cl.build_plan(cfg=cfg, tg=tg, quiet=True)
+
+    signals = {}
+
+    # ① 空仓开关：目标全空 → 每只持仓都清仓
+    if not plan["on"]:
+        for r in plan["rows"]:
+            if r["cur_shares"] <= 0:
+                continue
+            signals[r["code"]] = dict(
+                price=f"{r['price']:.3f}", action="清仓(空仓开关)", trade_type="liquidate",
+                flow_shares=int(r["cur_shares"]), target_shares=0, target_amount=0.0,
+                position_ratio="0%", position_ratio_raw="0%",
+                timing_level=0.0, timing_multiplier=0.0, timing_score=None,
+                prem=None, flow_rank=0, cap_pct=float(cfg["max_order_pct"]),
+                reason=(f"510300 收盘 < MA{cfg['index_ma']} → 目标仓位全空，次日开盘清仓"),
+                t0_pair=None)
+    else:
+        # ② 卖出（先卖后买：A 股卖出回款当日可用于买入）
+        for r in plan["rows"]:
+            if r["sell_shares"] <= 0:
+                continue
+            full_exit = r["cur_shares"] > 0 and r["sell_shares"] >= r["cur_shares"]
+            if full_exit:
+                act, tt = "清仓(换出)", "liquidate"
+                why = (f"动量分位跌出持有带(<{cfg['hold_pct']:.0%})"
+                       f"或主题上限{cfg['theme_cap']}只/空仓开关 → 换出")
+            else:
+                act, tt = "减仓(网格)", "sell"
+                why = (f"网格超配 → 减到目标 {r['target_shares']:,} 股"
+                       f"（权重 {r['weight']:.1%}）")
+            signals[r["code"]] = dict(
+                price=f"{r['price']:.3f}", action=act, trade_type=tt,
+                flow_shares=int(r["sell_shares"]), target_shares=int(r["target_shares"]),
+                target_amount=r["target_amount"],
+                position_ratio=f"{r['weight'] * 100:.0f}%",
+                position_ratio_raw=f"{r['weight'] * 100:.0f}%",
+                timing_level=1.0, timing_multiplier=1.0, timing_score=None,
+                prem=None, flow_rank=0, what=why,
+                reason=f"{why} | 信号日{plan['as_of']}", t0_pair=None)
+
+        # ③ 买入（含网格加仓）
+        for r in plan["rows"]:
+            if r["buy_shares"] <= 0:
+                continue
+            grid = r["cur_shares"] > 0
+            signals[r["code"]] = dict(
+                price=f"{r['price']:.3f}",
+                action=("加仓(网格)" if grid else "买入(建仓)"), trade_type="buy",
+                flow_shares=int(r["buy_shares"]), target_shares=int(r["target_shares"]),
+                target_amount=r["target_amount"],
+                position_ratio=f"{max(r['weight'], cfg['max_order_pct']) * 100:.0f}%",
+                position_ratio_raw=f"{r['weight'] * 100:.0f}%",
+                timing_level=1.0, timing_multiplier=1.0, timing_score=None,
+                prem=None, flow_rank=0, cap_pct=float(cfg["max_order_pct"]),
+                reason=(f"{'网格低配加仓' if grid else '动量分位前' + str(int(cfg['entry_pct'] * 100)) + '%'}"
+                        f" 主题{r['theme']} 分位{(r['pct'] if r['pct'] == r['pct'] else 0):.0%} "
+                        f"目标权重{r['weight']:.1%} 信号日{plan['as_of']}"),
+                t0_pair=None)
+
+        # ④ 持有
+        for r in plan["rows"]:
+            if r["code"] in signals or not r["in_target"]:
+                continue
+            signals[r["code"]] = dict(
+                price=f"{r['price']:.3f}", action="持有", trade_type=None,
+                flow_shares=0, target_shares=int(r["target_shares"]),
+                target_amount=r["target_amount"],
+                position_ratio=f"{r['weight'] * 100:.0f}%",
+                position_ratio_raw=f"{r['weight'] * 100:.0f}%",
+                timing_level=1.0, timing_multiplier=1.0, timing_score=None,
+                prem=None, flow_rank=0,
+                reason=(f"目标持仓 主题{r['theme']} 权重{r['weight']:.1%} 已在位"
+                        + (f" | {r['note']}" if r["note"] else "")),
+                t0_pair=None)
+
+    buys = [r for r in plan["rows"] if r["buy_shares"] > 0]
+    sells = [r for r in plan["rows"] if r["sell_shares"] > 0]
+
+    print(f"[目标仓位] 总资产¥{plan['total_asset']:,.0f} | 追涨杀跌 N={cfg['n_hold']} "
+          f"主题上限{cfg['theme_cap']} | 空仓开关={'空仓' if not plan['on'] else '持仓'}"
+          f" | 信号日={plan['as_of']} | 价格日={plan['price_date']}")
+    print(f"  {'代码':<8}{'名称':<14}{'现价':>8}{'当前股数':>10}{'目标金额':>12}{'目标股数':>10}"
+          f"{'差额':>9}  动作")
+    for r in plan["rows"]:
+        act = ("清仓" if (not plan["on"] and r["cur_shares"] > 0) else
+               "买入" if r["buy_shares"] > 0 else
+               "卖出" if r["sell_shares"] > 0 else
+               ("持有" if r["in_target"] else "空"))
+        print(f"  {r['code']:<8}{(r['name'] or '')[:13]:<14}{r['price']:>8.3f}{r['cur_shares']:>10,}"
+              f"{'¥' + format(r['target_amount'], ',.0f'):>12}{r['target_shares']:>10,}"
+              f"{r['delta_shares']:>9,}  {act}")
+
+    human = (f"追涨杀跌(信号日{plan['as_of']})："
+             + ("空仓开关触发，全部清仓" if not plan["on"] else
+                f"买{len(buys)}只 ¥{plan['buy_total']:,.0f}，卖{len(sells)}只 ¥{plan['sell_total']:,.0f}，"
+                f"执行后现金 ¥{plan['cash_after']:,.0f}（仓位 {plan['pos_ratio_after']:.0%}）"))
+
+    return {
+        "version": "v3.1-chase",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "strategy_mode": "chase",
+        "signals": signals,
+        "timing": {"index_code": cfg["index_code"], "enabled": bool(cfg["regime"]),
+                   "score": None, "level": 1.0 if plan["on"] else 0.0,
+                   "detail": f"510300 vs MA{cfg['index_ma']}（空仓开关）",
+                   "data_source": "chase_live", "degraded": False,
+                   "prev_level": None, "trimmed": False},
+        "market_environment": f"追涨杀跌(动量分位+空仓开关) 空仓开关={'空仓' if not plan['on'] else '持仓'}",
+        "human_readable": human,
+        "chase": {
+            "as_of": plan["as_of"], "price_date": plan["price_date"],
+            "total_asset": plan["total_asset"], "cash": plan["cash"],
+            "budget": plan["budget"], "buy_total": plan["buy_total"],
+            "want_total": plan["want_total"], "sell_total": plan["sell_total"],
+            "cash_after": plan["cash_after"], "pos_ratio_after": plan["pos_ratio_after"],
+            "n_targets": plan["n_targets"], "n_pool": plan["n_pool"], "on": plan["on"],
+            "cfg": plan["cfg"], "prm": plan["prm"],
+            "holdings_source": plan["holdings_source"],
+            "account_source": plan["account_source"],
+        },
+        "strategy_policy": {
+            "select": f"20日动量截面分位 >= {1 - cfg['entry_pct']:.0%}（前 {cfg['entry_pct']:.0%}）",
+            "buffer": f"缓冲带：已持有分位 >= {cfg['hold_pct']:.0%} 就留",
+            "regime": f"510300 收盘 < MA{cfg['index_ma']} → 次日开盘清仓、不建仓",
+            "theme": f"同主题最多 {cfg['theme_cap']} 只",
+            "stop": f"ATR 跟踪止损 峰值-{cfg['stop_k']}×ATR14（{cfg['stop_freq']}）",
+            "grid": f"网格档距 {cfg['grid_step']}×ATR14，权重 {cfg['grid_lo']}~{cfg['grid_hi']} 倍",
+        },
+    }
+
+
 def main():
     # ── 未登录/桥读不到 → 直接失败退出：别在没登录时静默产出空信号 ──
     from ths import check_tradable
@@ -1512,7 +1657,9 @@ def main():
     try:
         try:
             mode = _parse_strategy_mode()
-            if mode == "flow":
+            if mode == "chase":
+                result = build_chase_signals()
+            elif mode == "flow":
                 result = build_flow_signals()
             else:
                 result = generate_signals()

@@ -17,3 +17,7 @@ orders/
 .signal_generator.lock
 .t0_close.lock
 logs/t0_baseline_*.json
+
+# chase 数据缓存（264M 面板 pickle + 回测导出，本地不提交）
+data/chase/cache/
+data/chase/dumps/

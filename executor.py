@@ -1822,7 +1822,8 @@ class SignalExecutor:
                     price = self._flow_limit_price(code, price, True, live)
                     # ── flow 模式：股数由 flow_strategy 按目标权重算好（已按资金约束分批）──
                     shares = int(_flow_sh)
-                    _cap_pct = self._flow_cap_pct()
+                    # chase 信号自带 cap_pct（8 只等权要一次建满，flow 的 5% 会拆成 3 天）
+                    _cap_pct = float(sig.get("cap_pct") or self._flow_cap_pct())
                     _ta_now = self._get_total_asset()
                     if price > 0 and _cap_pct > 0:
                         _max_sh = int(_ta_now * _cap_pct / price / 100) * 100
