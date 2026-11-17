@@ -146,14 +146,16 @@ def make_executor(shares_held=0, price=1.0):
 CODE = "512800"
 
 
-def buy_signal(ratio="30%", price="1.000"):
-    return {"signals": {CODE: {"trade_type": "buy", "action": "买入",
+def buy_signal(ratio="30%", price="1.000", strategy_mode="flow"):
+    return {"strategy_mode": strategy_mode,
+            "signals": {CODE: {"trade_type": "buy", "action": "买入",
                                "position_ratio": ratio, "price": price,
                                "reason": "测试建仓"}}}
 
 
-def sell_signal(ratio="50%", price="1.000"):
-    return {"signals": {CODE: {"trade_type": "sell", "action": "卖出",
+def sell_signal(ratio="50%", price="1.000", strategy_mode="flow"):
+    return {"strategy_mode": strategy_mode,
+            "signals": {CODE: {"trade_type": "sell", "action": "卖出",
                                "position_ratio": ratio, "price": price,
                                "reason": "测试卖出"}}}
 
@@ -296,6 +298,46 @@ def test_position_cap_gate():
           len(calls) == 1 and "10000" in calls[0], calls)
 
 
+def test_position_cap_by_mode():
+    """单票上限按 strategy.mode 取值：N=1 的 100% 目标 chase 放行，flow/pyramid 仍压到 50%。"""
+    print("\n" + "=" * 74)
+    print("【闸门c-按 mode】空仓 总资产 200000，一次买满 200000 股@1.0 = 100% 目标仓位")
+    print("=" * 74)
+    reset()
+    caps = {m: risk_manager.single_position_cap(m) for m in ("chase", "flow", "pyramid")}
+    print(f"  │ 单票上限: chase={caps['chase']:.2f} flow={caps['flow']:.2f} "
+          f"pyramid={caps['pyramid']:.2f}")
+    check("chase 上限 = 100%（读 chase.max_single_pct）", abs(caps["chase"] - 1.0) < 1e-9, caps)
+    check("flow 上限 = 50%（读 risk.single_position_cap）", abs(caps["flow"] - 0.50) < 1e-9, caps)
+    check("pyramid 上限 = 50%（读 risk.single_position_cap）",
+          abs(caps["pyramid"] - 0.50) < 1e-9, caps)
+
+    for m in ("chase", "flow", "pyramid"):
+        reset()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            gate = risk_manager.pre_trade_gate(
+                CODE, 1.0, 200000, trade_type="buy", total_asset=200000.0,
+                quotes={CODE: {"price": 1.0}}, mode=m)
+        print(f"  │ mode={m}: ok={gate['ok']} shares={gate['shares']} :: {gate['reason']}")
+        if m == "chase":
+            check("mode=chase 放行 100%（股数不压缩）",
+                  gate["ok"] and gate["shares"] == 200000, gate)
+        else:
+            check(f"mode={m} 仍被 50% 限制（压到 100000 股）",
+                  gate["ok"] and gate["shares"] == 100000, gate)
+
+    print("\n" + "-" * 74)
+    print("【闸门c-接线】执行层把信号里的 strategy_mode 传给闸门（空仓买入 30%）")
+    print("-" * 74)
+    for m, want in (("chase", "上限 100%"), ("flow", "上限 50%"), ("pyramid", "上限 50%")):
+        reset()
+        ex = make_executor(shares_held=0)
+        out, _ = run_exec(ex, buy_signal(ratio="30%", strategy_mode=m))
+        show(out, "[RISK]")
+        check(f"executor strategy_mode={m} → 闸门按 {want} 判", want in out, out)
+
+
 # ═════════════════════════════════════════════════════════════
 # 4. 闸门未触发 → PASS 放行
 # ═════════════════════════════════════════════════════════════
@@ -419,6 +461,7 @@ def main():
     test_daily_loss_gate()
     test_circuit_breaker_gate()
     test_position_cap_gate()
+    test_position_cap_by_mode()
     test_pass_through()
     test_sell_exempt()
     test_atomic_concurrent_writes()

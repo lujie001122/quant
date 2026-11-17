@@ -66,6 +66,24 @@ _RISK_DEFAULTS = {
 }
 
 
+def single_position_cap(mode=None):
+    """单票仓位上限按策略模式取值（全系统唯一取值点）。
+
+      chase   : 单吊 N=1，单只目标就是 100% → 读 chase.max_single_pct（config 1.0）
+      flow    : 20 只等权 5%/只 → 读 risk.single_position_cap（0.50）
+      pyramid : 自带权重体系 → 读 risk.single_position_cap（0.50）
+    mode=None 时取 config.yaml strategy.mode。
+    """
+    r = (_cfg.get('risk', {}) or {})
+    risk_cap = float(r.get('single_position_cap', _RISK_DEFAULTS['single_position_cap']))
+    m = mode if mode is not None else ((_cfg.get('strategy', {}) or {}).get('mode') or '')
+    if str(m).strip().lower() == 'chase':
+        c = (_cfg.get('chase', {}) or {}).get('max_single_pct')
+        if c is not None:
+            return float(c)
+    return risk_cap
+
+
 def risk_config():
     """读取 config.yaml risk 段阈值（运行期读取，便于测试与调参）"""
     r = (_cfg.get('risk', {}) or {})
@@ -73,7 +91,7 @@ def risk_config():
         'daily_loss_limit': float(r.get('daily_loss_limit', _RISK_DEFAULTS['daily_loss_limit'])),
         'consecutive_loss_count': int(r.get('consecutive_loss_count', _RISK_DEFAULTS['consecutive_loss_count'])),
         'cooldown_days': int(r.get('cooldown_days', _RISK_DEFAULTS['cooldown_days'])),
-        'single_position_cap': float(r.get('single_position_cap', _RISK_DEFAULTS['single_position_cap'])),
+        'single_position_cap': single_position_cap(),
     }
 
 
@@ -274,14 +292,14 @@ def reset_circuit_breaker(today_str=None):
 
 
 def check_single_position_cap(code, price, shares, total_asset=None, quotes=None,
-                              allow_compress=True):
+                              allow_compress=True, mode=None):
     """闸门3 单票仓位上限：目标市值（当前+本次买入）/ 总资产 > 上限。
 
+    上限按策略模式取值（chase=chase.max_single_pct / 其余=risk.single_position_cap）。
     超限时优先压缩到上限（压到不足 100 股则拒绝），返回 dict：
       {ok, shares, cur_ratio, target_ratio, cap, compressed, reason}
     """
-    cfg = risk_config()
-    cap = cfg['single_position_cap']
+    cap = single_position_cap(mode)
     ta = float(total_asset or 0) or _portfolio_total_asset()
     pos = _portfolio_positions().get(code, {}) or {}
     try:
@@ -296,7 +314,7 @@ def check_single_position_cap(code, price, shares, total_asset=None, quotes=None
 
     from core.position_manager import PositionManager
     pm = PositionManager(total_fund=ta)
-    pm.max_position_ratio = cap   # 阈值以 config.yaml risk.single_position_cap 为准
+    pm.max_position_ratio = cap   # 阈值按模式取值：chase→chase.max_single_pct，其余→risk.single_position_cap
     cur_mv = cur_shares * px
     cur_ratio = pm.position_value_ratio(code, {code: {'market_value': cur_mv}})
     room = pm.available_position_ratio(code, {code: {'market_value': cur_mv}})
@@ -341,11 +359,12 @@ def _risk_block(line, today_str=None):
 
 
 def pre_trade_gate(code, price, shares, trade_type='buy', total_asset=None,
-                   quotes=None, today_str=None):
+                   quotes=None, today_str=None, mode=None):
     """实盘下单前统一风控闸门（executor 唯一调用点）。
 
     只拦买入/加仓（trade_type=buy 或做T买入腿）；卖出/减仓/止损/做T平仓由调用方免检。
     按 a 日亏限额 → b 连亏熔断 → c 单票上限 顺序校验，每道打印结论（含数值）。
+    mode: 当前策略模式（chase/flow/pyramid），决定 c 的单票上限；None 时取 config strategy.mode。
 
     返回 {'ok': bool, 'shares': int, 'reason': str}（压缩时 shares 为压缩后股数）
     """
@@ -365,9 +384,9 @@ def pre_trade_gate(code, price, shares, trade_type='buy', total_asset=None,
         return _risk_block(f"{c_reason}，拒绝开仓 {code}", today_str)
     print(f"[RISK] PASS 连亏熔断 {code}：{c_reason}")
 
-    # c. 单票仓位上限
+    # c. 单票仓位上限（上限按 mode 取值）
     cap = check_single_position_cap(code, price, shares, total_asset=total_asset,
-                                    quotes=quotes, allow_compress=allow_compress)
+                                    quotes=quotes, allow_compress=allow_compress, mode=mode)
     if not cap['ok']:
         return _risk_block(f"拒绝开仓 {code}：{cap['reason']}", today_str)
     if cap['compressed']:
@@ -705,7 +724,7 @@ class RiskManager:
 
     @staticmethod
     def is_position_capped(pos, price, total_fund=None):
-        """检查是否已达单票仓位上限（config.yaml risk.single_position_cap，默认50%）
+        """检查是否已达单票仓位上限（按 strategy.mode 取值：chase 100%，其余 50%）
 
         参数:
           pos: PositionInfo 实例
@@ -719,7 +738,7 @@ class RiskManager:
         if not pos.has_position or total_fund <= 0:
             return False, 0.0
         ratio = pos.shares * price / total_fund
-        return ratio >= risk_config()['single_position_cap'], ratio
+        return ratio >= single_position_cap(), ratio
 
     @staticmethod
     def get_position_ratio(pos, price, total_fund=None):
@@ -744,16 +763,17 @@ class RiskManager:
         return check_daily_loss_limit(today_str, quotes=quotes, total_asset=total_asset)
 
     def check_single_position_cap(self, code, price, shares, total_asset=None, quotes=None,
-                                  allow_compress=True):
-        """闸门3 单票仓位上限（config risk.single_position_cap）"""
+                                  allow_compress=True, mode=None):
+        """闸门3 单票仓位上限（chase → chase.max_single_pct，其余 → risk.single_position_cap）"""
         return check_single_position_cap(code, price, shares, total_asset=total_asset,
-                                         quotes=quotes, allow_compress=allow_compress)
+                                         quotes=quotes, allow_compress=allow_compress, mode=mode)
 
     def pre_trade_gate(self, code, price, shares, trade_type='buy', total_asset=None,
-                       quotes=None, today_str=None):
+                       quotes=None, today_str=None, mode=None):
         """三道闸门统一入口（买入/加仓前调用）"""
         return pre_trade_gate(code, price, shares, trade_type=trade_type,
-                              total_asset=total_asset, quotes=quotes, today_str=today_str)
+                              total_asset=total_asset, quotes=quotes, today_str=today_str,
+                              mode=mode)
 
     def check_order(self, order_intent) -> Tuple[bool, str]:
         """统一风控入口：卖出类免检，买入类走 a日亏 → b连亏 → c单票上限

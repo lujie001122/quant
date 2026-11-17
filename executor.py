@@ -1588,6 +1588,10 @@ class SignalExecutor:
         if mode:
             print(f"[EXECUTE] 模式过滤: {mode}")
 
+        # 单票仓位上限按策略模式取值（chase 单吊 N=1 要能打满 100%，flow/pyramid 仍 50%）。
+        # 信号结果自带的 strategy_mode 优先；缺省（如做T/旧调用）时由 risk_manager 回落 config。
+        self._strategy_mode = str(result.get("strategy_mode") or "").strip().lower() or None
+
         script_dir = os.path.dirname(os.path.abspath(__file__))
         trade_script = os.path.join(script_dir, "trade.py")
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -1941,7 +1945,8 @@ class SignalExecutor:
                     _gate = _risk.pre_trade_gate(
                         code, price, shares, trade_type=trade_type,
                         total_asset=self._get_total_asset(), quotes=live_quotes,
-                        today_str=today_str)
+                        today_str=today_str,
+                        mode=getattr(self, "_strategy_mode", None))
                 except Exception as _gate_ex:
                     print(f"[RISK] ⚠️ 闸门检查异常({_gate_ex})，本次放行")
                     _gate = {'ok': True, 'shares': shares, 'reason': '闸门异常放行'}

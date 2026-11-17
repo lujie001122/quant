@@ -1209,6 +1209,7 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
     result = {
         "version": "v3.1",
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "strategy_mode": "pyramid",   # 执行层据此取单票上限（pyramid 保持 risk.single_position_cap 0.50）
         "signals": signals_output,
         "timing": {
             "index_code": _timing_cfg.get("index_code"),
