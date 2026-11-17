@@ -1634,6 +1634,8 @@ def build_chase_signals():
             "buffer": f"缓冲带：已持有分位 >= {cfg['hold_pct']:.0%} 就留",
             "regime": f"510300 收盘 < MA{cfg['index_ma']} → 次日开盘清仓、不建仓",
             "theme": f"同主题最多 {cfg['theme_cap']} 只",
+            "index": (f"同一标的指数最多 {cfg['index_cap']} 只（组内留 T-1 日均成交额最大的那只）"
+                      if cfg.get("index_cap") else "同指数去重已关闭"),
             "stop": f"ATR 跟踪止损 峰值-{cfg['stop_k']}×ATR14（{cfg['stop_freq']}）",
             "grid": f"网格档距 {cfg['grid_step']}×ATR14，权重 {cfg['grid_lo']}~{cfg['grid_hi']} 倍",
         },

@@ -133,6 +133,191 @@ def theme_of(name):
 
 
 # ════════════════════════════════════════════════════════════════════
+# 同指数去重：标的指数识别
+#
+# 首选「名称」而不是相关系数：名称是基金契约里写死的东西（同一只指数由多家公司发 ETF，
+# 名称核心必然相同），而相关系数只是"风险等价"的必要不充分条件——实测 创业板ETF 与
+# 创业板50ETF ρ=0.995、科创50 与 科创芯片 ρ=0.992、沪深300 与 A500 ρ=0.98，都是**不同的
+# 指数**。所以：名称定身份，相关系数只做两件事——(1) 验证同名组是不是真的一回事，
+# (2) 拆掉"名字一样但跟踪的指数不同"的泛名组（红利/消费/价值 这类）。
+#
+# 名称 → 键：取 "ETF" 之前的部分（本项目 1761 个名称 100% 适用，ETF 后是基金公司简称），
+# 剥掉"增强"（增强产品跟踪同一指数），再按 IDX_ALIAS 归一化同一指数的不同叫法。
+# ════════════════════════════════════════════════════════════════════
+IDX_ALIAS = {
+    # 同一只指数、不同叫法（人工确认过的，只有语义确定的才进这张表）
+    "中证A500": "A500",          # 中证A500指数 000510
+    "证券": "券商",               # 中证全指证券公司指数
+    "科创创业": "科创创业50",      # 中证科创创业50指数
+    "双创50": "科创创业50",
+    "科创板50": "科创50",
+    "科创AI": "科创人工智能",
+    "深100": "深证100",
+    "纳斯达克": "纳指",           # 纳斯达克100
+    "纳斯达克100": "纳指",
+    "纳指100": "纳指",
+    "港股科技": "港股通科技",      # 中证港股通科技指数
+    "香港科技": "港股通科技",
+    "恒生港股通科技": "港股通科技",
+    "港股通恒生科技": "港股通科技",
+    "港股互联网": "港股通互联网",
+    "港股创新药": "港股通创新药",
+    "港股医药": "港股通医药",
+    "港股医疗": "港股通医疗",
+    "港股汽车": "港股通汽车",
+    "消电": "消费电子",
+    "畜牧养殖": "养殖",           # 中证畜牧养殖指数
+    "有色金属": "有色",           # 中证细分有色金属产业主题指数
+    "创50": "创业板50",
+    "金": "黄金",                 # 金ETF = 黄金ETF（同一只现货合约）
+}
+IDX_ENH = re.compile(r"(指数增强|增强)$")
+
+
+def index_core(name):
+    """名称 → 标的指数核心词（不含基金公司简称/ETF/增强）。债券货币返回 None。"""
+    s = str(name).strip()
+    if EXCL.search(s):
+        return None
+    if "ETF" in s:
+        s = s.split("ETF")[0]
+    else:
+        s = re.sub(r"(LOF|基金|指数|证券投资基金)$", "", s)
+    s = IDX_ENH.sub("", s).strip(" ()（）")
+    return s or None
+
+
+def index_of(name):
+    """名称 → 标的指数键（同键=同一只指数）。"""
+    c = index_core(name)
+    return IDX_ALIAS.get(c, c) if c else None
+
+
+class _UF:
+    """并查集（同指数聚簇用）。"""
+
+    def __init__(self, n):
+        self.p = list(range(n))
+
+    def find(self, x):
+        p = self.p
+        while p[x] != x:
+            p[x] = p[p[x]]
+            x = p[x]
+        return x
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.p[ra] = rb
+
+
+def idx_snapshot(P, D, i, prm):
+    """i 日收盘决策用的「同指数分组 + 组内流动性代表」，**全部用 T-1 及之前的数据**。
+
+    返回 dict(gid=(ncol,) int32 每组一个整数 id, lead={gid: j} 该组 T-1 成交额最大的那只,
+              n_groups, n_merged, n_split)
+    分组规则（与 index_of 同源）：
+      1) 同一指数键 = 同一组（名称身份）
+      2) 组内最低相关 < idx_corr_split（默认 0.90）→ 泛名组，按 idx_corr_sub（0.97）再拆
+         （例：红利 8 只里 上证红利/中证红利/红利低波 本来就是不同指数）
+      3) idx_corr_merge > 0 时，不同键但 ρ ≥ 该值 → 合并（兜底档，默认关）
+    相关系数窗口 = 近 idx_corr_window 个交易日收益率，截止 T-1；成交额 = T-1 的近 20 日均额。
+    结果按 (i, 参数) 缓存在 P 里，suite/消融重复跑只算一次。
+    """
+    ck = (int(i), int(prm.idx_corr_window), float(prm.idx_corr_split),
+          float(prm.idx_corr_sub), float(prm.idx_corr_merge), int(prm.index_cap))
+    cache = P.setdefault("_idxsnap", {})
+    hit = cache.get(ck)
+    if hit is not None:
+        return hit
+    cols = P["cols"]
+    ncol = len(cols)
+    if "_idxkey" not in P:
+        P["_idxkey"] = np.array([index_of(P["names"].get(c, "")) for c in cols], dtype=object)
+    keys = P["_idxkey"]
+    amt = D["amt20m"][max(i - 1, 0)]
+
+    uf = _UF(ncol)
+    # 每一组的全部成员（不看数据够不够：名称身份是主判据，新上市 ETF 也必须绑进同组，
+    # 否则「数据不足 → 独立成组」会让 159048/159050 这类新机器人 ETF 绕过去重）
+    allg = {}
+    for j in range(ncol):
+        k = keys[j]
+        if k is not None:
+            allg.setdefault(k, []).append(j)
+    w = max(20, int(prm.idx_corr_window))
+    lo = max(i - 1 - w, 1)
+    R = P["C"][lo:i]                                       # 行 lo..i-1（不含当日）
+    n_split = n_merged = 0
+    sel = np.array([], dtype=int)
+    Cm = None
+    pos = {}
+    if R.shape[0] >= 20:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ret = R[1:] / R[:-1] - 1.0
+        good = (np.isfinite(ret).mean(axis=0) >= 0.8) & np.isfinite(amt)
+        sel = np.where(good)[0]
+        pos = {int(j): k for k, j in enumerate(sel)}
+        X = ret[:, sel]
+        X = np.where(np.isfinite(X), X, 0.0)
+        X = X - X.mean(axis=0)
+        sd = X.std(axis=0)
+        sd[sd <= 0] = np.inf
+        Cm = (X / sd).T @ (X / sd) / X.shape[0]
+    for k, js in allg.items():
+        if len(js) < 2:
+            continue
+        mem = [j for j in js if int(j) in pos]
+        if len(mem) < 2:                                   # 数据够的不够 2 只 → 整组一个指数
+            for j in js[1:]:
+                uf.union(js[0], j)
+            continue
+        ks = [pos[j] for j in mem]
+        sub = Cm[np.ix_(ks, ks)]
+        iu = np.triu_indices(len(mem), 1)
+        vals = sub[iu]
+        # 触发拆分用「组内最低相关」：只要有一对明显不相关，就说明这个泛名组里装着
+        # 不同的指数（红利/消费/价值 这类）；拆分后的同质大多数仍会聚成一簇。
+        if np.nanmin(vals) >= prm.idx_corr_split:          # 同质 → 整组一个指数
+            for j in js[1:]:
+                uf.union(js[0], j)
+            continue
+        n_split += 1                                       # 泛名组：按相关系数再拆
+        for t in np.where(vals >= prm.idx_corr_sub)[0]:
+            uf.union(mem[iu[0][t]], mem[iu[1][t]])
+        roots = {}
+        for j in mem:
+            roots.setdefault(uf.find(j), []).append(j)
+        big = max(roots.values(), key=len)[0]              # 数据不足的成员挂进最大子簇
+        for j in js:
+            if int(j) not in pos:
+                uf.union(big, j)
+    if prm.idx_corr_merge > 0 and Cm is not None and len(sel) > 1:
+        iu = np.triu_indices(len(sel), 1)
+        for t in np.where(Cm[iu] >= prm.idx_corr_merge)[0]:
+            a, b = int(sel[iu[0][t]]), int(sel[iu[1][t]])
+            if keys[a] != keys[b] and keys[a] is not None and keys[b] is not None:
+                n_merged += 1
+            uf.union(a, b)
+    gid = np.array([uf.find(j) for j in range(ncol)], dtype=np.int32)
+    # 组内流动性代表：T-1 近 20 日均成交额最大的一只
+    best = {}
+    for j in range(ncol):
+        v = amt[j]
+        if not np.isfinite(v):
+            continue
+        g = int(gid[j])
+        if g not in best or v > best[g][0]:
+            best[g] = (float(v), int(j))
+    lead = {int(g): int(v[1]) for g, v in best.items()}
+    snap = dict(gid=gid, lead=lead, n_groups=len(set(gid.tolist())),
+                n_split=int(n_split), n_merged=int(n_merged))
+    cache[ck] = snap
+    return snap
+
+
+# ════════════════════════════════════════════════════════════════════
 # 数据层：日频面板 + 磁盘缓存
 # ════════════════════════════════════════════════════════════════════
 def calendar():
@@ -242,12 +427,13 @@ def derivatives(P):
     # 20 日中位成交额
     amt = pd.DataFrame(A)
     amt20 = amt.rolling(20, min_periods=10).median()
+    amt20m = amt.rolling(20, min_periods=10).mean()      # 同指数去重：近 20 日"日均"成交额
     hist = pd.DataFrame(np.cumsum(~np.isnan(C), axis=0))
     traded = pd.DataFrame(V) > 0
     return dict(mom=mom.to_numpy(np.float32), atr=atr.to_numpy(np.float32),
                 ma20=ma20.to_numpy(np.float32), ma60=ma60.to_numpy(np.float32),
-                amt20=amt20.to_numpy(np.float32), hist=hist.to_numpy(np.float32),
-                traded=traded.to_numpy(bool))
+                amt20=amt20.to_numpy(np.float32), amt20m=amt20m.to_numpy(np.float32),
+                hist=hist.to_numpy(np.float32), traded=traded.to_numpy(bool))
 
 
 def eligible_mask(P, D):
@@ -299,6 +485,11 @@ class Params:
     regime: bool = True            # 510300 < MA60 → 空仓
     index_ma: int = 60             # 空仓开关的 MA 周期（默认 60；≠60 时按该周期重算，与 60 同公式）
     theme_cap: int = 2             # 同主题最多几只（0 = 不限）
+    index_cap: int = 2             # 同一标的指数最多几只（0 = 关掉同指数去重；默认见 DEFAULTS）
+    idx_corr_window: int = 60      # 同指数验证/拆分的收益率窗口（交易日，截止 T-1）
+    idx_corr_split: float = 0.90   # 同名组内最低相关 < 该值 → 泛名组，按相关再拆
+    idx_corr_sub: float = 0.97     # 泛名组拆分时的聚类阈值
+    idx_corr_merge: float = 0.0    # >0：不同名但 ρ ≥ 该值 → 合并（兜底档；0=关）
     cost: float = 0.001            # 单边成本
     cash: float = 1_000_000.0
     warmup: int = 0
@@ -309,6 +500,8 @@ DEFAULTS = dict(
     n_hold=8, entry_pct=0.20, hold_pct=0.70, min_hold=5, max_swap=0, swap_margin=0.0,
     cooldown=10, grid=True, grid_step=1.0, grid_lo=0.6, grid_hi=1.4, grid_dead=0.01,
     stop_k=3.0, stop_freq="weekly", exit_mode="atr", regime=True, theme_cap=2,
+    index_cap=1, idx_corr_window=60, idx_corr_split=0.90, idx_corr_sub=0.97,
+    idx_corr_merge=0.0,
     cost=0.001, index_code="510300", index_ma=60, live_start="2023-11-17",
     max_order_pct=0.15, limit_buffer_pct=0.01, min_order_shares=5000,
 )
@@ -318,7 +511,9 @@ _MODE_TO_PRM = dict(                      # config 键 → Params 字段
     max_swap="max_swap", swap_margin="swap_margin", cooldown="cooldown", grid="grid",
     grid_step="grid_step", grid_lo="grid_lo", grid_hi="grid_hi", grid_dead="grid_dead",
     stop_k="stop_k", stop_freq="stop_freq", exit_mode="exit_mode", regime="regime",
-    index_ma="index_ma", theme_cap="theme_cap", cost="cost",
+    index_ma="index_ma", theme_cap="theme_cap", index_cap="index_cap",
+    idx_corr_window="idx_corr_window", idx_corr_split="idx_corr_split",
+    idx_corr_sub="idx_corr_sub", idx_corr_merge="idx_corr_merge", cost="cost",
 )
 
 
@@ -336,10 +531,11 @@ def load_cfg():
         if k in cfg:
             cfg[k] = v
     for k in ("n_hold", "min_hold", "max_swap", "cooldown", "index_ma", "theme_cap",
-              "min_order_shares"):
+              "min_order_shares", "index_cap", "idx_corr_window"):
         cfg[k] = int(cfg[k])
     for k in ("entry_pct", "hold_pct", "swap_margin", "grid_step", "grid_lo", "grid_hi",
-              "grid_dead", "stop_k", "cost", "max_order_pct", "limit_buffer_pct"):
+              "grid_dead", "stop_k", "cost", "max_order_pct", "limit_buffer_pct",
+              "idx_corr_split", "idx_corr_sub", "idx_corr_merge"):
         cfg[k] = float(cfg[k])
     cfg["grid"] = bool(cfg["grid"])
     cfg["regime"] = bool(cfg["regime"])
@@ -414,13 +610,21 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     mult_prev = {}
     cause = "rot"
     cap_blocked = 0
+    idx_blocked = idx_sells = 0      # 同指数去重：被拦截的建仓次数 / 因同指数超限卖出的次数
     stop_pending = False
     sell_cause = {"stop": 0.0, "rot": 0.0, "regime": 0.0}
     n_sells = n_stop_days = 0
     stop_log, sell_log = [], []
     hold_n, theme_share = [], []     # 每日持仓只数 / 单一主题占持仓的最大比例（集中度实测）
+    idx_share, idx_wshare, idx_cnt = [], [], []   # 单一指数占持仓的最大比例（只数/市值）+ 最大只数
     lastpx = {}                      # 每只最后一个有效收盘价（缺 bar 时按最近价估值，不是按 0）
     pos_log, nan_close = [], []      # 每日收盘持仓明细 / 当日缺收盘价的持仓数（数据体检用）
+    if "_idxid" not in P:            # 标的指数 id（按名称身份，时间不变）：集中度实测用
+        _k = [index_of(P["names"].get(c, "")) for c in cols]
+        _m = {k: n for n, k in enumerate(sorted({k for k in _k if k}))}
+        P["_idxid"] = np.array([_m.get(k, -1) for k in _k], dtype=np.int32)
+    idxid = P["_idxid"]
+    gid_cur = None                   # 最近一次决策用的同指数分组（持仓集合只在决策日变，日频口径精确）
 
     def po(i, j):
         v = O[i, j]
@@ -445,6 +649,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
         """
         nonlocal want_sell, want_buy, want_grid, stop_set, cause
         nonlocal off_days, stopped, n_stop_days, cap_blocked, mult_prev
+        nonlocal idx_blocked, idx_sells, gid_cur
         # ── 3) 收盘决策 ─────────────────────────────────────────────
         want_sell, want_buy, want_grid = set(), {}, []
         stop_set = set()
@@ -479,10 +684,15 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if np.isfinite(m) and p < m:
                     want_sell.add(j)
 
-        # 3b) 周频：动量分位 + 缓冲带 + 主题上限 + 换手闸门
+        # 3b) 周频：动量分位 + 缓冲带 + 同指数去重 + 主题上限 + 换手闸门
         if i in wdec:
             pct_i = pct[i]
             row_ok = mask[i]
+            snap = idx_snapshot(P, D, i, prm) if prm.index_cap else None
+            gid = snap["gid"] if snap else None
+            lead = snap["lead"] if snap else {}
+            gid_cur = gid
+            amt_p = D["amt20m"][max(i - 1, 0)]
             held = [j for j in shares if j not in want_sell]
             keep = []
             for j in held:
@@ -491,6 +701,19 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if age < prm.min_hold or (np.isfinite(v) and v >= prm.hold_pct):
                     keep.append(j)
             keep.sort(key=lambda j: -(pct_i[j] if np.isfinite(pct_i[j]) else -1))
+            if prm.index_cap:                       # 同一标的指数超过上限：留 T-1 流动性最好的
+                by_g, drop = {}, set()
+                for j in keep:
+                    by_g.setdefault(int(gid[j]), []).append(j)
+                for g, js in by_g.items():
+                    if len(js) > prm.index_cap:
+                        js.sort(key=lambda j: -(float(amt_p[j])
+                                                if np.isfinite(amt_p[j]) else -1.0))
+                        drop.update(js[prm.index_cap:])
+                if drop:
+                    want_sell |= drop
+                    keep = [j for j in keep if j not in drop]
+                    idx_sells += len(drop)
             if prm.theme_cap:                       # 同主题超过上限：按分位砍尾部
                 cnt, kk = {}, []
                 for j in keep:
@@ -509,13 +732,26 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     and pct_i[j] >= 1.0 - prm.entry_pct
                     and j not in shares and j not in keep
                     and (i - last_stop.get(j, -10 ** 9)) >= prm.cooldown]
+            if prm.index_cap:                       # 同指数只允许 "T-1 流动性代表" 建仓
+                _c0 = len(cand)
+                cand = [j for j in cand if j == lead.get(int(gid[j]), j)]
+                idx_blocked += _c0 - len(cand)
             cand.sort(key=lambda j: -pct_i[j])
-            tc = {}
+            tc, icnt = {}, {}
             for j in keep:
                 tc[theme[j]] = tc.get(theme[j], 0) + 1
+                _g = int(gid[j]) if prm.index_cap else -1
+                icnt[_g] = icnt.get(_g, 0) + 1
 
             def fits(j):
+                if prm.index_cap and icnt.get(int(gid[j]), 0) >= prm.index_cap:
+                    return False
                 return (not prm.theme_cap) or tc.get(theme[j], 0) < prm.theme_cap
+
+            def take(j, sign=1):
+                tc[theme[j]] = tc.get(theme[j], 0) + sign
+                _g = int(gid[j]) if prm.index_cap else -1
+                icnt[_g] = icnt.get(_g, 0) + sign
 
             add = []
             slots = prm.n_hold - len(keep)
@@ -523,11 +759,15 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             for j in list(cand):
                 if slots <= 0:
                     break
-                if not fits(j) and prm.theme_cap:
-                    cap_blocked += 1
-                if fits(j):
+                ok_j = fits(j)
+                if not ok_j:
+                    if prm.index_cap and icnt.get(int(gid[j]), 0) >= prm.index_cap:
+                        idx_blocked += 1
+                    elif prm.theme_cap:
+                        cap_blocked += 1
+                else:
                     add.append(j)
-                    tc[theme[j]] = tc.get(theme[j], 0) + 1
+                    take(j)
                     slots -= 1
                     cand.remove(j)
             # (2) 主动换仓：只用 max_swap 只额度，且要求分位改善超过 swap_margin
@@ -538,16 +778,15 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 weakest = min(keep, key=lambda x: pct_i[x] if np.isfinite(pct_i[x]) else -1)
                 if pct_i[j] - (pct_i[weakest] if np.isfinite(pct_i[weakest]) else -1) <= prm.swap_margin:
                     break
-                t = theme[weakest]
-                tc[t] = tc.get(t, 0) - 1
+                take(weakest, -1)
                 if fits(j):
                     keep.remove(weakest)
                     want_sell.add(weakest)
                     add.append(j)
-                    tc[theme[j]] = tc.get(theme[j], 0) + 1
+                    take(j)
                     nswap += 1
                 else:
-                    tc[t] = tc.get(t, 0) + 1
+                    take(weakest, +1)
             target_set = keep + add
             for j in list(shares):
                 if j not in target_set:
@@ -739,8 +978,21 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             for j in shares:
                 _tc[theme[j]] = _tc.get(theme[j], 0) + 1
             theme_share.append(max(_tc.values()) / len(shares))
+            _ic, _icv = {}, {}
+            _gi = gid_cur if gid_cur is not None else idxid
+            for j, q in shares.items():
+                k = int(_gi[j])
+                _ic[k] = _ic.get(k, 0) + 1
+                _p = pcx(i, j) if np.isfinite(pcx(i, j)) else lastpx.get(j, np.nan)
+                _icv[k] = _icv.get(k, 0.0) + (q * _p if np.isfinite(_p) else 0.0)
+            idx_share.append(max(_ic.values()) / len(shares))
+            idx_wshare.append(max(_icv.values()) / max(_posv, 1e-9))
+            idx_cnt.append(max(_ic.values()))
         else:
             theme_share.append(0.0)
+            idx_share.append(0.0)
+            idx_wshare.append(0.0)
+            idx_cnt.append(0)
         wk = idx[i].isocalendar()
         key = f"{int(wk.year)}-W{int(wk.week):02d}"
         turn_week[key] = turn_week.get(key, 0.0) + 0.5 * traded / max(eq_c, 1.0)
@@ -771,10 +1023,14 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 stopped=stopped, off_days=off_days, n_sells=n_sells, n_stop_days=n_stop_days,
                 stop_log=stop_log, sell_log=sell_log, n_weeks=len(turn_week),
                 final_cash=cash, n_left=len(shares),
+                idx_blocked=int(idx_blocked), idx_sells=int(idx_sells),
                 eq_open=pd.Series(eq_open_r, index=idx[i0:i0 + len(eq_open_r)]),
                 gross=pd.Series(gross_r, index=idx[i0:i0 + len(gross_r)]),
                 hold_n=pd.Series(hold_n, index=idx[i0:i0 + len(hold_n)]),
                 theme_share=pd.Series(theme_share, index=idx[i0:i0 + len(theme_share)]),
+                idx_share=pd.Series(idx_share, index=idx[i0:i0 + len(idx_share)]),
+                idx_wshare=pd.Series(idx_wshare, index=idx[i0:i0 + len(idx_wshare)]),
+                idx_cnt=pd.Series(idx_cnt, index=idx[i0:i0 + len(idx_cnt)]),
                 pos_log=pos_log, nan_close=nan_close,
                 state=(state if return_state else None))
 
@@ -945,23 +1201,118 @@ def seg_stat(eq, nm, s0=None, s1=None):
 
 
 def risk_extra(res, label=""):
-    """集中度的真实代价：最坏单日 / 最坏两日 / 平均持仓只数 / 同主题最大占比分布。"""
+    """集中度的真实代价：最坏单日 / 最坏两日 / 平均持仓只数 / 同主题、同指数最大占比。"""
     ret = res["ret"]
     hs = res["theme_share"]
+    xs = res.get("idx_share")
+    xv = res.get("idx_wshare")
     if len(ret) < 3:
         return dict(label=label, worst1=0.0, worst1_date="-", worst2=0.0, worst2_date="-",
-                    avg_n=0.0, share_p50=0.0, share_p90=0.0, share_max=0.0)
+                    avg_n=0.0, share_p50=0.0, share_p90=0.0, share_max=0.0,
+                    idx_p50=0.0, idx_p90=0.0, idx_max=0.0, idx_max2=0.0, idx_cnt_max=0,
+                    idxw_max=0.0, n_multi_idx=0)
     r = ret.to_numpy(dtype=float)
     two = r[1:] + r[:-1]
     k1 = int(np.nanargmin(r))
     k2 = int(np.nanargmin(two))
-    return dict(label=label,
-                worst1=float(r[k1]), worst1_date=str(ret.index[k1].date()),
-                worst2=float(two[k2]), worst2_date=f"{ret.index[k2].date()}→{ret.index[k2 + 1].date()}",
-                avg_n=float(res["hold_n"].mean()),
-                share_p50=float(np.nanpercentile(hs, 50)),
-                share_p90=float(np.nanpercentile(hs, 90)),
-                share_max=float(np.nanmax(hs)))
+    out = dict(label=label,
+               worst1=float(r[k1]), worst1_date=str(ret.index[k1].date()),
+               worst2=float(two[k2]), worst2_date=f"{ret.index[k2].date()}→{ret.index[k2 + 1].date()}",
+               avg_n=float(res["hold_n"].mean()),
+               share_p50=float(np.nanpercentile(hs, 50)),
+               share_p90=float(np.nanpercentile(hs, 90)),
+               share_max=float(np.nanmax(hs)))
+    if xs is not None and len(xs):
+        x = xs.to_numpy(dtype=float)
+        hn = res["hold_n"].to_numpy(dtype=float)
+        m2 = hn >= 2                                     # 只留 1 只时 100% 无意义，单列一个口径
+        ic = res.get("idx_cnt")
+        out.update(idx_p50=float(np.nanpercentile(x, 50)), idx_p90=float(np.nanpercentile(x, 90)),
+                   idx_max=float(np.nanmax(x)),
+                   idx_max2=float(np.nanmax(x[m2])) if m2.any() else 0.0,
+                   idx_cnt_max=int(np.nanmax(ic.to_numpy(dtype=float))) if ic is not None else 0,
+                   idxw_max=float(np.nanmax(xv.to_numpy(dtype=float)[m2])) if (xv is not None and m2.any()) else 0.0,
+                   n_multi_idx=int(((x > 1.0 / 8 + 1e-9) & m2).sum()))  # 单一指数占比>1/8的天数
+    else:
+        out.update(idx_p50=0.0, idx_p90=0.0, idx_max=0.0, idx_max2=0.0, idx_cnt_max=0,
+                   idxw_max=0.0, n_multi_idx=0)
+    out["idx_blocked"] = int(res.get("idx_blocked", 0))
+    out["idx_sells"] = int(res.get("idx_sells", 0))
+    return out
+
+
+# ════════════════════════════════════════════════════════════════════
+# 同指数分组的审计（覆盖率 / 误并 / 漏并）—— 只读，不改任何交易逻辑
+# ════════════════════════════════════════════════════════════════════
+def index_map_report(cfg=None, win=120, quiet=False):
+    """打印并落盘「标的指数 → ETF 清单」，同时用近 win 日收益率相关系数交叉验证。
+
+    - 覆盖率：多少名称拿到指数键、多少只在多成员组里（即去重会归并掉多少只）
+    - 误并：同一指数键内最低相关 < idx_corr_split 的组（名字一样但跟踪的指数不同）
+    - 漏并：不同指数键但 ρ ≥ 0.97 的对（同一指数不同叫法，别名表没覆盖到）
+    """
+    cfg = dict(cfg or load_cfg())
+    P, D, mask, pct = prep()
+    cols = P["cols"]
+    names = P["names"]
+    keys = [index_of(names.get(c, "")) for c in cols]
+    grp = {}
+    for i, k in enumerate(keys):
+        if k:
+            grp.setdefault(k, []).append(str(cols[i]))
+    multi = {k: v for k, v in grp.items() if len(v) > 1}
+    n_etf = sum(len(v) for v in grp.values())
+    collapse = sum(len(v) - 1 for v in multi.values())
+    print(f"[同指数] 名称 {len(cols)} 只 → 有指数键 {n_etf} 只 / {len(grp)} 个标的指数；"
+          f"多成员组 {len(multi)} 个，去重最多归并 {collapse} 只（{collapse / max(n_etf, 1):.1%}）")
+
+    C = P["C"]
+    ret = pd.DataFrame(C[-win - 1:-1] / C[-win - 2:-2] - 1.0)
+    good = ret.notna().mean() >= 0.8
+    cpos = {str(c): j for j, c in enumerate(cols)}
+    rc = [j for j, c in enumerate(cols) if bool(good.iloc[j])]
+    col2row = {int(j): n for n, j in enumerate(rc)}
+    M = ret.iloc[:, rc].corr(min_periods=int(win * 0.8))
+    rows = []
+    for k, v in sorted(multi.items(), key=lambda x: -len(x[1])):
+        js = [col2row[cpos[c]] for c in v if cpos[c] in col2row]
+        if len(js) < 2:
+            rows.append(dict(index=k, n=len(v), min_rho=float("nan"), med_rho=float("nan"),
+                             names=[names.get(c, "") for c in v]))
+            continue
+        sub = M.iloc[js, js].to_numpy()
+        iu = np.triu_indices(len(js), 1)
+        rows.append(dict(index=k, n=len(v), min_rho=float(np.nanmin(sub[iu])),
+                         med_rho=float(np.nanmedian(sub[iu])),
+                         names=[names.get(c, "") for c in v]))
+    bad = [r for r in rows if np.isfinite(r["min_rho"]) and r["min_rho"] < cfg["idx_corr_split"]]
+    print(f"[同指数] 组内相关：中位 ρ 的中位数 {np.nanmedian([r['med_rho'] for r in rows]):.4f}；"
+          f"误并候选（组内最低 ρ < {cfg['idx_corr_split']}）{len(bad)}/{len(rows)} 组")
+    for r in sorted(bad, key=lambda x: x["min_rho"])[:12]:
+        print(f"    {r['index']:<10}{r['n']:3d}只 minρ={r['min_rho']:.3f} medρ={r['med_rho']:.3f}  "
+              f"{', '.join(r['names'][:4])}")
+
+    hi = M.to_numpy() >= 0.97
+    np.fill_diagonal(hi, False)
+    kk = [keys[j] for j in rc]
+    pairs = {}
+    for a, b in zip(*np.where(np.triu(hi, 1))):
+        if kk[a] is None or kk[b] is None or kk[a] == kk[b]:
+            continue
+        key = tuple(sorted((kk[a], kk[b])))
+        pairs.setdefault(key, []).append(float(M.iloc[a, b]))
+    print(f"[同指数] 漏并候选（不同指数键但 ρ≥0.97）：{len(pairs)} 组键对")
+    for (a, b), v in sorted(pairs.items(), key=lambda x: -len(x[1]))[:12]:
+        print(f"    {a:<10} ~ {b:<10}{len(v):4d} 对  ρmax={max(v):.4f}  （不同指数，未合并）")
+    json.dump(dict(n_etf=n_etf, n_index=len(grp), n_multi=len(multi), collapse=collapse,
+                   groups={k: v for k, v in sorted(multi.items(), key=lambda x: -len(x[1]))},
+                   within=[{k: v for k, v in r.items()} for r in rows],
+                   cross_pairs=[dict(a=a, b=b, n=len(v), rho_max=max(v))
+                                for (a, b), v in pairs.items()]),
+              open(os.path.join(OUT, "index_map.json"), "w"), ensure_ascii=False, indent=1)
+    print(f"  写完 {os.path.join(OUT, 'index_map.json')}")
+    return dict(n_etf=n_etf, n_index=len(grp), n_multi=len(multi), collapse=collapse,
+                bad=len(bad), cross=len(pairs))
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1122,7 +1473,8 @@ def latest_targets(cfg=None, prm=None, quiet=False):
         sid = str(cols[j])
         nm = names.get(sid, "")
         tg[sid] = dict(code=_code6(sid), sid=sid, name=nm, weight=float(w),
-                       theme=theme_of(nm), pct=float(st["pct"].get(j, np.nan)))
+                       theme=theme_of(nm), index=index_of(nm),
+                       pct=float(st["pct"].get(j, np.nan)))
     if not quiet:
         print(f"[chase] 目标日={end} 空仓开关={'空仓(指数<MA%s)' % prm.index_ma if not st['on'] else '持仓'}"
               f" 目标 {len(tg)} 只 可交易池 {int(mask[i].sum())} 只")
@@ -1132,8 +1484,10 @@ def latest_targets(cfg=None, prm=None, quiet=False):
                 held={_code6(cols[j]): int(q) for j, q in st["shares"].items()},
                 next_sell=[_code6(cols[j]) for j in st["want_sell"]],
                 cfg={k: cfg[k] for k in ("n_hold", "entry_pct", "hold_pct", "theme_cap",
-                                         "grid_step", "stop_k", "index_ma", "max_order_pct")},
-                prm=dict(theme_cap=int(prm.theme_cap), n_hold=int(prm.n_hold),
+                                         "index_cap", "grid_step", "stop_k", "index_ma",
+                                         "max_order_pct")},
+                prm=dict(theme_cap=int(prm.theme_cap), index_cap=int(prm.index_cap),
+                         n_hold=int(prm.n_hold),
                          stop_k=float(prm.stop_k), grid_step=float(prm.grid_step),
                          hold_pct=float(prm.hold_pct), entry_pct=float(prm.entry_pct),
                          index_ma=int(prm.index_ma)))
@@ -1143,7 +1497,8 @@ def preview_targets(cfg=None, quiet=False):
     """假设「空仓开关=ON 且次日就是决策日」时的建仓名单（只用于核对，不是下单清单）。
 
     与 run() 的 3b 完全同一条规则（空仓起步：keep 为空、slots=n_hold、无换仓额度）：
-    动量分位 >= 1-entry_pct 的候选按分位从强到弱，同主题最多 theme_cap 只，取满 n_hold。
+    动量分位 >= 1-entry_pct 的候选按分位从强到弱，同指数（index_cap）与同主题（theme_cap）
+    双重上限，取满 n_hold。同指数去重与 run() 共用 idx_snapshot()，T-1 口径完全一致。
     用途：开关关着的时候，让您先看到"一旦放行会买哪 8 只、各多少钱"。
     """
     cfg = dict(cfg or load_cfg())
@@ -1151,17 +1506,27 @@ def preview_targets(cfg=None, quiet=False):
     i = len(P["idx"]) - 1
     cols, names = P["cols"], P["names"]
     pi, ok = pct[i], mask[i]
+    prm = params_from_cfg(cfg, start=cfg["live_start"], end=str(P["idx"][i].date()))
+    snap = idx_snapshot(P, D, i, prm) if prm.index_cap else None
+    gid = snap["gid"] if snap else None
+    lead = snap["lead"] if snap else {}
     cand = [j for j in range(len(cols))
             if ok[j] and np.isfinite(pi[j]) and pi[j] >= 1.0 - float(cfg["entry_pct"])]
+    if prm.index_cap:
+        cand = [j for j in cand if j == lead.get(int(gid[j]), j)]
     cand.sort(key=lambda j: -pi[j])
     cap = int(cfg["theme_cap"] or 0)
-    picked, tc = [], {}
+    picked, tc, icnt = [], {}, {}
     for j in cand:
         t = theme_of(names.get(cols[j], ""))
+        g = int(gid[j]) if prm.index_cap else -1
         if cap and tc.get(t, 0) >= cap:
+            continue
+        if prm.index_cap and icnt.get(g, 0) >= prm.index_cap:
             continue
         picked.append(j)
         tc[t] = tc.get(t, 0) + 1
+        icnt[g] = icnt.get(g, 0) + 1
         if len(picked) >= int(cfg["n_hold"]):
             break
     w = 1.0 / int(cfg["n_hold"])
@@ -1170,7 +1535,7 @@ def preview_targets(cfg=None, quiet=False):
         sid = str(cols[j])
         nm = names.get(sid, "")
         tg[sid] = dict(code=_code6(sid), sid=sid, name=nm, weight=w,
-                       theme=theme_of(nm), pct=float(pi[j]))
+                       theme=theme_of(nm), index=index_of(nm), pct=float(pi[j]))
     if not quiet:
         print(f"[预览] 假设空仓开关=ON 且次日为决策日（{P['idx'][i].date()} 动量分位）："
               f"{len(tg)} 只候选，池 {int(ok.sum())} 只")
@@ -1178,8 +1543,10 @@ def preview_targets(cfg=None, quiet=False):
                 on=True, cause="preview", eq=0.0, cash=0.0, n_targets=len(tg),
                 n_pool=int(ok.sum()), targets=tg, held={}, next_sell=[],
                 cfg={k: cfg[k] for k in ("n_hold", "entry_pct", "hold_pct", "theme_cap",
-                                         "grid_step", "stop_k", "index_ma", "max_order_pct")},
-                prm=dict(theme_cap=cap, n_hold=int(cfg["n_hold"]), stop_k=float(cfg["stop_k"]),
+                                         "index_cap", "grid_step", "stop_k", "index_ma",
+                                         "max_order_pct")},
+                prm=dict(theme_cap=cap, index_cap=int(prm.index_cap),
+                         n_hold=int(cfg["n_hold"]), stop_k=float(cfg["stop_k"]),
                          grid_step=float(cfg["grid_step"]), hold_pct=float(cfg["hold_pct"]),
                          entry_pct=float(cfg["entry_pct"]), index_ma=int(cfg["index_ma"])))
 
@@ -1321,16 +1688,21 @@ def main():
     ap.add_argument("--preview", action="store_true",
                     help="假设空仓开关=ON 且次日为决策日时的建仓名单（核对用，不是下单清单）")
     ap.add_argument("--themes", action="store_true")
+    ap.add_argument("--index-map", action="store_true",
+                    help="同指数分组审计（标的指数 → ETF 清单 + 组内相关系数验证）")
     ap.add_argument("--build-panel", action="store_true")
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     ap.add_argument("--theme-cap", type=int, default=None)
+    ap.add_argument("--index-cap", type=int, default=None, help="同一标的指数最多几只（0=关）")
     ap.add_argument("--cost", type=float, default=None)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     cfg = load_cfg()
     if a.theme_cap is not None:
         cfg["theme_cap"] = int(a.theme_cap)
+    if a.index_cap is not None:
+        cfg["index_cap"] = int(a.index_cap)
     if a.cost is not None:
         cfg["cost"] = float(a.cost)
     os.makedirs(DUMPS, exist_ok=True)
@@ -1344,6 +1716,10 @@ def main():
                   open(os.path.join(OUT, "theme_map.json"), "w"), ensure_ascii=False, indent=1)
         for t, v in sorted(m.items(), key=lambda x: -len(x[1])):
             print(f"{str(t):>12} {len(v):4d}  e.g. {', '.join(v[:4])}")
+        return 0
+
+    if a.index_map:
+        index_map_report(cfg)
         return 0
 
     if a.caps:
@@ -1394,7 +1770,11 @@ def main():
         print(f"平均持仓 {ex['avg_n']:.1f} 只 | 最坏单日 {ex['worst1'] * 100:.2f}%({ex['worst1_date']}) "
               f"| 最坏两日 {ex['worst2'] * 100:.2f}%({ex['worst2_date']}) "
               f"| 同主题占比 中位{ex['share_p50'] * 100:.0f}%/最大{ex['share_max'] * 100:.0f}% "
-              f"| 主题上限拦截 {res['cap_blocked']} 次 | 空仓 {res['off_days']} 天")
+              f"| 同一指数占比 中位{ex['idx_p50'] * 100:.0f}%/90分位{ex['idx_p90'] * 100:.0f}%"
+              f"/最大{ex['idx_max2'] * 100:.0f}%(持仓≥2只口径,市值{ex['idxw_max'] * 100:.0f}%)"
+              f"/最多{ex['idx_cnt_max']}只 "
+              f"| 主题上限拦截 {res['cap_blocked']} 次 | 同指数拦截 {ex['idx_blocked']} 次"
+              f"/卖出 {ex['idx_sells']} 次 | 空仓 {res['off_days']} 天")
         print("分年:", {k: round(v * 100, 2) for k, v in by_year(res["eq"]).items()})
         res["eq"].to_csv(os.path.join(DUMPS, f"eq_{prm.start}_{prm.end}.csv"))
         return 0
