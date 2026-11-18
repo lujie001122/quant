@@ -1509,6 +1509,10 @@ def build_chase_signals():
     import chase_live as _cl
     cfg = _cl.load_cfg()
     tg = _cl.latest_targets(cfg=cfg, quiet=True)
+    stale = _cl.stale_warning(tg["as_of"])
+    if stale:
+        print(f"⚠️⚠️ [数据陈旧] {stale} —— 信号日={tg['as_of']}，"
+              f"先跑 scripts/chase_daily.sh 补当天那根，别静默用旧数据")
     plan = _cl.build_plan(cfg=cfg, tg=tg, quiet=True)
 
     signals = {}
@@ -1621,6 +1625,7 @@ def build_chase_signals():
         "human_readable": human,
         "chase": {
             "as_of": plan["as_of"], "price_date": plan["price_date"],
+            "data_stale": stale,
             "total_asset": plan["total_asset"], "cash": plan["cash"],
             "budget": plan["budget"], "buy_total": plan["buy_total"],
             "want_total": plan["want_total"], "sell_total": plan["sell_total"],

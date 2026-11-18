@@ -436,6 +436,22 @@ def calendar():
     return cal[cal < d0]
 
 
+def stale_warning(data_last):
+    """数据陈旧判据：库内最新日期 < 最近一个**已收盘**交易日 → 返回告警文案，否则 None。
+
+    「最近已收盘交易日」用 flow_data.target_day()（收盘后=今天，盘中/盘前=上一交易日），
+    与数据管道落库用的目标日同一口径：早盘跑不算陈旧，15:05 之后当天那根没到才算。
+    """
+    try:
+        import flow_data as FD
+        want = FD.target_day()
+    except Exception:                                        # noqa: BLE001
+        return None
+    if data_last is None or str(data_last) >= str(want):
+        return None
+    return f"数据陈旧：库内最新 {data_last} < 最近交易日 {want}"
+
+
 def _pxq_stamp():
     """pxq 目录的数据指纹（文件数 + 最新 mtime），用于判断面板缓存是否过期。"""
     try:
@@ -2257,6 +2273,10 @@ def latest_targets(cfg=None, prm=None, quiet=False):
     cfg = dict(cfg or load_cfg())
     P, D, mask, pct = prep()
     end = str(P["idx"][-1].date())
+    _stale = stale_warning(end)
+    if _stale:
+        print(f"⚠️ [chase] {_stale} —— 信号日落后，别当新数据用（先跑 scripts/chase_daily.sh）",
+              file=sys.stderr, flush=True)
     prm = replace(prm or params_from_cfg(cfg, start=cfg["live_start"], end=end), end=end)
     res = run(P, D, mask, pct, prm, return_state=True)
     st = res["state"]

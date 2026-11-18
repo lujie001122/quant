@@ -4,9 +4,10 @@
 三件事，全部按"数据自己的日期"落库（PIT：份额 T-1，绝不偷看当日）：
   1) 交易日历  sh000001 日线追加真实成交日（复用 flow_data.update_calendar）
   2) 前复权日线 quant2/data/pxq/{sid}.json —— 全池增量（默认 12 线程）
-       每只只拉最近一个月窗口，和缓存重叠段逐日比对：
+       每只只拉最近 RECENT 根（datalen 形式，收盘后含当天那根），和缓存重叠段逐日比对：
          * 重叠一致 → 只追加新日期（正常日更，1 次请求/只）
-         * 重叠不一致（除息导致整条 qfq 序列重标）→ 自动全量重抓（分页，极少发生）
+         * 重叠不一致（除息导致整条 qfq 序列重标）→ 自动全量重抓（日期窗口分页，极少发生）
+       带日期窗口的形式收盘后拿不到当天那根（实测 15:10 仍缺），只用于全量回补历史。
   3) 不复权日线 quant2/data/price/{sid}.json —— 腾讯批量行情一次拉完（涨跌停/实物价口径）
   份额/净值走 flow_data.run()（同一套上交所/深交所/东财管道，--shares 调用）
 
@@ -37,6 +38,8 @@ UNIVERSE = os.path.join(META, "universe.csv")
 MIN_BARS_OK = 60
 END = "2026-12-31"
 DRIFT = 0.002          # 重叠段收盘价相对偏差超过 0.2% 视为 qfq 重标 → 全量重抓
+RECENT = 40            # 增量用 datalen 取最近 N 根（覆盖重叠校验 + 收盘后当天那根）
+BENCH = "sh510300"     # 面板/信号日以它的最后一根为准（与 chase_live.BENCH 同口径）
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 URL = "https://ifzq.gtimg.cn/appstock/app/newfqkline/get"
@@ -56,8 +59,7 @@ def write_json(path, payload):
     os.replace(tmp, path)
 
 
-def _page(s, sid, start, end, qfq, retries=4):
-    param = f"{sid},day,{start},{end},640,{'qfq' if qfq else ''}"
+def _get(s, sid, param, retries=4):
     err = None
     for k in range(retries):
         try:
@@ -76,6 +78,16 @@ def _page(s, sid, start, end, qfq, retries=4):
     return [], err
 
 
+def _page(s, sid, start, end, qfq, retries=4):
+    """带日期窗口（回补历史用：窗口上沿不含收盘后的当天那根）。"""
+    return _get(s, sid, f"{sid},day,{start},{end},640,{'qfq' if qfq else ''}", retries)
+
+
+def _recent(s, sid, n, qfq, retries=4):
+    """datalen 形式（不带日期窗口）：收盘后已经含当天那根。"""
+    return _get(s, sid, f"{sid},day,,,{n},{'qfq' if qfq else ''}", retries)
+
+
 def _norm(arr):
     """腾讯行 → [date, open, close, high, low, vol, amount]（amount 单位元）。"""
     out = []
@@ -92,8 +104,9 @@ def _norm(arr):
     return out
 
 
-def fetch_window(sid, start, end, qfq=True, s=None):
-    arr, err = _page(s or sess(), sid, start, end, qfq)
+def fetch_recent(sid, n=RECENT, qfq=True, s=None):
+    """最近 N 根（datalen 形式）。收盘后「带日期窗口」还看不到当天那根，这个形式能看到。"""
+    arr, err = _recent(s or sess(), sid, n, qfq)
     return _norm(arr), err
 
 
@@ -119,6 +132,9 @@ def fetch_full(sid, first, qfq=True, s=None):
             break
         cur = nxt
     ded = {r[0]: r for r in rows}
+    if ded:                                  # 窗口形式不含收盘后当天那根 → 用 datalen 尾巴补
+        tail, _ = fetch_recent(sid, RECENT, qfq, s)
+        ded.update({r[0]: r for r in tail if r[0] > max(ded)})
     return [ded[k] for k in sorted(ded)], None
 
 
@@ -130,9 +146,9 @@ def _read_bars(path):
 
 
 def update_one(job):
-    """job = (sid, name, first, full)。返回 {sid, status, added, total, err}。"""
+    """job = (sid, name, first, full)。返回 {sid, status, added, total, last, err}。"""
     sid, name, first, full = job
-    out = dict(sid=sid, name=name, status="", added=0, total=0, err=None)
+    out = dict(sid=sid, name=name, status="", added=0, total=0, last=None, err=None)
     p = os.path.join(PXQ, f"{sid}.json")
     old = _read_bars(p)
     s = sess()
@@ -148,8 +164,9 @@ def update_one(job):
             out.update(status="full", added=len(rows) - len(old), total=len(rows))
         else:
             last = old[-1][0]
-            win_start = (pd.Timestamp(last) - pd.Timedelta(days=25)).strftime("%Y-%m-%d")
-            rows, err = fetch_window(sid, win_start, END, True, s)
+            # 增量走 datalen：带日期窗口的 qfq 序列收盘后一段时间内没有当天那根（实测 15:10 仍缺），
+            # datalen 形式有。历史回补仍用 fetch_full 的日期窗口。
+            rows, err = fetch_recent(sid, RECENT, True, s)
             if err and err != "empty":
                 out.update(status="fail", err=err)
                 return out
@@ -166,10 +183,11 @@ def update_one(job):
             else:
                 add = [r for r in rows if r[0] > last]
                 if not add:
-                    out.update(status="cached", total=len(old))
+                    out.update(status="cached", total=len(old), last=last)
                     return out
                 rows, out["status"], out["added"] = old + add, "append", len(add)
                 out["total"] = len(rows)
+        out["last"] = rows[-1][0]
         payload = dict(code=sid, name=name, bars=rows, complete=True,
                        src="tencent/newfqkline day qfq",
                        fetched_at=datetime.now().isoformat(timespec="seconds"))
@@ -197,10 +215,11 @@ def refresh_universe_stats():
 
 
 def update_kline(jobs_n=12, force_full=False, verbose=True):
-    """全池前复权增量 + 不复权批量补当日。返回统计。"""
+    """全池前复权增量 + 不复权批量补当日。返回统计（含 stale：目标日没落库）。"""
     import flow_data as FD
     FD.update_calendar(verbose=verbose)
     day = FD.target_day()
+    cal_last = FD.calendar()[-1]
     uni = universe()
     jobs = [(r.code, r.name, str(r.first)[:10], bool(force_full)) for r in uni.itertuples(index=False)]
     t0, ok, bad, added = time.time(), 0, [], 0
@@ -221,14 +240,27 @@ def update_kline(jobs_n=12, force_full=False, verbose=True):
     quotes = FD.fetch_quotes(codes)
     n_px = FD.save_price_bars(quotes, day)
     uni2 = refresh_universe_stats()
-    res = dict(at=datetime.now().isoformat(timespec="seconds"), day=day,
+    lasts = pd.to_datetime(uni2["last"], errors="coerce")
+    latest = str(uni2.set_index("code")["last"].get(BENCH))   # 面板/信号日的闸门
+    at_day = int((lasts == pd.Timestamp(day)).sum())
+    stale = bool(day == cal_last and latest != day)
+    res = dict(at=datetime.now().isoformat(timespec="seconds"), day=day, cal_last=cal_last,
                ok=ok, fail=len(bad), added_bars=added, raw_saved=n_px,
+               latest=latest, at_day=at_day, stale=stale,
                pool=int((uni2["n"] >= MIN_BARS_OK).sum()), codes=len(uni2),
                failed=[{"code": r["sid"], "name": r["name"], "reason": r["err"]} for r in bad[:40]],
                secs=round(time.time() - t0, 1))
     if verbose:
-        print(f"[K线] 目标日={day} 成功{ok}/{len(jobs)} 失败{len(bad)} 新增{added}根 "
-              f"不复权落库{n_px}只 | 池子{n_pool_str(res['pool'], res['codes'])} | {res['secs']}s")
+        if stale:
+            # 跑完却还是旧数据 = 谎报成功，必须让上层（cron/策略）看到非 0 退出码
+            print(f"[K线][ERROR] 目标日={day} 但库内最新只到 {latest or '无'}（{BENCH}）"
+                  f"——今天那根没入库，策略会用旧数据 | 成功{ok}/{len(jobs)} 失败{len(bad)} "
+                  f"新增{added}根 到位{at_day}/{len(jobs)}只 | {res['secs']}s", flush=True)
+        else:
+            print(f"[K线] 目标日={day} 成功{ok}/{len(jobs)} 失败{len(bad)} | "
+                  f"新增 {added} 根，最新日期 {latest} | 到位{at_day}/{len(jobs)}只 "
+                  f"不复权落库{n_px}只 | 池子{n_pool_str(res['pool'], res['codes'])} | {res['secs']}s",
+                  flush=True)
     return res
 
 
@@ -256,9 +288,12 @@ def check():
         if r:
             raw_last[sid] = r[-1][0]
     cal = json.load(open(os.path.join(META, "index_calendar.json")))
+    bench = pxq_last.get(BENCH)          # 面板/信号日以它为闸门，不是"最大值"
     out = dict(calendar_last=cal[-1],
                pxq=dict(codes=len(pxq_last),
-                        last=max(pxq_last.values()) if pxq_last else None,
+                        bench_last=bench,
+                        at_bench=int(sum(v == bench for v in pxq_last.values())),
+                        max_last=max(pxq_last.values()) if pxq_last else None,
                         pool_ge60=int((pd.Series(nbar) >= MIN_BARS_OK).sum())),
                raw=dict(codes=len(raw_last),
                         last=max(raw_last.values()) if raw_last else None),
@@ -290,7 +325,8 @@ def main():
         return 0
     if a.json:
         print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
-    return 0
+    # 目标日没落库 → 非 0 退出，让 cron/上层任务看到失败
+    return 2 if (out.get("kline") or {}).get("stale") else 0
 
 
 if __name__ == "__main__":
