@@ -19,6 +19,8 @@ PROC_NAME = "同花顺"                                     # ps/pgrep 里的进
 BUNDLE_ID = "cn.com.10jqka.thsx"                        # THSX.app 的 bundle id
 APP_START_TIMEOUT = 20.0                                # 等进程出现的上限（秒）
 APP_WINDOW_TIMEOUT = 20.0                               # 等窗口可用的上限（秒）
+REBUILD_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "scripts", "ths_app.sh")      # 副本重建（唯一实现）
 
 
 def _cmdline(pid: int) -> str:
@@ -141,8 +143,46 @@ def wait_window(timeout: float = APP_WINDOW_TIMEOUT) -> bool:
     return False
 
 
+def copy_ready() -> bool:
+    """副本可用 = bundle id 对 + 没有 hardened runtime + adhoc 签名自校验通过。
+
+    重启电脑后 /tmp 被清空，重新 ditto 出来的原版带 hardened runtime 和沙箱 entitlements，
+    frida attach/spawn 会被 taskgated 拒掉（unable to access process ... from the current
+    user account）。这种副本必须先按 scripts/ths_app.sh rebuild 重签。
+    """
+    info = os.path.join(APP_PATH, "Contents", "Info.plist")
+    try:
+        bid = subprocess.check_output(
+            ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleIdentifier", info],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    if bid != BUNDLE_ID:
+        return False
+    sig = subprocess.run(["codesign", "-dv", APP_PATH],
+                         capture_output=True, text=True)
+    if "(runtime)" in (sig.stdout + sig.stderr):
+        return False
+    return subprocess.run(["codesign", "--verify", "--deep", "--strict", APP_PATH],
+                          capture_output=True).returncode == 0
+
+
+def ensure_copy() -> None:
+    """副本缺失/签名不可注入时重建一次（幂等，复用 scripts/ths_app.sh rebuild）。"""
+    if copy_ready():
+        return
+    r = subprocess.run(["bash", REBUILD_SH, "rebuild"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not copy_ready():
+        raise RuntimeError(
+            f"重建 {APP_PATH} 失败：{(r.stderr or r.stdout).strip()[:300]}"
+        )
+
+
 def launch() -> int:
     """启动 THSX.app（不杀任何进程），返回新进程 pid。"""
+    ensure_copy()
     subprocess.Popen(["open", APP_PATH],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return wait_process()

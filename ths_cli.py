@@ -457,6 +457,16 @@ def frida_positions(args):
     parsed = [_parse_pos_row(r) for r in raw_rows]
     parsed = [p for p in parsed if p["代码"].strip()]
 
+    # 真空仓：agent 明确回了快照（ok=true）且表里 0 行 —— 这是「登录成功、没有持仓」，
+    # 不是读失败。旧代码一律当错误，空仓时 frida 持仓永远读不到，sync 只能靠旧通道
+    # 兜底（重启后 15s 内旧通道未就绪 → sync 直接失败）。
+    if not parsed and not raw_rows:
+        if args.json:
+            _json_out({"ok": True, "count": 0, "rows": [], "source": source})
+        else:
+            print("持仓查询: 0 行（空仓）")
+        return
+
     if not parsed:
         if args.json:
             _json_out({"ok": False, "error": "parsed 0 rows with non-empty code",

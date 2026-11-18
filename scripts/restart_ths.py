@@ -22,7 +22,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from ths import Ths, ThsError                        # 桥客户端（登录态/持仓缓存）
-from ths_app import APP_PATH, force_restart, screen_locked, wait_window  # 唯一启动/重启入口
+from ths_app import (APP_PATH, count_windows, ensure_window,       # 唯一启动/重启入口
+                     force_restart, screen_locked, wait_window)
 
 NO_REVOKE = "--no-revoke" in sys.argv
 DRY_RUN = "--dry-run" in sys.argv
@@ -87,6 +88,46 @@ def restart() -> float:
     return time.time()
 
 
+def wait_login_ready(ths: Ths, timeout: float) -> int:
+    """等模拟仓登录真正可用，返回持仓行数。
+
+    判据：moni_count>0 且 active_is_moni=True，且持仓查询能正常返回。
+    ★ 空仓（0 行）也算成功：持仓缓存 >0 行的旧判据在清仓后永远等不到，
+      会把「已登录的空账户」误判成登录失败。
+    ★ 没窗口先补一个：SIGKILL 后重开的 App 可能零窗口，模拟仓登录入口
+      （JYMoniLoginWindowController）要主窗口在才通，否则 loginMoni 一直报
+      「moni user 未落地」。
+    """
+    deadline = time.time() + timeout
+    last = "未开始"
+    win_tries = 0
+    while True:
+        try:
+            if count_windows() == 0 and win_tries < 6:
+                win_tries += 1
+                ensure_window()
+                time.sleep(2)
+            ths.ensure_login()
+            st = ths.state()
+            last = (f"moni_count={st.get('moni_count')} "
+                    f"active_is_moni={st.get('active_is_moni')}")
+            if st.get("moni_count", 0) > 0 and st.get("active_is_moni"):
+                try:
+                    rows = ths.positions()
+                except ThsError as ex:
+                    last = f"{last} 持仓查询失败: {ex.error}"
+                else:
+                    print(f"   持仓 {len(rows)} 行")
+                    return len(rows)
+        except ThsError as ex:
+            last = f"登录失败: {ex.error}"
+        elapsed = time.time() - (deadline - timeout)
+        if time.time() >= deadline:
+            raise ThsError("wait_login", f"{timeout:.0f}s 内未完成模拟仓登录", last=last)
+        print(f"  ⏳ 等登录 {elapsed:.0f}s/{timeout:.0f}s  {last}")
+        time.sleep(5)
+
+
 def main() -> int:
     if screen_locked():
         print("[SKIP] 屏幕已锁定，跳过重启（App 保持当前状态）")
@@ -113,7 +154,7 @@ def main() -> int:
         print(f"  桥不可用: {ex}")
         return 2
     try:
-        ths.wait_login(timeout=max(1.0, timeout - (time.time() - t0)))
+        n_pos = wait_login_ready(ths, min(timeout, max(1.0, timeout - (time.time() - t0))))
     except ThsError as ex:
         print(f"[FAIL] 重启后 {timeout:.0f} 秒内未完成模拟仓登录")
         print(f"  最后状态: {ex.extra.get('last') or ex.error}")
@@ -121,7 +162,7 @@ def main() -> int:
     finally:
         ths.close()
 
-    print(f"✅ 模拟仓登录完成，耗时 {time.time() - t0:.1f}s（含重启）")
+    print(f"✅ 模拟仓登录完成，持仓 {n_pos} 行，耗时 {time.time() - t0:.1f}s（含重启）")
     print("✅ 同花顺已重启（不撤单）" if NO_REVOKE else "✅ 同花顺已重启（已先撤单）")
     return 0
 
