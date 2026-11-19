@@ -869,6 +869,11 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     sell_cause = {"stop": 0.0, "rot": 0.0, "regime": 0.0, "guard": 0.0}
     n_sells = n_stop_days = 0
     stop_log, sell_log = [], []
+    # ── 只读诊断（不参与任何决策）：--trades 的逐笔明细来源 ──
+    why, dec = {}, {}                # 卖单触发原因 / 产生该卖单的决策日位置
+    off_log = []                     # 空仓开关判为 OFF 的决策日位置
+    buys, buy_pct, buy_pct_dec = {}, {}, {}   # 建仓明细（可能多笔网格加仓）/ 买入日分位 / 决策日分位
+    legs = []                        # 逐笔成交（含回测结束未平仓），与 trades 分离，不影响 stats()
     hold_n, theme_share = [], []     # 每日持仓只数 / 单一主题占持仓的最大比例（集中度实测）
     theme_wshare = []                # 单一主题占持仓的最大比例（市值口径，网格改权后更准）
     # ── 护栏状态（与回测同一段 run()；实盘 latest_targets 复用同一份状态）──
@@ -896,6 +901,35 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     def pcx(i, j):
         v = C[i, j]
         return float(v) if np.isfinite(v) and v > 0 else np.nan
+
+    def fv(a, k):
+        """只读：取数组第 k 个元素为 float（非有限值→NaN），诊断字段用。"""
+        v = a[int(k)]
+        return float(v) if np.isfinite(v) else float("nan")
+
+    def rec_leg(j, i, p, q, pnl, ct, e_i):
+        """只读诊断：记一笔已平仓成交（逐笔明细，stats()/撮合/选股都不读它）。"""
+        _bl = buys.get(j, [])
+        _dj = int(dec.get(j, i - 1))
+        legs.append(dict(
+            code=cols[j], name=names.get(cols[j], ""),
+            entry_i=int(e_i), exit_i=int(i),
+            entry_d=str(idx[int(e_i)].date()), exit_d=str(idx[int(i)].date()),
+            dec_d=str(idx[_dj].date()),
+            entry_p=float(_bl[0][1]) if _bl else float("nan"),
+            entry_q=int(sum(b[2] for b in _bl)) if _bl else int(q),
+            entry_amt=float(sum(b[3] for b in _bl)) if _bl else float(ct),
+            exit_p=float(p), exit_q=int(q), exit_amt=float(q * p),
+            cost=float(ct), pnl=float(pnl), ret=float(pnl / ct),
+            reason=why.get(j, cause), dec_i=_dj, n_buy=len(_bl),
+            entry_pct=float(buy_pct.get(j, np.nan)),
+            entry_pct_dec=float(buy_pct_dec.get(j, np.nan)),
+            entry_bdec_d=str(idx[int(e_i) - 1].date()),
+            b_close=fv(close_b, i), b_ma=fv(ma60_b, i),
+            b_close_dec=fv(close_b, _dj), b_ma_dec=fv(ma60_b, _dj),
+            sell_pct=fv(pct[_dj], j), sell_pct_exec=fv(pct[i], j)))
+        buys.pop(j, None); buy_pct.pop(j, None); buy_pct_dec.pop(j, None)
+        why.pop(j, None); dec.pop(j, None)
 
     def val_at(i, j, q):
         p = po(i, j)
@@ -933,6 +967,10 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
             off_days += 1
             want_sell = set(shares)
             cause = "regime"
+            off_log.append(i)                       # 只读诊断：空仓开关判 OFF 的日子
+            for _j in want_sell:                    # 只读诊断：标注触发原因
+                why[_j] = "regime"
+                dec[_j] = i
             return False
         cause = "rot"
 
@@ -1199,6 +1237,24 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                         continue
                     want_grid.append((j, _scale_t / prm.n_hold))
                     guard_trim.add(j)
+        # ── 只读诊断：给本轮卖单标注触发条件（只写字典，不参与任何决策/排序/撮合）──
+        #   regime = 空仓开关（上面已标）；stop = ATR 止损；guard = 单日熔断；
+        #   buffer = 决策日动量分位掉到缓冲带以下（< hold_pct）；
+        #   rot = 分位仍在带内，但因去重/上限/持仓只数被挤掉（= 有更强标的）；
+        #   data = 分位缺失（当日无有效动量，row_ok=False）
+        for _j in want_sell:
+            if _j in why:
+                continue
+            _v = pct[i][_j]
+            if _j in stop_set:
+                why[_j] = "stop"
+            elif _j in guard_set:
+                why[_j] = "guard"
+            elif np.isfinite(_v):
+                why[_j] = "buffer" if _v < prm.hold_pct else "rot"
+            else:
+                why[_j] = "data"
+            dec[_j] = i
         return True
 
     for i in range(i0, i1 + 1):
@@ -1233,6 +1289,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 if np.isfinite(e_i) and np.isfinite(ct) and ct > 0:
                     trades.append(dict(j=j, code=cols[j], name=names.get(cols[j], ""),
                                        entry_i=int(e_i), exit_i=i, pnl=pnl, ret=pnl / ct))
+                    rec_leg(j, i, p, q, pnl, ct, e_i)     # 只读诊断：逐笔明细
                 basis.pop(j, None)
                 anchor.pop(j, None); anchor_atr.pop(j, None); peak.pop(j, None)
                 mult.pop(j, None); greed.pop(j, None); want_sell.discard(j); want_buy.pop(j, None)
@@ -1271,6 +1328,11 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 lastpx[j] = p
                 traded += q * p
                 tr["rot"] += q * p
+                # ── 只读诊断：建仓明细（成交价/股数/金额/买入日分位），不参与决策 ──
+                buys.setdefault(j, []).append((int(i), float(p), int(q), float(q * p)))
+                buy_pct[j] = float(pct[i][j]) if np.isfinite(pct[i][j]) else float("nan")
+                buy_pct_dec[j] = (float(pct[i - 1][j]) if np.isfinite(pct[i - 1][j])
+                                  else float("nan"))
                 want_buy.pop(j, None)
             # 网格权重微调（只动比例，不动集合）：先减后加，否则满仓时加仓永远没现金
             _g = []
@@ -1306,6 +1368,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                     shares[j] += q
                     cost_total[j] = cost_total.get(j, 0.0) + q * p
                     traded += q * p
+                    buys.setdefault(j, []).append((int(i), float(p), int(q), float(q * p)))
                 else:
                     q = min(shares[j], int(-dv / p / LOT) * LOT)
                     if q < LOT:
@@ -1324,6 +1387,7 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                         if np.isfinite(e_i) and np.isfinite(ct) and ct > 0:
                             trades.append(dict(j=j, code=cols[j], name=names.get(cols[j], ""),
                                                entry_i=int(e_i), exit_i=i, pnl=pnl, ret=pnl / ct))
+                            rec_leg(j, i, p, q, pnl, ct, e_i)   # 只读诊断：逐笔明细
                         basis.pop(j, None)
                         anchor.pop(j, None); anchor_atr.pop(j, None); peak.pop(j, None)
                         mult.pop(j, None); greed.pop(j, None)
@@ -1408,6 +1472,32 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
 
     eq = pd.Series(eq_close, index=idx[i0:i0 + len(eq_close)])
     ret = eq.pct_change().fillna(0.0)
+    # ── 只读诊断：回测结束时仍未平仓的仓位，按最后交易日收盘价估值（不是成交，单独标注 eod）──
+    for j, q in shares.items():
+        _ct = cost_total.get(j, float("nan"))
+        _e_i = entry_i.get(j, np.nan)
+        _p = C[i1, j] if np.isfinite(C[i1, j]) else lastpx.get(j, np.nan)
+        if not (np.isfinite(_ct) and _ct > 0 and np.isfinite(_e_i) and np.isfinite(_p)):
+            continue
+        _pnl = (float(_p) - float(basis.get(j, _p))) * q + realized.get(j, 0.0)
+        _bl = buys.get(j, [])
+        legs.append(dict(
+            code=cols[j], name=names.get(cols[j], ""),
+            entry_i=int(_e_i), exit_i=int(i1),
+            entry_d=str(idx[int(_e_i)].date()), exit_d=str(idx[int(i1)].date()),
+            dec_d=str(idx[int(i1)].date()),
+            entry_p=float(_bl[0][1]) if _bl else float("nan"),
+            entry_q=int(sum(b[2] for b in _bl)) if _bl else int(q),
+            entry_amt=float(sum(b[3] for b in _bl)) if _bl else float(_ct),
+            exit_p=float(_p), exit_q=int(q), exit_amt=float(q * _p),
+            cost=float(_ct), pnl=float(_pnl), ret=float(_pnl / _ct),
+            reason="eod", dec_i=int(i1), n_buy=len(_bl),
+            entry_pct=float(buy_pct.get(j, np.nan)),
+            entry_pct_dec=float(buy_pct_dec.get(j, np.nan)),
+            entry_bdec_d=str(idx[int(_e_i) - 1].date()),
+            b_close=fv(close_b, i1), b_ma=fv(ma60_b, i1),
+            b_close_dec=fv(close_b, i1), b_ma_dec=fv(ma60_b, i1),
+            sell_pct=fv(pct[i1], j), sell_pct_exec=fv(pct[i1], j)))
     return dict(eq=eq, ret=ret,
                 cost=pd.Series({idx[i]: v for i, v in cost_day.items()}),
                 turn=pd.Series(turn_week), trades=pd.DataFrame(trades),
@@ -1429,6 +1519,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
                 idx_wshare=pd.Series(idx_wshare, index=idx[i0:i0 + len(idx_wshare)]),
                 idx_cnt=pd.Series(idx_cnt, index=idx[i0:i0 + len(idx_cnt)]),
                 pos_log=pos_log, nan_close=nan_close,
+                legs=legs, off_log=off_log,
+                off_dates=[str(idx[int(x)].date()) for x in off_log],
                 decisions=sorted(int(i) for i in wdec),
                 state=(state if return_state else None))
 
@@ -2569,6 +2661,130 @@ def print_plan(plan):
     print(f"  持仓一致性: 目标 {_nt} 只 / 实际 {_nc} 只 → {act}")
 
 
+def trades_report(res, prm):
+    """逐笔成交明细（只读导出）：打印 + 写 dumps/trades_{start}_{end}.json。
+
+    数据全部来自 run() 的 legs（真实成交，非估算）；reason 是 decide() 当时的触发条件标注。
+    """
+    legs = res["legs"]
+    eq = res["eq"]
+    hn = res["hold_n"]
+    offd = res["off_dates"]
+    idx = eq.index
+
+    def nat(a, b):
+        return (pd.Timestamp(b) - pd.Timestamp(a)).days
+
+    buys_by_day = {}
+    for t in legs:
+        buys_by_day.setdefault(t["entry_d"], []).append(t)
+
+    RSN = {"regime": "空仓开关触发（510300 跌破 MA60）",
+           "buffer": "动量掉出缓冲带（分位<0.70）",
+           "rot": "决策日换仓（有更强的标的）",
+           "eod": "回测结束平仓",
+           "stop": "止损（ATR 跟踪止损触发）",
+           "guard": "护栏卖出（单日熔断）",
+           "data": "决策日换仓（当日动量分位缺失，按不达标处理）"}
+
+    print("")
+    print("=" * 78)
+    print(f"逐笔成交明细  {prm.start} → {prm.end}   （run() 实际成交，非估算）")
+    print("=" * 78)
+    for n, t in enumerate(legs, 1):
+        why = t["reason"]
+        code6 = t["code"][2:] if t["code"][:2] in ("sh", "sz") else t["code"]
+        print(f"第{n}笔 买入 {t['entry_d']} 开盘价 {t['entry_p']:.4f} 买 {t['entry_q']:,} 股 "
+              f"金额 {t['entry_amt']:,.0f} 元（{code6} {t['name']}，动量分位 "
+              f"{t['entry_pct'] * 100:.1f}%（{t['entry_d']}）/ "
+              f"{t['entry_pct_dec'] * 100:.1f}%（决策日 {t['entry_bdec_d']}））")
+        td = t["exit_i"] - t["entry_i"]
+        nd = nat(t["entry_d"], t["exit_d"])
+        if why == "eod":
+            print(f"      至 {t['exit_d']} 回测结束仍持有，按当日收盘价 {t['exit_p']:.4f} 估值 "
+                  f"持有 {td} 个交易日（自然日 {nd} 天） 浮动盈亏 "
+                  f"{t['pnl']:+,.0f} 元 {t['ret'] * 100:+.2f}%")
+        else:
+            print(f"      卖出 {t['exit_d']} 开盘价 {t['exit_p']:.4f} 卖 {t['exit_q']:,} 股 "
+                  f"金额 {t['exit_amt']:,.0f} 元 持有 {td} 个交易日（自然日 {nd} 天） "
+                  f"盈亏 {t['pnl']:+,.0f} 元 {t['ret'] * 100:+.2f}%")
+        det = []
+        if why == "regime":
+            det.append(f"决策日 {t['dec_d']} 510300 收 {t['b_close_dec']:.4f} < MA60 "
+                       f"{t['b_ma_dec']:.4f}（低 {abs(t['b_close_dec'] / t['b_ma_dec'] - 1) * 100:.2f}%）")
+        elif why == "buffer":
+            det.append(f"决策日 {t['dec_d']} 动量分位 {t['sell_pct'] * 100:.1f}% < 70%")
+        elif why == "rot":
+            det.append(f"决策日 {t['dec_d']} 动量分位 {t['sell_pct'] * 100:.1f}% 仍在缓冲带内，"
+                       f"被同指数去重/赛道上限/持仓只数挤出")
+        elif why == "data":
+            det.append(f"决策日 {t['dec_d']} 动量分位缺失")
+        elif why == "eod":
+            det.append(f"窗口最后一个交易日 {t['exit_d']} 收盘，非策略卖出")
+        if why in ("rot", "buffer", "data"):
+            _nb = [x for x in buys_by_day.get(t["exit_d"], []) if x is not t]
+            if _nb:
+                det.append("同日开盘换入 " + "、".join(
+                    f"{x['code'][2:]} {x['name']}（分位 {x['entry_pct_dec'] * 100:.1f}%）"
+                    for x in _nb))
+        print(f"      卖出原因：{RSN.get(why, why)}" + ("；" + "；".join(det) if det else ""))
+        if np.isfinite(t["b_close"]) and np.isfinite(t["b_ma"]) and t["b_ma"] > 0:
+            _dd = (t["b_close"] / t["b_ma"] - 1) * 100
+            print(f"      卖出日 510300 收 {t['b_close']:.4f} / MA60 {t['b_ma']:.4f}"
+                  f"（{'高' if _dd >= 0 else '低'} {abs(_dd):.2f}%）")
+        print("")
+
+    eq0, eq1 = float(eq.iloc[0]), float(eq.iloc[-1])
+    hold_days = int((hn > 0).sum())
+    total_days = int(len(eq))
+    s_pnl = sum(t["pnl"] for t in legs)
+    closed = [t for t in legs if t["reason"] != "eod"]
+    s_closed = sum(t["pnl"] for t in closed)
+    print("-" * 78)
+    print(f"总览  {prm.start} → {prm.end}")
+    print(f"  交易日 {total_days} 天；起始资金 {eq0:,.0f} 元（窗口起点空仓起步，不继承窗口外持仓）")
+    if legs:
+        _last = max((t["exit_d"] for t in closed), default="—")
+        print(f"  第一笔买入 {legs[0]['entry_d']}；最后一笔真实卖出 {_last}"
+              + (f"；期末 {legs[-1]['exit_d']} 仍持有 {len(legs) - len(closed)} 只（按收盘价估值）"
+                 if len(closed) < len(legs) else ""))
+    print(f"  在仓 {hold_days} 天 / 总 {total_days} 天 = {hold_days / total_days * 100:.1f}%"
+          f"（空仓 {total_days - hold_days} 天）")
+    print(f"  成交 {len(legs)} 笔（已平仓 {len(closed)} 笔 + 期末仍持有 {len(legs) - len(closed)} 笔）")
+    print(f"  已平仓 {len(closed)} 笔盈亏加总 {s_closed:+,.0f} 元（算术加总，不复利）")
+    if len(closed) < len(legs):
+        print(f"  含期末持仓浮盈的 {len(legs)} 笔加总 {s_pnl:+,.0f} 元（浮盈 "
+              f"{s_pnl - s_closed:+,.0f} 元，按 {legs[-1]['exit_d']} 收盘价估值）")
+    print(f"  复利累计 {eq1 / eq0 - 1:+.2%}（期末权益 {eq1:,.0f} 元，与 --backtest 输出一致）")
+    eps = []
+    for k, ds in enumerate(offd):
+        i = int(idx.searchsorted(pd.Timestamp(ds)))
+        if eps and i == eps[-1][-1][0] + 1:
+            eps[-1].append((i, ds))
+        else:
+            eps.append([(i, ds)])
+    if eps:
+        print(f"  空仓开关触发 {len(eps)} 次（510300 收盘 < MA60 的连续区间，共 {len(offd)} 个交易日）：")
+        for k, e in enumerate(eps, 1):
+            _st, _ed = e[0][1], e[-1][1]
+            sold = [t for t in legs if t["reason"] == "regime" and t["dec_d"] in [_x[1] for _x in e]]
+            tail = ("，次日开盘清仓 " + "、".join(f"{t['code'][2:]} {t['name']}" for t in sold)
+                    if sold else "，当时已空仓（无仓位可清）")
+            print(f"    {k}) {_st} → {_ed} 共 {len(e)} 个交易日{tail}")
+    else:
+        print("  空仓开关触发 0 次（窗口内 510300 始终在 MA60 上方）")
+    print("-" * 78)
+    p = os.path.join(DUMPS, f"trades_{prm.start}_{prm.end}.json")
+    json.dump(dict(start=prm.start, end=prm.end, eq0=eq0, eq1=eq1, cups=eq1 / eq0 - 1,
+                   hold_days=hold_days, total_days=total_days,
+                   pnl_sum=s_pnl, pnl_sum_closed=s_closed,
+                   regime_episodes=[dict(start=e[0][1], end=e[-1][1], days=len(e)) for e in eps],
+                   legs=[{k: (None if isinstance(v, float) and not np.isfinite(v) else v)
+                          for k, v in t.items()} for t in legs]),
+              open(p, "w"), ensure_ascii=False, indent=1, default=str)
+    print("明细已写", p)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backtest", "--run", dest="run", action="store_true")
@@ -2607,6 +2823,8 @@ def main():
     ap.add_argument("--guard-theme", type=float, default=None, help="赛道崩塌阈值（0=关，0.5=过半破MA20）")
     ap.add_argument("--cost", type=float, default=None)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--trades", action="store_true",
+                    help="逐笔成交明细（只读导出：打印 + 写 dumps/trades_START_END.json）")
     a = ap.parse_args()
     cfg = load_cfg()
     if a.theme_cap is not None:
@@ -2746,6 +2964,8 @@ def main():
               f"| 空仓 {res['off_days']} 天")
         print("分年:", {k: round(v * 100, 2) for k, v in by_year(res["eq"]).items()})
         res["eq"].to_csv(os.path.join(DUMPS, f"eq_{prm.start}_{prm.end}.csv"))
+        if a.trades:
+            trades_report(res, prm)
         return 0
     if not a.suite:
         print("用 --suite / --caps / --plan / --backtest")
