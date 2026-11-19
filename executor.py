@@ -75,20 +75,6 @@ class _SyntheticProc:
 # 数据类（从 order_manager.py 迁移）
 # ═══════════════════════════════════════════════════════
 
-@dataclass
-class OrderIntent:
-    """交易意图 — 决策引擎输出的交易意图（原decision_engine模块，已内联）"""
-    code: str                     # ETF代码
-    name: str = ""                # ETF名称
-    trade_type: str = "main"      # main / t0
-    direction: str = "买入"       # 买入 / 卖出
-    shares: int = 0
-    price: float = 0.0
-    pair_price: float = 0.0       # 做T配对价
-    reason: str = ""
-    source: str = "strategy"
-    confidence: float = 1.0
-
 
 @dataclass
 class Order:
@@ -693,21 +679,6 @@ def get_data_broker():
     """
     from broker_frida import get_ths_broker
     return get_ths_broker()
-
-
-# ═══════════════════════════════════════════════════════
-# 模块级实例
-# ═══════════════════════════════════════════════════════
-
-_broker: Optional[BaseBroker] = None
-
-
-def get_default_broker() -> BaseBroker:
-    """获取默认 broker 实例（单例）"""
-    global _broker
-    if _broker is None:
-        _broker = get_broker()
-    return _broker
 
 
 # ═══════════════════════════════════════════════════════

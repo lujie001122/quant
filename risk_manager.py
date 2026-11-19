@@ -796,24 +796,10 @@ class RiskManager:
 # ═══════════════════════════════════════════════
 # 模块级快捷函数（向后兼容）
 # ═══════════════════════════════════════════════
-# 模块级快捷函数（向后兼容）
-# ═══════════════════════════════════════════════
 
 # 单例实例（不再区分 enhanced/非 enhanced，通过参数传递）
 _rm = RiskManager()
 
-
-def check_order(order_intent):
-    """统一风控入口（P0 修复：日亏损限额在此实际生效）
-    
-    检查顺序:
-      1. 日亏损限额检查（每日最多亏损5%）
-      2. 仓位上限检查（单只不超过50%）
-      3. 止损检查（止盈/止损/减仓）
-    
-    返回: (ok: bool, reason: str)
-    """
-    return _rm.check_order(order_intent)
 
 def check_stop_loss(pos, t, price, today_str, enhanced_trend=False):
     """评估止盈止损信号（快捷方式）

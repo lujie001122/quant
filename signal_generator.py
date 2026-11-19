@@ -1288,12 +1288,6 @@ def generate_signals(positions=None, all_klines=None, all_tech=None):
 # ============================================================
 
 
-def execute_signals(result, mode=None):
-    """遍历信号执行交易（P2-9: 已迁移到 executor.py，此处保留向后兼容）"""
-    from executor import execute_signals as _exec_execute
-    return _exec_execute(result, mode=mode)
-
-
 def _parse_execute_args():
     """解析 --execute / --execute=t0|buy_sell。返回 (execute_flag, mode)。"""
     for arg in sys.argv[1:]:
@@ -1677,7 +1671,8 @@ def main():
             print(json_str)
 
             if execute_flag:  # 只要在命令行出现了 --execute，就执行信号
-                execute_signals(result, mode=execute_mode)
+                from executor import execute_signals as _exec_execute
+                _exec_execute(result, mode=execute_mode)
 
             return 0
         except Exception as e:
