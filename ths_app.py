@@ -43,20 +43,58 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+SCREEN_LOCK_CHECKS = 3      # 连续采样次数：全部=Yes 才算锁屏
+SCREEN_LOCK_GAP = 1.0       # 采样间隔（秒）
+
+
+def probe_screen_lock() -> tuple:
+    """单次锁屏探测 → (state, evidence, raw)，state ∈ locked/unlocked/unknown。
+
+    ioreg 调不通（超时/非 0 退出/空输出/多会话状态打架）一律 unknown，未知不等于锁屏。
+    未锁屏时 macOS 根本不写 CGSSessionScreenIsLocked 这个键，所以「键不存在」= 未锁屏。
+    """
+    t0 = time.time()
+    try:
+        r = subprocess.run(["ioreg", "-n", "Root", "-d1"],
+                           capture_output=True, text=True, timeout=5)
+    except (subprocess.SubprocessError, OSError) as ex:
+        return "unknown", f"ioreg 调用失败: {type(ex).__name__}: {ex}", ""
+    ms = (time.time() - t0) * 1000
+    out = r.stdout or ""
+    if r.returncode != 0:
+        return ("unknown", f"ioreg rc={r.returncode} 耗时{ms:.0f}ms: "
+                f"{(r.stderr or '').strip()[:120]}", out)
+    if not out.strip():
+        return "unknown", f"ioreg 空输出 rc=0 耗时{ms:.0f}ms", out
+    vals = re.findall(r'"CGSSessionScreenIsLocked"\s*=\s*(Yes|No)', out)
+    if not vals:
+        return "unlocked", f"ioreg rc=0 耗时{ms:.0f}ms {len(out)}字节: 键不存在（未锁屏）", out
+    if len(set(vals)) > 1:
+        return "unknown", f"ioreg 多个会话锁屏状态不一致 {vals}", out
+    return ("locked" if vals[0] == "Yes" else "unlocked",
+            f'ioreg rc=0 耗时{ms:.0f}ms {len(out)}字节: "CGSSessionScreenIsLocked"={vals[0]}',
+            out)
+
+
+def screen_lock_samples(checks: int = SCREEN_LOCK_CHECKS,
+                        gap: float = SCREEN_LOCK_GAP) -> list:
+    """连续 checks 次探测，返回 [(state, evidence, raw), ...]。"""
+    samples = []
+    for i in range(checks):
+        if i:
+            time.sleep(gap)
+        samples.append(probe_screen_lock())
+    return samples
+
+
 def screen_locked() -> bool:
-    """CGSSessionScreenIsLocked=Yes → 屏幕已锁定。
+    """连续 SCREEN_LOCK_CHECKS 次探测全部=Yes 才算锁屏。
 
     锁屏时同花顺重启后登录回不来（loginZiYingFuWu 要网络+活跃会话），UI 点击也无效。
+    unknown（ioreg 失败/超时/空输出）或任意一次未锁 → False：宁可重启，也不要因为
+    一次探测失败静默吞掉整次重启。
     """
-    try:
-        out = subprocess.check_output(
-            ["ioreg", "-n", "Root", "-d1"], text=True,
-            stderr=subprocess.DEVNULL, timeout=5,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return False
-    m = re.search(r'"CGSSessionScreenIsLocked"\s*=\s*(Yes|No)', out)
-    return bool(m) and m.group(1) == "Yes"
+    return all(state == "locked" for state, _, _ in screen_lock_samples())
 
 
 def app_pid():
