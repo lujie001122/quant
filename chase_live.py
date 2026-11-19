@@ -40,7 +40,8 @@
 
 撮合（回测=实盘口径）
   * 真实交易日历（meta/index_calendar.json），信号收盘算、次日开盘成交（T+1）
-  * 涨跌停：开盘即封板（默认 10%，名称含创业板/科创/双创按 20%）→ 当日不成交，次日重试
+  * 涨跌停：开盘即封板（10%/20% 一律走 money_manager._price_limit_pct，与实盘下单同一套
+    代码前缀+白名单判定，不再按名称正则 → 当日不成交，次日重试
   * 停牌/无成交：当日无 bar 或成交量为 0 → 不成交，指令顺延
   * 整手：买入股数向下取整到 100 股
   * 成本：单边 c（默认 0.1%），买入 c*qty*p、卖出同额，双边计
@@ -86,7 +87,6 @@ LOT = 100
 
 EXCL = re.compile(r"货币|现金(?!流)|快钱|快线|保证金|日利|添利|添益|日日鑫|财富宝|天天利|理财|短融|"
                   r"转债|可转债|债|城投|同业存单|信用")
-LIMIT20 = re.compile(r"创业板|科创|双创|创业")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -830,8 +830,8 @@ def run(P, D, mask, pct, prm: Params, return_state=False):
     C, O = P["C"], P["O"]
     atr, ma20 = D["atr"], D["ma20"]
     bj, close_b, ma60_b = index_ma_series(P, D, prm)
-    limit = np.array([0.20 if LIMIT20.search(str(names.get(c, ""))) else 0.10 for c in cols],
-                     dtype=np.float32)
+    from money_manager import _price_limit_pct as _plp   # 涨跌停唯一真相源（与实盘同一套）
+    limit = np.array([_plp(str(c)[2:]) for c in cols], dtype=np.float32)
     theme = np.array([theme_of(names.get(c, "")) for c in cols], dtype=object)
     ncol = len(cols)
 

@@ -849,6 +849,41 @@ def flow_limit_price(code, live_price, is_buy, buffer_pct, prev_close=None):
 
 
 # ═══════════════════════════════════════════════════════
+# 开盘集合竞价挂单（style='auction'）
+# ═══════════════════════════════════════════════════════
+
+def auction_limit_price(code, is_buy, prev_close=None, ref_price=None):
+    """集合竞价挂单价：买入 = 当日涨停价，卖出 = 当日跌停价。
+
+    为什么挂涨跌停价：开盘集合竞价（09:15-09:25）全网只有一个成交价 = 开盘价，
+    挂涨停/跌停价是"保证进得了撮合、成交价仍按开盘价"的唯一方式 —— 与回测
+    「T+1 开盘价成交」口径一致。挂实时价±1% 在开盘前既没有实时价、也跟不上跳空。
+
+    涨跌停唯一真相源 = money_manager.day_price_limits（按代码前缀 + 白名单判 10%/20%）。
+    返回 {ok, price, limit_up, limit_down, reason}；ok=False 表示算不出涨跌停
+    （缺昨收），这一笔不能挂竞价，交给 09:31 连续竞价兜底。
+    """
+    from money_manager import day_price_limits
+
+    limit_down, limit_up = day_price_limits(code, prev_close, ref_price)
+    if limit_up <= 0 or limit_down <= 0:
+        return {"ok": False, "price": 0.0, "limit_up": limit_up, "limit_down": limit_down,
+                "reason": "拿不到昨收，算不出当日涨跌停价"}
+    return {"ok": True, "price": limit_up if is_buy else limit_down,
+            "limit_up": limit_up, "limit_down": limit_down, "reason": ""}
+
+
+def _exec_result(success=0, fail=0, skip=0, orders=None):
+    """execute_signals 的统一返回：成功/失败/跳过笔数 + 本次提交的委托清单。
+
+    调用方（signal_generator.main）按 fail 决定退出码：有失败必须非 0，
+    否则 cron/调度器看到的是"成功"，静默丢单没人知道。
+    """
+    return {"success": int(success), "fail": int(fail), "skip": int(skip),
+            "orders": orders or []}
+
+
+# ═══════════════════════════════════════════════════════
 # 信号执行器 (P2-9: 从 signal_generator.py 迁移)
 # ═══════════════════════════════════════════════════════
 
@@ -865,6 +900,7 @@ class SignalExecutor:
     def __init__(self):
         """延迟导入避免循环依赖"""
         self._imports_loaded = False
+        self._style = "continuous"   # 本轮的限价口径：auction=竞价挂涨跌停价 / continuous=现价限价
 
     def _run_t0_chase_cycle(self):
         """T0 单腿追价周期入口（每次 execute_signals mode='t0' 调用一次）。
@@ -939,200 +975,6 @@ class SignalExecutor:
         if actions:
             print(f"[T0-CHASE] 本周期执行: {actions}")
         save_chase_holder(holder)
-
-    # ═══════════════════════════════════════════════════════
-    # 【二】普通卖出追价（复用 T0 追价框架与状态文件思路）
-    # ═══════════════════════════════════════════════════════
-    _SELL_CHASE_FILE = "/tmp/dsh_sell_chase_state.json"
-    _SELL_CHASE_INTERVAL = 600      # 10 分钟
-    _SELL_CHASE_MAX = 3             # 最多追 3 次
-    _SELL_CHASE_DEADLINE = "14:45"  # 收盘前未成交则告警不再追
-
-    def _load_sell_chase_state(self):
-        """读取普通卖出追价状态文件"""
-        import json as _json
-        try:
-            with open(self._SELL_CHASE_FILE, encoding="utf-8") as _f:
-                return _json.load(_f)
-        except Exception:
-            return {}
-
-    def _save_sell_chase_state(self, state):
-        """写入普通卖出追价状态文件"""
-        import json as _json
-        try:
-            with open(self._SELL_CHASE_FILE, "w", encoding="utf-8") as _f:
-                _json.dump(state, _f, ensure_ascii=False, indent=2)
-        except Exception as ex:
-            print(f"[SELL-CHASE] 写入状态失败: {ex}")
-
-    @staticmethod
-    def _is_continuous_auction(now):
-        """判断当前是否在连续竞价时段（9:30-11:30, 13:00-14:57）"""
-        hm = now.strftime("%H%M")
-        return ("0930" <= hm < "1130") or ("1300" <= hm < "1457")
-
-    def _run_sell_chase_cycle(self):
-        """普通卖出追价周期入口（每次 execute_signals mode='buy_sell' 调用一次）。
-        复用现有 T0 追价的框架和状态文件思路：
-        - 间隔 10 分钟检查一次，最多追 3 次
-        - 每次按当时对手价（卖单用买一价）重挂
-        - 撤旧单前确认旧单状态，撤单失败不重复下单
-        - 收盘前 14:45 未成交则告警，不再追
-        - 只在连续竞价时段工作
-        """
-        from datetime import datetime as _dt
-        import time as _time
-
-        now = _dt.now()
-        # 只在连续竞价时段工作
-        if not self._is_continuous_auction(now):
-            return
-
-        state = self._load_sell_chase_state()
-        if not state:
-            return
-
-        today_str = now.strftime("%Y-%m-%d")
-        _script_dir = os.path.dirname(os.path.abspath(__file__))
-        _trade_py = os.path.join(_script_dir, 'trade.py')
-        import subprocess as _sp
-        import sys as _sys_sc
-
-        deadline_hm = int(self._SELL_CHASE_DEADLINE.replace(":", ""))
-        now_hm = int(now.strftime("%H%M"))
-
-        changed = False
-        for key, st in list(state.items()):
-            # 清理非今日记录
-            if st.get("date") != today_str:
-                del state[key]
-                changed = True
-                continue
-
-            contract = st.get("contract", "pending")
-            chase_count = st.get("chase_count", 0)
-            next_ts = st.get("next_ts", 0)
-
-            # 未到间隔时间，跳过
-            if _time.time() < next_ts:
-                continue
-
-            # 收盘前未成交告警
-            if now_hm >= deadline_hm:
-                print(f"[SELL-CHASE] ⚠️ {key} 截至{self._SELL_CHASE_DEADLINE}未成交，告警不再追价")
-                try:
-                    get_alert_manager().warning("卖出追价未成交",
-                                                f"{key} 收盘前未成交，已停止追价",
-                                                dedup_key=f"sell_chase_unfilled:{key}")
-                except Exception:
-                    pass
-                del state[key]
-                changed = True
-                continue
-
-            # 已达最大追价次数
-            if chase_count >= self._SELL_CHASE_MAX:
-                print(f"[SELL-CHASE] {key} 已达最大追价次数{self._SELL_CHASE_MAX}，停止追价")
-                del state[key]
-                changed = True
-                continue
-
-            # 取对手价（卖单用买一价）
-            code = st.get("code", "")
-            shares = st.get("shares", 0)
-            if not code or shares < 100:
-                del state[key]
-                changed = True
-                continue
-
-            try:
-                from market_data import fetch_realtime_quotes
-                _q = fetch_realtime_quotes([code])
-                _r = _q.get(code, {})
-                bid1 = _r.get("bid1", 0)
-            except Exception as ex:
-                print(f"[SELL-CHASE] {key} 获取对手价失败: {ex}")
-                continue
-
-            if not bid1 or bid1 <= 0:
-                print(f"[SELL-CHASE] {key} 买一价无效(bid1={bid1})，跳过本次")
-                continue
-
-            # 撤旧单前确认旧单状态（frida orders 优先，失败回退 getEntrust）
-            if contract and contract != "pending":
-                _status, _filled = _lookup_contract_status(contract)
-                if _status is None:
-                    print(f"[SELL-CHASE] {key} 合同号{contract}查不到或不在委托列表，已不可撤，跳过本次")
-                    continue
-                # 已成交则无需追价
-                if _filled:
-                    print(f"[SELL-CHASE] {key} 旧单{contract}已成交，清除追价记录")
-                    del state[key]
-                    changed = True
-                    continue
-                # 撤单失败不重复下单
-                if not _cancel_contract(contract):
-                    print(f"[SELL-CHASE] {key} 旧单{contract}撤单失败，不重复下单，跳过本次")
-                    continue
-
-            # 按对手价（买一价）重挂
-            try:
-                cmd = [_sys_sc.executable, _trade_py, "sell", code, str(shares), f"{bid1:.3f}"]
-                _proc = _sp.run(cmd, capture_output=True, text=True, timeout=60, cwd=_script_dir)
-                if _proc.returncode == 0:
-                    print(f"[SELL-CHASE] {key} 第{chase_count+1}次追价成功，重挂@{bid1:.3f}")
-                    # 读取新合同号
-                    from state_center import load_today_orders
-                    _orders = load_today_orders()
-                    _new_contract = "pending"
-                    for _fname, _od in sorted(_orders.items(), reverse=True):
-                        if _od.get("code") == code and _od.get("direction") == "卖出":
-                            _new_contract = _od.get("contract", "pending")
-                            break
-                    st["contract"] = _new_contract
-                    st["chase_count"] = chase_count + 1
-                    st["next_ts"] = _time.time() + self._SELL_CHASE_INTERVAL
-                    changed = True
-                else:
-                    print(f"[SELL-CHASE] {key} 第{chase_count+1}次追价下单失败(exit={_proc.returncode})")
-            except Exception as ex:
-                print(f"[SELL-CHASE] {key} 追价下单异常: {ex}")
-
-        if changed:
-            self._save_sell_chase_state(state)
-
-    def _record_sell_chase_after_execute(self, code, shares):
-        """普通卖出下单成功后，写入追价状态（复用 T0 追价记录思路）。
-        调用点: executor.py 普通卖出/清仓/减仓下单成功后
-        """
-        from datetime import datetime as _dt
-        import time as _time
-
-        today_str = _dt.now().strftime("%Y-%m-%d")
-        state = self._load_sell_chase_state()
-        try:
-            from state_center import load_today_orders
-            _orders = load_today_orders()
-            _contract = "pending"
-            for _fname, _od in sorted(_orders.items(), reverse=True):
-                if _od.get("code") == code and _od.get("direction") == "卖出":
-                    _contract = _od.get("contract", "pending")
-                    break
-        except Exception:
-            _contract = "pending"
-
-        _key = f"{today_str}_{code}_sell"
-        state[_key] = {
-            "code": code,
-            "shares": shares,
-            "contract": _contract,
-            "chase_count": 0,
-            "next_ts": _time.time() + self._SELL_CHASE_INTERVAL,
-            "date": today_str,
-        }
-        self._save_sell_chase_state(state)
-        print(f"[SELL-CHASE] 记录追价 {_key}: contract={_contract} shares={shares}")
 
     def _check_t0_idempotent(self, code: str, action: str) -> bool:
         """做T下单前幂等检查（一次信号只允许下一单，买入/卖出对称）。
@@ -1304,6 +1146,8 @@ class SignalExecutor:
 
     def _flow_limit_price(self, code, price, is_buy, live):
         """flow 分支专用：限价加跳空缓冲 → 夹涨跌停 → 取整，并打印对照。"""
+        if self._style == "auction":
+            return price   # 竞价模式：限价已是涨跌停价，不再加跳空缓冲
         live_price = float((live or {}).get("price") or 0.0)
         if live_price <= 0:
             return price
@@ -1319,6 +1163,87 @@ class SignalExecutor:
               f"(缓冲{buf * 100:.1f}%{note}) 现价 {live_price:.3f} "
               f"{side} {limit_px:.3f}")
         return res["price"]
+
+    def _today_order_exists(self, code, direction, today_str, entrust_index=None):
+        """当日同标的同方向是否已经挂过单（严格幂等）。返回证据串，未挂过返回 ''。
+
+        三个来源都要查（缺一个就会出现"连跑两次挂两笔"）：
+          1) 本地 orders/*.json（trade.py 下单成功后落的盘）
+          2) orders/intent/ 的 intent 文件（下单前落盘，覆盖"委托表还没回"的窗口）
+          3) 同花顺当日委托表（orders 文件被手工清理/进程被杀时的最后兜底）
+        failed/已撤/废单 不算已挂 —— 允许当天重试。
+        """
+        from state_center import load_today_orders, load_intent_files
+
+        for fname, od in load_today_orders().items():
+            if od.get("code") != code or od.get("direction") != direction:
+                continue
+            st = str(od.get("status") or "")
+            if st == "failed" or "撤" in st or "废" in st:
+                continue
+            return f"orders/{fname} status={st}"
+        for fname, it in load_intent_files().items():
+            if it.get("code") != code or it.get("direction") != direction:
+                continue
+            st = str(it.get("status") or "")
+            if st in ("pending", "submitted", "filled", "partial"):
+                return f"intent/{fname} status={st}"
+        if entrust_index and (code, direction) in entrust_index:
+            return f"委托表 {entrust_index[(code, direction)]}"
+        return ""
+
+    def _entrust_today_index(self):
+        """当日委托表索引 {(code, direction): '合同号=… 状态=…'}，一次查询循环内复用。
+
+        竞价的挂单窗口只有 09:15-09:20 四分钟，单次 frida 查询约 0.4s，
+        逐笔查 20 只会吃掉 8 秒，所以在这里一次性取回。
+        """
+        idx = {}
+        try:
+            from broker_frida import ThsBroker
+            for o in (ThsBroker(timeout=15).get_orders() or []):
+                st = str(o.get("status") or "")
+                if "撤" in st or "废" in st:
+                    continue
+                idx[(str(o.get("code")), str(o.get("direction")))] = \
+                    f"合同号={o.get('contract')} 状态={st}"
+        except Exception as ex:
+            print(f"  ⚠️ [AUCTION幂等] 读委托表失败({ex})，仅按本地记录判定")
+        return idx
+
+    def _signal_side_shares(self, code, sig):
+        """信号侧认为的持仓股数（信号自带 / portfolio.json / _signal_state 取最大）。
+
+        用来区分两种"账户读到 0 股"：
+          真空仓 —— 信号侧也认为 0 股 → 正常跳过，不告警
+          数据不同源 —— 信号侧有仓、账户读到 0 → 必须告警 + 计入失败
+        """
+        cands = []
+        for k in ("flow_shares", "shares"):
+            try:
+                cands.append(int(sig.get(k) or 0))
+            except (TypeError, ValueError):
+                pass
+        try:
+            from state_center import load_portfolio
+            pf = load_portfolio()
+            cands.append(int((pf.get("positions", {}).get(code) or {}).get("shares") or 0))
+            cands.append(int((pf.get("_signal_state", {}).get(code) or {}).get("shares") or 0))
+        except Exception:
+            pass
+        return max(cands) if cands else 0
+
+    def _alert_flat_position(self, code, trade_type, raw_shares, sig_shares, today_str):
+        """信号有仓/账户读不到 → critical 告警（静默跳过会让清仓信号凭空消失）。"""
+        _acct = "读失败" if raw_shares is None else f"{raw_shares}股"
+        msg = (f"{code} {trade_type} 信号存在，但账户持仓读到 {_acct}"
+               f"（信号侧={sig_shares}股）→ 数据不同源，本笔未下单，请人工核对持仓")
+        print(f"  🚨 [FLAT] {msg}", file=sys.stderr)
+        try:
+            get_alert_manager().critical("清仓/卖出无持仓",
+                                         msg, dedup_key=f"flat_position:{code}:{today_str}")
+        except Exception as ex:
+            print(f"  [WARN] alert 告警失败: {ex}")
 
     def _maybe_cancel_pending(self):
         """尾盘撤单：到了 flow.cancel_pending_at（默认 14:45）就把当日未成交挂单全撤。
@@ -1534,30 +1459,58 @@ class SignalExecutor:
             )
             return 'unknown', reason, None
 
-    def execute_signals(self, result, mode=None):
+    def execute_signals(self, result, mode=None, style=None, plan_only=False,
+                        strict_dedup=None):
         """遍历信号，调用 trade.py 执行交易（含异常处理+状态持久化+告警推送）
 
         mode: None=全部, 'buy_sell'=只执行买卖信号(T0由t0模式单独执行), 't0'=只执行做T
         # Bug7修复: buy_sell模式现在也执行T0信号
 
+        style: 'continuous'(默认) = 现价限价，原逻辑一行不动
+               'auction' = 开盘集合竞价挂单：买入挂当日涨停价、卖出挂当日跌停价
+                           （涨跌停走 money_manager.day_price_limits，唯一真相源）
+        plan_only: True = 干跑，只打印将要提交的委托（代码/方向/限价/股数），不落盘不下单
+        strict_dedup: True = 同日同标的同方向只挂一次（查 orders/ + intent + 委托表）。
+                     竞价模式默认开；09:31 兜底必须显式开（否则已挂出的卖单会被再卖一次）
+
         --execute 下单逻辑（v3.1.2）：
         - 买入限价 = min(信号价, 当前实时价)，确保 ≤ 卖一价能挂进去
         - 卖出限价 = max(信号价, 当前实时价)，确保 ≥ 买一价能挂进去
         - 做T配对价 = 当前实时价 ± ATR×1.1（重新计算，不跟信号价比较）
+
+        返回 {'success','fail','skip','orders'}；fail>0 时调用方必须让进程退出码非 0。
         """
         self._ensure_imports()
 
+        style = str(style or "continuous").strip().lower()
+        if style not in ("auction", "continuous"):
+            print(f"[EXECUTE] ⚠️ 未知执行口径({style})，按 continuous 处理")
+            style = "continuous"
+        if style == "auction" and mode == "t0":
+            print("[EXECUTE] 做T不走集合竞价（盘中双边挂单），按 continuous 执行")
+            style = "continuous"
+        self._style = style
+        if strict_dedup is None:
+            strict_dedup = (style == "auction")
+        if strict_dedup:
+            print("[EXECUTE] 幂等严格模式: 开（同日同标的同方向只挂一次）")
+        plans = []
+
         if result is None:
             print("[EXECUTE] 无信号结果，跳过执行")
-            return
+            return _exec_result()
 
         signals = result.get("signals", {})
         if not signals:
             print("[EXECUTE] 无信号数据，跳过执行")
-            return
+            return _exec_result()
 
         if mode:
             print(f"[EXECUTE] 模式过滤: {mode}")
+        if style == "auction":
+            print("[EXECUTE] 执行口径: 开盘集合竞价（买入挂涨停价 / 卖出挂跌停价）")
+        if plan_only:
+            print("[EXECUTE] 干跑模式(plan_only)：只打印委托，不落盘、不下单")
 
         # 单票仓位上限按策略模式取值（chase 单吊 N=1 要能打满 100%，flow/pyramid 仍 50%）。
         # 信号结果自带的 strategy_mode 优先；缺省（如做T/旧调用）时由 risk_manager 回落 config。
@@ -1593,26 +1546,25 @@ class SignalExecutor:
             actionable.append((code, sig))
 
         # ═══ T0 单腿追价检测（每周期入口处调用）═══
-        if mode == 't0':
+        if mode == 't0' and not plan_only:
             self._run_t0_chase_cycle()
 
-        # ═══ 【二】普通卖出追价检测（每周期入口处调用）═══
-        if mode in ('buy_sell', None):
-            self._run_sell_chase_cycle()
-
         # ═══ 尾盘撤单：cancel_pending_at 之后把当日未成交挂单全撤，本次不再下新单 ═══
-        if mode in ('buy_sell', None) and self._maybe_cancel_pending():
-            return
+        if mode in ('buy_sell', None) and not plan_only and self._maybe_cancel_pending():
+            return _exec_result()
 
         if not actionable:
             print("[EXECUTE] 无交易信号，跳过执行")
-            return
+            return _exec_result()
 
         print(f"[EXECUTE] 共 {len(actionable)} 个交易信号，开始执行...")
         print("=" * 60)
 
         # ═══ 全撤（已注销）═══
         # [EXECUTE] 撤单操作已注销，不撤单直接执行新信号
+
+        # 严格幂等的委托表快照（只查一次，循环内复用）
+        _entrust_idx = self._entrust_today_index() if strict_dedup else None
 
         # ═══ 撤单后重新收集 filled_codes ═══
         pending_map, filled_codes = self._check_pending_orders(mode, sync_entrust=False)
@@ -1657,7 +1609,23 @@ class SignalExecutor:
                 or (trade_type == "t0" and "卖出" in action)
             )
 
-            if live_price > 0:
+            size_price = 0.0   # 定股用的参考价（连续竞价=限价；竞价=昨收，见下）
+            if style == "auction":
+                _ap = auction_limit_price(code, is_buy_direction,
+                                          (live or {}).get("prev_close"),
+                                          signal_price or live_price)
+                if not _ap["ok"]:
+                    print(f"[EXECUTE] ⚠️ {code} {_ap['reason']}，本笔不挂竞价（交给 09:31 兜底）")
+                    fail_count += 1
+                    continue
+                price = _ap["price"]
+                # 定股按昨收、挂单按涨跌停：按涨停价定股会比回测少买约 10%（N=1 满仓时是硬伤）
+                size_price = float((live or {}).get("prev_close") or signal_price or 0) or price
+                print(f"[AUCTION] {code} {'买入挂涨停' if is_buy_direction else '卖出挂跌停'}价 "
+                      f"{price:.3f} | 昨收={(live or {}).get('prev_close')} "
+                      f"涨停={_ap['limit_up']:.3f} 跌停={_ap['limit_down']:.3f} "
+                      f"定股价={size_price:.3f}")
+            elif live_price > 0:
                 if is_buy_direction:
                     if signal_price > 0 and live_price < signal_price:
                         price = live_price
@@ -1679,10 +1647,23 @@ class SignalExecutor:
                 price = signal_price
                 print(f"[EXECUTE] {code} 实时价获取失败，兜底用信号价={signal_price:.3f}")
 
+            if style != "auction":
+                size_price = price
+
             if price <= 0:
                 print(f"[EXECUTE] ⚠️ {code} 价格无效(信号={signal_price_str}, 实时={live_price})，跳过")
                 fail_count += 1
                 continue
+
+            # ═══ 严格幂等：同日同标的同方向已挂过单 → 不再挂 ═══
+            if strict_dedup:
+                _dup = self._today_order_exists(code, sig_direction, today_str,
+                                                 _entrust_idx)
+                if _dup:
+                    print(f"  ⏭️ [AUCTION幂等] {code} {sig_direction} 今日已挂/已成交"
+                          f"（{_dup}），不重复挂单，跳过")
+                    skip_count += 1
+                    continue
 
             t0_pair = sig.get("t0_pair")
 
@@ -1801,7 +1782,7 @@ class SignalExecutor:
                     _cap_pct = float(sig.get("cap_pct") or self._flow_cap_pct())
                     _ta_now = self._get_total_asset()
                     if price > 0 and _cap_pct > 0:
-                        _max_sh = int(_ta_now * _cap_pct / price / 100) * 100
+                        _max_sh = int(_ta_now * _cap_pct / (size_price or price) / 100) * 100
                         if _max_sh > 0 and shares > _max_sh:
                             print(f"[FLOW] {code} 单只单次上限 {_cap_pct:.0%}×总资产"
                                   f"(¥{_ta_now * _cap_pct:,.0f}) → 股数 {shares}→{_max_sh}"
@@ -1821,14 +1802,14 @@ class SignalExecutor:
                     # config 静态 fund 只做兜底/单笔上限
                     _static_fund = self._ETFS.get(code, {}).get("fund", 44000)
                     _ta = self._get_total_asset()
-                    _plan = self._calc_order_amount(_ta, ratio, price=price,
+                    _plan = self._calc_order_amount(_ta, ratio, price=size_price or price,
                                                     static_fund=_static_fund)
                     # ── 择时乘数: 下单金额只认信号里的最终比例，这里只打印乘数前后对照 ──
                     _mult = sig.get("timing_multiplier")
                     if _mult is not None:
                         _raw_ratio = self._parse_position_ratio(sig.get("position_ratio_raw", ""))
                         _plan_before = self._calc_order_amount(
-                            _ta, _raw_ratio, price=price, static_fund=_static_fund)
+                            _ta, _raw_ratio, price=size_price or price, static_fund=_static_fund)
                         print(f"[择时] {code} 大盘状态={sig.get('timing_score')}分 档位乘数={_mult:.2f} | "
                               f"乘数前目标金额=¥{_plan_before['amount']:,.0f} "
                               f"乘数后目标金额=¥{_plan['amount']:,.0f} "
@@ -1846,13 +1827,14 @@ class SignalExecutor:
 
             # ── 普通卖出 ──
             elif trade_type == "sell":
-                current_shares = self._get_position_shares(code)
+                _raw_sh = self._get_position_shares(code)
+                current_shares = int(_raw_sh or 0)
                 _flow_sh = sig.get("flow_shares")
                 if _flow_sh:
                     # 跳空缓冲只加在 flow 分支；pyramid 限价逻辑保持原样。
                     price = self._flow_limit_price(code, price, False, live)
                     # ── flow 模式：精确股数（减到目标权重），不允许超过真实持仓 ──
-                    shares = min(int(_flow_sh), int(current_shares or 0))
+                    shares = min(int(_flow_sh), current_shares)
                     print(f"[FLOW] {code} 目标股数={sig.get('target_shares')} "
                           f"今日卖出={shares}(持仓{current_shares}) | {sig.get('reason', '')}")
                 else:
@@ -1861,11 +1843,18 @@ class SignalExecutor:
                         shares = max(int(current_shares * ratio / 100) * 100, 5000)
                     else:
                         shares = current_shares
-                if shares < 100 or shares > (current_shares or 0):
-                    shares = int(current_shares or 0)
+                if shares < 100 or shares > current_shares:
+                    shares = current_shares
                 if shares < 100:
-                    print(f"[EXECUTE] ⚠️ {code} 卖出股数不足(current={current_shares}, shares={shares})，跳过")
-                    fail_count += 1
+                    _sig_sh = self._signal_side_shares(code, sig)
+                    if _raw_sh is None or _sig_sh > 0:
+                        # 信号侧有仓 / 持仓读失败 → 数据不同源，不能静默跳过
+                        self._alert_flat_position(code, trade_type, _raw_sh, _sig_sh, today_str)
+                        fail_count += 1
+                    else:
+                        print(f"[EXECUTE] {code} 卖出股数不足且账户/信号侧都是空仓"
+                              f"(current={_raw_sh}, shares={shares})，正常跳过")
+                        skip_count += 1
                     continue
                 cmd = ["python3", trade_script, "sell", code, str(shares), f"{price:.3f}"]
                 label = f"卖出 {code} {shares}股 @{price:.3f}"
@@ -1875,18 +1864,26 @@ class SignalExecutor:
                 if sig.get("flow_shares"):
                     # flow 换出清仓同样加卖出缓冲（pyramid 清仓不经过这里）
                     price = self._flow_limit_price(code, price, False, live)
-                current_shares = self._get_position_shares(code)
+                _raw_sh = self._get_position_shares(code)
+                current_shares = int(_raw_sh or 0)
                 shares = current_shares
                 if current_shares < 100:
-                    print(f"[EXECUTE] ⚠️ {code} 清仓但无持仓({current_shares}股)，跳过")
-                    fail_count += 1
+                    _sig_sh = self._signal_side_shares(code, sig)
+                    if _raw_sh is None or _sig_sh > 0:
+                        # 信号要求清仓、账户却读到 0 股/读失败 → 数据不同源，必须告警 + 计失败
+                        self._alert_flat_position(code, trade_type, _raw_sh, _sig_sh, today_str)
+                        fail_count += 1
+                    else:
+                        print(f"[EXECUTE] {code} 清仓信号但账户/信号侧都是空仓"
+                              f"(current={_raw_sh})，正常跳过")
+                        skip_count += 1
                     continue
                 cmd = ["python3", trade_script, "sell", code, str(current_shares), f"{price:.3f}"]
                 label = f"清仓 {code} {current_shares}股 @{price:.3f}"
 
             # ── 减仓 / 减半仓（reduce_half: strategy_v2 网格整体止损 -8% 减50%总仓）──
             elif trade_type in ("reduce", "reduce_half"):
-                current_shares = self._get_position_shares(code)
+                current_shares = int(self._get_position_shares(code) or 0)
                 ratio = self._parse_position_ratio(sig.get("position_ratio", ""))
                 if sig.get("reduce_shares"):
                     # 择时降档减仓: signal_generator 已算好精确股数（不套 5000 股下限）
@@ -1933,8 +1930,22 @@ class SignalExecutor:
             else:
                 print(f"[RISK] 免检 {code} {trade_type}：卖出/减仓/止损/做T平仓不新增风险敞口")
 
-            # ═══ 执行命令（含重试） ═══
+            # ═══ 干跑：把将要提交的委托打出来，不落盘、不下单 ═══
             direction = self._signal_direction(sig)
+            if plan_only:
+                plans.append({
+                    "code": code, "action": action, "trade_type": trade_type,
+                    "direction": direction, "limit_price": round(price, 3),
+                    "size_price": round(size_price or price, 3),
+                    "shares": int(shares), "amount": round(shares * (size_price or price), 2),
+                    "style": style, "cmd": cmd,
+                })
+                print(f"[PLAN] {i+1}/{len(actionable)} {label} | 方向={direction} "
+                      f"限价={price:.3f} 股数={shares} "
+                      f"金额≈¥{shares * (size_price or price):,.0f}")
+                continue
+
+            # ═══ 执行命令（含重试） ═══
             print(f"\n[{i+1}/{len(actionable)}] {label}")
             print(f"  → {' '.join(cmd)}")
 
@@ -2187,13 +2198,6 @@ class SignalExecutor:
                             except Exception as _t0c_err:
                                 print(f"  [WARN] 做T计数更新失败: {_t0c_err}")
 
-                        # ═══ 【二】普通卖出追价状态记录 ═══
-                        if trade_type in ("sell", "liquidate", "reduce", "reduce_half"):
-                            try:
-                                self._record_sell_chase_after_execute(code, shares)
-                            except Exception as _sc_err:
-                                print(f"  [SELL-CHASE] 记录追价状态失败: {_sc_err}")
-
                         # ═══ O4: 清仓确认后重置持仓状态（统一入口）═══
                         # 只有两种凭据允许删 positions[code]：
                         #   1) 该委托"全部成交"（_v_filled）
@@ -2358,20 +2362,28 @@ class SignalExecutor:
                 time.sleep(3)
 
         print("\n" + "=" * 60)
-        print(f"[EXECUTE] 执行完成: 成功 {success_count}, 失败 {fail_count}, 跳过 {skip_count}")
+        _tag = "干跑" if plan_only else "执行完成"
+        print(f"[EXECUTE] {_tag}: 成功 {success_count}, 失败 {fail_count}, 跳过 {skip_count}")
+
+        if plan_only:
+            print(f"[PLAN] 共 {len(plans)} 笔委托（未提交）")
+            return _exec_result(success_count, fail_count, skip_count, plans)
 
         # ═══ 收盘后清理 intent 文件 ═══
         self._cleanup_intent_files()
         self._cleanup_old_intent_files()
+
+        return _exec_result(success_count, fail_count, skip_count, plans)
 
 
 # 模块级 SignalExecutor 实例
 _executor = SignalExecutor()
 
 
-def execute_signals(result, mode=None):
+def execute_signals(result, mode=None, style=None, plan_only=False, strict_dedup=None):
     """遍历信号执行交易（快捷函数，向后兼容 signal_generator.execute_signals）"""
-    return _executor.execute_signals(result, mode=mode)
+    return _executor.execute_signals(result, mode=mode, style=style, plan_only=plan_only,
+                                     strict_dedup=strict_dedup)
 
 def main():
     """executor 独立入口：只做"收盘前撤单"这一类维护动作，不在这里下新单。

@@ -1302,6 +1302,106 @@ def _parse_execute_args():
     return False, None
 
 
+def _parse_exec_style():
+    """执行口径: auction(开盘集合竞价挂涨跌停价) | continuous(现价限价，09:31 旧路径)。
+
+    优先级: --auction / --style=auction > config.yaml execution.style > continuous。
+    """
+    argv = sys.argv[1:]
+    for arg in argv:
+        if arg == "--auction":
+            return "auction"
+        if arg.startswith("--style="):
+            val = arg.split("=", 1)[1].strip().lower()
+            if val in ("auction", "continuous"):
+                return val
+            print(f"[WARN] 无效的 --style 值: {val}, 按 config.yaml 走")
+    try:
+        import yaml as _y
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")) as _f:
+            _ex = (_y.safe_load(_f) or {}).get("execution") or {}
+        return str(_ex.get("style", "continuous")).strip().lower()
+    except Exception:
+        return "continuous"
+
+
+def _exec_cfg():
+    """config.yaml -> execution 段（竞价截止/兜底时点）。读不到就给默认值。"""
+    try:
+        import yaml as _y
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")) as _f:
+            return ((_y.safe_load(_f) or {}).get("execution") or {})
+    except Exception:
+        return {}
+
+
+def _build_signals(mode):
+    """按策略模式生成信号（main 与 09:31 兜底共用同一入口）。"""
+    if mode == "chase":
+        return build_chase_signals()
+    if mode == "flow":
+        return build_flow_signals()
+    return generate_signals()
+
+
+def _wait_until(hm):
+    """睡到当天 hm:00（已过则立即返回）。"""
+    import time as _t
+    tgt = datetime.strptime(datetime.now().strftime("%Y-%m-%d ") + hm, "%Y-%m-%d %H:%M")
+    secs = (tgt - datetime.now()).total_seconds()
+    if secs <= 0:
+        return
+    print(f"[AUCTION] 等到 {hm} 再走连续竞价兜底（{secs:.0f} 秒）…", flush=True)
+    _t.sleep(secs)
+
+
+def _alert_critical(title, msg, dedup_key):
+    try:
+        from core.alert import get_alert_manager
+        get_alert_manager().critical(title, msg, dedup_key=dedup_key)
+    except Exception as ex:
+        print(f"[WARN] alert 告警失败: {ex}")
+
+
+def _continuous_fallback(execute_mode, fallback_at, reason):
+    """09:31 兜底：等到 fallback_at → 重新 sync 持仓 → 重算信号 → 旧路径（现价限价）下单。
+
+    之所以重算而不是复用 09:16 那份结果：竞价那轮可能部分成交，
+    持仓已经变了；而策略信号取自 T-1 收盘，重算的仍是同一批指令。
+    """
+    import subprocess
+    _alert_critical("竞价挂单失败，转 09:31 兜底",
+                    f"原因: {reason} → 等 {fallback_at} 走连续竞价（现价限价）",
+                    dedup_key=f"auction_fallback:{datetime.now():%Y%m%d}")
+    if "--fallback-now" not in sys.argv[1:]:
+        _wait_until(fallback_at)
+
+    from ths import check_tradable
+    ok, why = check_tradable()
+    if not ok:
+        print(f"[FALLBACK] ❌ {why}，兜底也走不了，退出码非 0", file=sys.stderr)
+        _alert_critical("09:31 兜底仍不可用", why,
+                        dedup_key=f"auction_fallback_dead:{datetime.now():%Y%m%d}")
+        return 2
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    print("[FALLBACK] 重新同步持仓…", flush=True)
+    try:
+        proc = subprocess.run([sys.executable, os.path.join(script_dir, "trade.py"), "sync"],
+                              capture_output=True, text=True, timeout=180, cwd=script_dir)
+        print((proc.stdout or "").strip()[-500:])
+    except Exception as ex:
+        print(f"[FALLBACK] ⚠️ sync 失败({ex})，继续用现有 portfolio.json 下单")
+
+    result = _build_signals(_parse_strategy_mode())
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    from executor import execute_signals as _exec_execute
+    res = _exec_execute(result, mode=execute_mode, style="continuous",
+                        strict_dedup=True)
+    print(f"[FALLBACK] 连续竞价结果: 成功 {res['success']} 失败 {res['fail']} 跳过 {res['skip']}")
+    return 0 if res["fail"] == 0 else 4
+
+
 def _acquire_exec_locks(execute_flag, execute_mode):
     """执行层互斥锁：同一 mode 同时只允许一个进程。
 
@@ -1643,38 +1743,70 @@ def build_chase_signals():
 
 
 def main():
-    # ── 未登录/桥读不到 → 直接失败退出：别在没登录时静默产出空信号 ──
-    from ths import check_tradable
-    ok, why = check_tradable()
-    if not ok:
-        print(f"[FAIL] {why}，不生成信号（未登录/持仓读不到时退出码非 0）", file=sys.stderr)
-        return 2
+    argv = sys.argv[1:]
+    execute_flag, execute_mode = _parse_execute_args()
+    plan_only = ("--plan" in argv) or ("--dry-run" in argv)
+    style = _parse_exec_style()
+    exec_cfg = _exec_cfg()
+    _auc = exec_cfg.get("auction") or {}
+    submit_by = str(_auc.get("submit_by") or "09:20")
+    fallback_at = str(_auc.get("fallback_time") or "09:31")
+
+    # ── 未登录/桥读不到 → 不生成信号（干跑除外：干跑要在任意登录状态下都能核对委托）──
+    if not plan_only:
+        from ths import check_tradable
+        ok, why = check_tradable()
+        if not ok:
+            print(f"[FAIL] {why}，不生成信号（未登录/持仓读不到时退出码非 0）", file=sys.stderr)
+            if execute_flag and style == "auction":
+                return _continuous_fallback(execute_mode, fallback_at,
+                                            f"竞价前 THS 不可用: {why}")
+            return 2
 
     # ── 执行层互斥锁：同一 mode 同一时刻只允许一个进程从"读信号"到"下单完成" ──
-    execute_flag, execute_mode = _parse_execute_args()
-    locks = _acquire_exec_locks(execute_flag, execute_mode)
+    locks = _acquire_exec_locks(execute_flag and not plan_only, execute_mode)
     if locks is None:
         return 0
 
     try:
         try:
             mode = _parse_strategy_mode()
-            if mode == "chase":
-                result = build_chase_signals()
-            elif mode == "flow":
-                result = build_flow_signals()
-            else:
-                result = generate_signals()
+            result = _build_signals(mode)
             json_str = json.dumps(result, indent=2, ensure_ascii=False)
             if sys.stdout.encoding != "utf-8":
                 sys.stdout.reconfigure(encoding="utf-8")
             print(json_str)
 
-            if execute_flag:  # 只要在命令行出现了 --execute，就执行信号
+            if plan_only:
                 from executor import execute_signals as _exec_execute
-                _exec_execute(result, mode=execute_mode)
+                res = _exec_execute(result, mode=execute_mode, style=style, plan_only=True)
+                print(f"[PLAN] 干跑结束: 计划 {len(res['orders'])} 笔, "
+                      f"失败 {res['fail']}, 跳过 {res['skip']}")
+                return 0 if res["fail"] == 0 else 4
 
-            return 0
+            if not execute_flag:  # 只要在命令行出现了 --execute，就执行信号
+                return 0
+
+            from executor import execute_signals as _exec_execute
+            if style != "auction":
+                res = _exec_execute(result, mode=execute_mode)
+                return 0 if res["fail"] == 0 else 4
+
+            # ── 09:16 竞价挂单窗口：09:20-09:25 不可撤单，必须 09:20 前挂出 ──
+            hm = datetime.now().strftime("%H:%M")
+            if hm >= submit_by:
+                print(f"[AUCTION] 当前 {hm} 已过竞价挂单截止 {submit_by}，直接走连续竞价（09:31 路径）")
+                res = _exec_execute(result, mode=execute_mode, style="continuous",
+                                    strict_dedup=True)
+                return 0 if res["fail"] == 0 else 4
+
+            print(f"[AUCTION] 竞价挂单窗口: 现在 {hm} < 截止 {submit_by}")
+            res = _exec_execute(result, mode=execute_mode, style="auction")
+            if res["fail"] == 0:
+                return 0
+            return _continuous_fallback(
+                execute_mode, fallback_at,
+                f"竞价 {res['fail']} 笔未挂出（成功{res['success']}/跳过{res['skip']}）")
         except Exception as e:
             error_msg = {"error": str(e), "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
             print(json.dumps(error_msg, indent=2, ensure_ascii=False))
