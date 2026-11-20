@@ -335,7 +335,8 @@ end tell'''
             print("模拟仓登录完成（点击路径）", file=sys.stderr)
             return
     locked = screen_locked()
-    hint = ("屏幕已锁定（CGSSessionScreenIsLocked=Yes），osascript 点击不可能生效" if locked
+    hint = ("屏幕已锁定（前台=loginwindow/ScreenSaverEngine 且 GUI 读窗口失败），"
+            "osascript 点击不可能生效" if locked
             else "窗口数为 0 或模拟按钮不可点")
     raise RuntimeError(f"等待模拟仓登录超时（60s）；点击兜底结果={click_msg or '(无输出)'}；{hint}。"
                        f"程序化登录失败请先看上面 loginMoni 的 error/steps")

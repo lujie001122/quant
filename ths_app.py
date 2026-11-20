@@ -8,7 +8,6 @@
   3. 启动后等进程出现 + 窗口可用，都有超时，超时抛明确错误。
 """
 import os
-import re
 import signal
 import subprocess
 import time
@@ -43,37 +42,86 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-SCREEN_LOCK_CHECKS = 3      # 连续采样次数：全部=Yes 才算锁屏
+SCREEN_LOCK_CHECKS = 3      # 连续采样次数：全部 locked 才算锁屏
 SCREEN_LOCK_GAP = 1.0       # 采样间隔（秒）
+# 锁屏时前台只可能是这两个进程。它们当前台才算「疑似锁屏」，还要功能性否决一次。
+LOCK_FRONTMOST = ("loginwindow", "ScreenSaverEngine")
+
+
+def _osascript(script: str, timeout: float = 5.0) -> tuple:
+    """跑一段 osascript → (rc, stdout, stderr, 耗时ms)。异常统一 rc=-1。"""
+    t0 = time.time()
+    try:
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True, timeout=timeout)
+    except (subprocess.SubprocessError, OSError) as ex:
+        return -1, "", f"{type(ex).__name__}: {ex}", (time.time() - t0) * 1000
+    return (r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip(),
+            (time.time() - t0) * 1000)
+
+
+def _proc_running(name: str) -> bool:
+    try:
+        return subprocess.run(["pgrep", "-x", name],
+                              capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def gui_frontmost() -> tuple:
+    """功能性读：System Events 取当前前台应用名 → (ok, name, evidence)。"""
+    rc, out, err, ms = _osascript(
+        'tell application "System Events" to get name of first process '
+        'whose frontmost is true')
+    if rc != 0 or not out:
+        return False, "", (f"osascript 取前台应用失败 rc={rc} 耗时{ms:.0f}ms: "
+                           f"{err[:160] or '(空输出)'}")
+    return True, out, f"osascript rc=0 耗时{ms:.0f}ms 前台应用={out}"
+
+
+def gui_window_probe(app: str = "") -> tuple:
+    """功能性读（无害）：取指定/前台进程的前台窗口名 → (ok, detail)。
+
+    锁屏时这个 GUI 读操作拿不到可交互窗口（报错或空），解锁时可正常返回。
+    用「窗口名|窗口数」拼接，标题为空也能看出是真读到了东西。
+    """
+    target = f'process "{app}"' if app else ('first process whose frontmost is true')
+    rc, out, err, ms = _osascript(f'''tell application "System Events"
+    set p to {target}
+    set n to name of front window of p
+    return (n as text) & "|" & (count of windows of p)
+end tell''')
+    if rc != 0 or "|" not in out:
+        return False, (f"读窗口失败 rc={rc} 耗时{ms:.0f}ms: "
+                       f"{err[:160] or out[:80] or '(空输出)'}")
+    return True, f"读窗口成功 rc=0 耗时{ms:.0f}ms: 窗口={out}"
 
 
 def probe_screen_lock() -> tuple:
-    """单次锁屏探测 → (state, evidence, raw)，state ∈ locked/unlocked/unknown。
+    """单次功能性锁屏探测 → (state, evidence, raw)，state ∈ locked/unlocked/unknown。
 
-    ioreg 调不通（超时/非 0 退出/空输出/多会话状态打架）一律 unknown，未知不等于锁屏。
-    未锁屏时 macOS 根本不写 CGSSessionScreenIsLocked 这个键，所以「键不存在」= 未锁屏。
+    判据（不再看 ioreg 的 CGSSessionScreenIsLocked —— 那个键会僵死，锁过之后
+    用 Touch ID / Apple Watch 解锁不会改回 No）：
+      1. 先用 System Events 读真实前台应用：不是 loginwindow / ScreenSaverEngine
+         → 一定没锁（真正锁屏时前台只可能是这两个）；
+      2. 前台是 loginwindow / ScreenSaverEngine 才算「疑似」，再尝试一次无害的
+         窗口读；能成功返回 → 否决，判定未锁屏；
+      3. 疑似 + 窗口读失败 → locked。
+    osascript 整体失败（rc≠0 / 空输出 / 超时）= unknown，未知一律不算锁屏。
     """
-    t0 = time.time()
-    try:
-        r = subprocess.run(["ioreg", "-n", "Root", "-d1"],
-                           capture_output=True, text=True, timeout=5)
-    except (subprocess.SubprocessError, OSError) as ex:
-        return "unknown", f"ioreg 调用失败: {type(ex).__name__}: {ex}", ""
-    ms = (time.time() - t0) * 1000
-    out = r.stdout or ""
-    if r.returncode != 0:
-        return ("unknown", f"ioreg rc={r.returncode} 耗时{ms:.0f}ms: "
-                f"{(r.stderr or '').strip()[:120]}", out)
-    if not out.strip():
-        return "unknown", f"ioreg 空输出 rc=0 耗时{ms:.0f}ms", out
-    vals = re.findall(r'"CGSSessionScreenIsLocked"\s*=\s*(Yes|No)', out)
-    if not vals:
-        return "unlocked", f"ioreg rc=0 耗时{ms:.0f}ms {len(out)}字节: 键不存在（未锁屏）", out
-    if len(set(vals)) > 1:
-        return "unknown", f"ioreg 多个会话锁屏状态不一致 {vals}", out
-    return ("locked" if vals[0] == "Yes" else "unlocked",
-            f'ioreg rc=0 耗时{ms:.0f}ms {len(out)}字节: "CGSSessionScreenIsLocked"={vals[0]}',
-            out)
+    ok, front, ev = gui_frontmost()
+    if not ok:
+        return "unknown", ev, ev
+    if front not in LOCK_FRONTMOST:
+        return "unlocked", f"{ev}（不在锁屏前台名单，判定未锁屏）", ev
+    if front == "ScreenSaverEngine" and not _proc_running("ScreenSaverEngine"):
+        ev2 = f"{ev}；但 ScreenSaverEngine 进程不存在（状态自相矛盾）"
+        return "unknown", ev2, ev2
+    w_ok, w_ev = gui_window_probe(front)
+    if w_ok:
+        # 否决规则：GUI 操作还能成功 → 不管前台是谁都没锁
+        return "unlocked", f"{ev}；{w_ev} → 否决，判定未锁屏", f"{ev}\n{w_ev}"
+    return "locked", f"{ev}；{w_ev}", f"{ev}\n{w_ev}"
 
 
 def screen_lock_samples(checks: int = SCREEN_LOCK_CHECKS,
@@ -88,11 +136,11 @@ def screen_lock_samples(checks: int = SCREEN_LOCK_CHECKS,
 
 
 def screen_locked() -> bool:
-    """连续 SCREEN_LOCK_CHECKS 次探测全部=Yes 才算锁屏。
+    """连续 SCREEN_LOCK_CHECKS 次探测全部 locked 才算锁屏。
 
     锁屏时同花顺重启后登录回不来（loginZiYingFuWu 要网络+活跃会话），UI 点击也无效。
-    unknown（ioreg 失败/超时/空输出）或任意一次未锁 → False：宁可重启，也不要因为
-    一次探测失败静默吞掉整次重启。
+    unknown（osascript 失败/超时/空输出）或任意一次没锁 → False：宁可重启，
+    也不要因为一次探测失败静默吞掉整次重启（重启真失败会报错，误判锁屏不会）。
     """
     return all(state == "locked" for state, _, _ in screen_lock_samples())
 

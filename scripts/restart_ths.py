@@ -8,8 +8,9 @@
 
 铁律:
   1. 锁屏 → 不 kill、不重启，逐次打印 3 次检测证据，[SKIP] 退出码 3（cron 能看到
-     失败，而不是静默把一次重启吞掉）；检测不到（ioreg 失败/超时/空输出）= 未知，
-     按未锁屏继续重启。
+     失败，而不是静默把一次重启吞掉）；检测不到（osascript 失败/超时/空输出）= 未知，
+     按未锁屏继续重启。锁屏判定走功能性探针（前台应用 + 窗口读），不看 ioreg 的
+     CGSSessionScreenIsLocked —— 那个键会僵死。
   2. 重启后必须等到 moni_count>0 / active_is_moni=True / positions 缓存>0 行才返回；
      默认最多等 120 秒（RESTART_LOGIN_TIMEOUT 可覆盖），超时退出码 2，
      cron 的 && 链自然跳过后续下单——宁可不下单，也不在没登录时瞎跑。
@@ -131,16 +132,18 @@ def wait_login_ready(ths: Ths, timeout: float) -> int:
 
 
 def check_screen_lock() -> int:
-    """锁屏门禁：连续 3 次全部为锁才返回 3（跳过重启），否则返回 0。
+    """锁屏门禁：连续 3 次全部 locked 才返回 3（跳过重启），否则返回 0。
 
     锁屏时一行都没做（不 kill、不重启），提示就必须写「未做任何操作」；
     退出码非 0 让 cron 看到失败，而不是静默成功把一次重启吞掉。
-    ioreg 探测不到（失败/超时/空输出/多会话打架）= 未知，按未锁屏继续。
+    判定是功能性的：前台应用 ∈ {loginwindow, ScreenSaverEngine} 且窗口读失败才算锁；
+    osascript 探测不到（失败/超时/空输出）= 未知，按未锁屏继续。
     """
     samples = screen_lock_samples()
     if all(state == "locked" for state, _, _ in samples):
-        print(f"[SKIP] 屏幕已锁定：连续 {len(samples)} 次 ioreg 均为 "
-              f"CGSSessionScreenIsLocked=Yes —— 未做任何操作，同花顺进程/窗口保持原样")
+        print(f"[SKIP] 屏幕已锁定：连续 {len(samples)} 次探测前台均为 "
+              f"loginwindow/ScreenSaverEngine 且 GUI 窗口读失败 —— 未做任何操作，"
+              f"同花顺进程/窗口保持原样")
         for i, (_, ev, _) in enumerate(samples, 1):
             print(f"  第{i}次检测: {ev}")
         raw = samples[-1][2]
@@ -148,15 +151,15 @@ def check_screen_lock() -> int:
         try:
             with open(path, "w") as f:
                 f.write(raw)
-            print(f"  原始 ioreg 输出已落盘: {path}（{len(raw)} 字节）")
+            print(f"  探针原始证据已落盘: {path}（{len(raw)} 字节）")
         except OSError as ex:
-            print(f"  原始 ioreg 输出落盘失败: {ex}")
+            print(f"  探针原始证据落盘失败: {ex}")
         print("  下一步: 解锁屏幕后重跑这条命令 "
               "→ python3 scripts/restart_ths.py --no-revoke")
         return 3
     for i, (st, ev, _) in enumerate(samples, 1):
         if st != "unlocked":
-            print(f"  ⚠️ 第{i}次锁屏检测={st}（{ev}）；未全部为锁 → 按未锁屏继续重启")
+            print(f"  ⚠️ 第{i}次锁屏检测={st}（{ev}）；未全部为 locked → 按未锁屏继续重启")
     return 0
 
 
